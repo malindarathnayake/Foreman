@@ -71,7 +71,12 @@ This is all possible with skills alone — and we tested that (the "native arm" 
 npm install -g @malindarathnayake/foreman-mcp
 ```
 
-> **Note:** This package is published to [GitHub Packages](https://github.com/malindarathnayake/Foreman/packages). You'll need a `.npmrc` with `@malindarathnayake:registry=https://npm.pkg.github.com` and a GitHub token with `read:packages` scope.
+> GitHub Packages requires a one-time `.npmrc` setup even for public packages:
+> ```
+> echo "@malindarathnayake:registry=https://npm.pkg.github.com" >> ~/.npmrc
+> echo "//npm.pkg.github.com/:_authToken=YOUR_GITHUB_TOKEN" >> ~/.npmrc
+> ```
+> Generate a token at **Settings > Developer settings > Personal access tokens** with `read:packages` scope.
 
 ### 2. Configure your agent
 
