@@ -65,7 +65,15 @@ This is all possible with skills alone — and we tested that (the "native arm" 
 
 ## Quick Start
 
-### 1. Configure your agent
+### 1. Install
+
+```bash
+npm install -g @malindarathnayake/foreman-mcp
+```
+
+> **Note:** This package is published to [GitHub Packages](https://github.com/malindarathnayake/Foreman/packages). You'll need a `.npmrc` with `@malindarathnayake:registry=https://npm.pkg.github.com` and a GitHub token with `read:packages` scope.
+
+### 2. Configure your agent
 
 Add Foreman to your MCP settings:
 
@@ -114,7 +122,7 @@ Add Foreman to your MCP settings:
 ```
 </details>
 
-### 2. Use
+### 3. Use
 
 ```
 > run the foreman:design-partner skill     # Interactive design session
