@@ -16,21 +16,21 @@
 
 AI coding agents (Claude Code, Cursor, Cline) are good at writing code but bad at staying on track. On multi-file, multi-phase projects they lose context across sessions, skip steps, may lose state after crashes, and leave no structured audit trail at the project level.
 
+No existing tool combines all of these in a single MCP server:
+
+- **Mutex-serialized writes** — concurrent subagents can't corrupt shared state
+- **Enum-typed operations with schema validation** — `"staus"` is rejected at the tool level, not discovered 3 phases later
+- **Bounded context reads** — `read_progress` returns ~400 tokens, not an unbounded file
+- **Phase gates as first-class operations** — pass/fail checkpoints enforced between phases
+- **Compact JSON ledger** — structured audit trail across sessions, across crashes
+- **On-demand skills** — design-partner, spec-generator, and implementor loaded only when needed
+- **Portable** — works with Claude Code, Cursor, Cline, or any MCP client
+
 ### Why not just a skill?
 
 Skills are markdown prompts — they tell the agent *what to do* but can't enforce *that it does it*. A skill can say "update PROGRESS.md after each unit" but the agent can forget, hallucinate the update, or silently skip it. There's no validation layer.
 
-### Why an MCP server?
-
-| Capability | Skill alone | Foreman MCP |
-|-----------|------------|-------------|
-| **Atomic writes** | Agent does `Edit` on a JSON file — if two subagents write concurrently, last write wins, state lost | In-process mutex serializes all writes. No corruption. |
-| **Schema validation** | Agent writes freeform text — typos in status fields silently pass | Enum-typed operations. `"staus"` is rejected at the tool level, not discovered 3 phases later. |
-| **Bounded context** | Agent reads full PROGRESS.md — grows unboundedly, wastes tokens | `read_progress` returns truncated view (~400 tokens). Agent sees what it needs, not everything. |
-| **Cross-session state** | Agent must re-read and re-parse files each session | Ledger and progress are structured JSON — tools query specific units, phases, or gates without parsing. |
-| **Portable across agents** | Skill is Claude Code-specific markdown | MCP works with Claude Code, Cursor, Cline, or any MCP client. Same tools, same state format. |
-
-The skills provide the *workflow* (design → spec → implement → gate). The MCP server provides the *infrastructure* that makes the workflow reliable — validated writes, bounded reads, concurrent safety, and agent portability.
+The skills provide the *workflow* (design → spec → implement → gate). The MCP server provides the *infrastructure* that makes the workflow reliable — validated writes, bounded reads, concurrent safety, and agent portability. This is all possible with skills alone. But MCP made sense as the distribution format: one `npx` command gives any MCP-compatible agent the full workflow with validated state tracking, instead of copying markdown files between projects.
 
 ### How it works: the Pitboss architecture
 
@@ -56,8 +56,6 @@ flowchart TD
 ```
 
 The **skills are the workers** — they do the thinking and the coding. The **MCP server is the foreman** — it holds the ledger, validates every status update, and ensures the workers can't corrupt shared state. Workers report to Foreman after every unit. Foreman never writes code.
-
-This is all possible with skills alone. But MCP made sense as the distribution format: one `npx` command gives any MCP-compatible agent the full workflow with validated state tracking, instead of copying markdown files between projects.
 
 **~750 tokens idle overhead. 8 tools. 3 skills loaded on-demand.**
 
