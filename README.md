@@ -57,7 +57,7 @@ flowchart TD
 
 The **skills are the workers** — they do the thinking and the coding. The **MCP server is the foreman** — it holds the ledger, validates every status update, and ensures the workers can't corrupt shared state. Workers report to Foreman after every unit. Foreman never writes code.
 
-This is all possible with skills alone — and we tested that (the "native arm" in our AB test produced 35 tests vs MCP's 54). But MCP made sense as the distribution format: one `npx` command gives any MCP-compatible agent the full workflow with validated state tracking, instead of copying markdown files between projects.
+This is all possible with skills alone. But MCP made sense as the distribution format: one `npx` command gives any MCP-compatible agent the full workflow with validated state tracking, instead of copying markdown files between projects.
 
 **~750 tokens idle overhead. 8 tools. 3 skills loaded on-demand.**
 
