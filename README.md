@@ -67,11 +67,22 @@ This is all possible with skills alone — and we tested that (the "native arm" 
 
 ### 1. Install
 
+**Option A: Local install (no auth required)**
+
+Download the pre-built tarball from the repo and install directly:
+
+```bash
+curl -LO https://github.com/malindarathnayake/Foreman/raw/main/artifacts/malindarathnayake-foreman-mcp-0.0.3.tgz
+npm install -g malindarathnayake-foreman-mcp-0.0.3.tgz
+```
+
+**Option B: GitHub Packages registry**
+
 ```bash
 npm install -g @malindarathnayake/foreman-mcp
 ```
 
-> GitHub Packages requires a one-time `.npmrc` setup even for public packages:
+> Requires a one-time `.npmrc` setup:
 > ```
 > echo "@malindarathnayake:registry=https://npm.pkg.github.com" >> ~/.npmrc
 > echo "//npm.pkg.github.com/:_authToken=YOUR_GITHUB_TOKEN" >> ~/.npmrc
