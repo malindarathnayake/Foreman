@@ -1,0 +1,22 @@
+# Auto-detect text files and normalize line endings
+* text=auto
+
+# Source
+*.ts text eol=lf
+*.js text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+
+# Binary assets — treat as LFS if enabled, otherwise just mark binary
+assets/*.png binary
+assets/*.jpg binary
+assets/*.svg binary
+*.tgz binary
+
+# Linguist overrides — keep GitHub language stats accurate
+dist/** linguist-generated
+node_modules/** linguist-vendored
+*.json linguist-detectable=false
+tests/** linguist-detectable=false

@@ -1,0 +1,23 @@
+import { toTable } from "../lib/toon.js"
+
+interface ChangelogEntry {
+  version: string
+  date: string
+  description: string
+}
+
+const CHANGELOG: ChangelogEntry[] = [
+  { version: "0.0.3", date: "2026-04-05", description: "Tool schema enums for write_ledger/write_progress operations, design-partner YIELD directives for interactive pause" },
+  { version: "0.0.2.1", date: "2026-04-04", description: "DX fix — document valid operations in write_ledger/write_progress tool descriptions, fix server version mismatch" },
+  { version: "0.0.2", date: "2026-04-04", description: "MCP skill delivery — design-partner, spec-generator, implementor as MCP resources; AB test validated against native skills" },
+  { version: "0.0.1", date: "2026-04-02", description: "Initial architecture remediation — ledger, progress, external CLI" },
+]
+
+export function changelog(sinceVersion?: string): string {
+  let entries = CHANGELOG
+  if (sinceVersion) {
+    const idx = CHANGELOG.findIndex(e => e.version === sinceVersion)
+    entries = idx >= 0 ? CHANGELOG.slice(0, idx) : CHANGELOG
+  }
+  return toTable(["version", "date", "description"], entries.map(e => [e.version, e.date, e.description]))
+}

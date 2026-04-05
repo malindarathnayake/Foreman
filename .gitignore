@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.tgz
+artifacts/
+.claude/
+.DS_Store
+
+# Foreman local state files
+Docs/.foreman-ledger.json
+Docs/.foreman-progress.json
+Docs/.pitboss-ledger*.yaml*
+
+# Keep assets/ but ignore generation prompts
+assets/prompts.md

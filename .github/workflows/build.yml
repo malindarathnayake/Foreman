@@ -1,0 +1,55 @@
+name: Build & Publish
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: foreman-mcp/package-lock.json
+          registry-url: https://npm.pkg.github.com
+
+      - name: Install dependencies
+        working-directory: foreman-mcp
+        run: npm ci
+
+      - name: Build
+        working-directory: foreman-mcp
+        run: npm run build
+
+      - name: Run tests
+        working-directory: foreman-mcp
+        run: npm test
+
+      - name: Package
+        working-directory: foreman-mcp
+        run: |
+          mkdir -p ../artifacts
+          npm pack --pack-destination ../artifacts/
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: foreman-mcp-${{ github.sha }}
+          path: artifacts/*.tgz
+          retention-days: 30
+
+      - name: Publish to GitHub Packages
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: foreman-mcp
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

@@ -1,0 +1,217 @@
+version: 1
+
+units:
+  - id: "1a"
+    files: [foreman-mcp/src/types.ts, foreman-mcp/src/lib/ledger.ts, foreman-mcp/tests/ledger.test.ts]
+    exports:
+      - "interface LedgerFile { v: number; ts: string; phases: Record<string, Phase> }"
+      - "interface Phase { s: 'ip'|'done'|'blocked'; g: 'pass'|'fail'|'pending'; units: Record<string, Unit> }"
+      - "interface Unit { s: 'pending'|'ip'|'done'|'fail'; v: 'pass'|'fail'|'pending'; w: string | null; rej: Rejection[] }"
+      - "function readLedger(filePath: string): Promise<LedgerFile>"
+      - "function writeLedger(filePath: string, operation: WriteLedgerInput): Promise<LedgerFile>"
+      - "const WriteLedgerInputSchema: z.ZodDiscriminatedUnion"
+      - "const ReadLedgerInputSchema: z.ZodObject"
+    status: ACCEPTED
+    workers:
+      - {id: prior-session, phase: 1, verdict: ACCEPT}
+    notes: "Phase 1 Unit 1a — types + ledger core. 7/7 tests pass."
+
+  - id: "1b"
+    files: [foreman-mcp/src/lib/progress.ts, foreman-mcp/tests/progress.test.ts]
+    exports:
+      - "function readProgress(filePath: string): Promise<ProgressFile>"
+      - "function writeProgress(filePath: string, operation: WriteProgressInput): Promise<ProgressFile>"
+      - "function truncateProgress(progress: ProgressFile, lastNCompleted?: number): TruncatedView"
+      - "const WriteProgressInputSchema: z.ZodDiscriminatedUnion"
+    status: ACCEPTED
+    workers:
+      - {id: prior-session, phase: 1, verdict: ACCEPT}
+    notes: "Phase 1 Unit 1b — progress core with truncation. 9/9 tests pass."
+
+  - id: "2a"
+    files: [foreman-mcp/src/lib/externalCli.ts, foreman-mcp/tests/externalCli.test.ts]
+    exports:
+      - "interface ExternalCliResult { stdout: string; stderr: string; timedOut: boolean; exitCode: number }"
+      - "function runExternalCli(command: string, args: string[], timeoutMs: number): Promise<ExternalCliResult>"
+    status: ACCEPTED
+    workers:
+      - {id: a63dfd13a75ac6420, phase: 2, verdict: ACCEPT}
+    notes: "Phase 2 Unit 2a — external CLI runner with timeout. 6/6 tests pass."
+
+  - id: "3a"
+    files:
+      - foreman-mcp/src/lib/toon.ts
+      - foreman-mcp/src/tools/bundleStatus.ts
+      - foreman-mcp/src/tools/changelog.ts
+      - foreman-mcp/src/tools/readLedger.ts
+      - foreman-mcp/src/tools/readProgress.ts
+      - foreman-mcp/src/tools/capabilityCheck.ts
+      - foreman-mcp/tests/toon.test.ts
+      - foreman-mcp/tests/tools.test.ts
+    exports:
+      - "function toKeyValue(record: Record<string, string | number | boolean>): string"
+      - "function toTable(headers: string[], rows: string[][]): string"
+      - "function bundleStatus(): Promise<string>"
+      - "function changelog(sinceVersion?: string): string"
+      - "function handleReadLedger(filePath: string, input: ReadLedgerInput): Promise<string>"
+      - "function handleReadProgress(filePath: string, lastNCompleted?: number): Promise<string>"
+      - "function capabilityCheck(cli: 'codex' | 'gemini'): Promise<string>"
+    status: ACCEPTED
+    workers:
+      - {id: af3754956a5e52f0e, phase: 3, verdict: ACCEPT}
+    notes: "Phase 3 Unit 3a — TOON serializer + 5 read-only tools. 28 tests pass (10 toon + 18 tools)."
+
+  - id: "3b"
+    files:
+      - foreman-mcp/src/tools/writeLedger.ts
+      - foreman-mcp/src/tools/writeProgress.ts
+      - foreman-mcp/src/tools/normalizeReview.ts
+      - foreman-mcp/tests/writeTools.test.ts
+    exports:
+      - "function handleWriteLedger(filePath: string, rawInput: unknown): Promise<string>"
+      - "function handleWriteProgress(filePath: string, rawInput: unknown, docsDir?: string): Promise<string>"
+      - "function normalizeReview(reviewer: string, rawText: string): { data: NormalizedReview; text: string }"
+      - "interface ReviewFinding { severity: 'critical'|'high'|'medium'|'low'; file: string; line: string; description: string }"
+      - "interface NormalizedReview { reviewer: string; findings: ReviewFinding[]; raw_length: number }"
+    status: ACCEPTED
+    workers:
+      - {id: a17785cd311e93c9d, phase: 3, verdict: ACCEPT}
+      - {id: a12b9f626d85176dd, phase: 3, verdict: ACCEPT, note: "Fix worker — normalizeReview parser bug"}
+    notes: "Phase 3 Unit 3b — write tools + review normalizer. 23 tests pass (21 original + 2 regression)."
+
+  - id: "4a"
+    files:
+      - foreman-mcp/src/server.ts
+      - foreman-mcp/src/skills/project-planner.md
+      - foreman-mcp/src/skills/implementor.md
+      - foreman-mcp/tests/integration.test.ts
+    exports:
+      - "interface ServerConfig { ledgerPath?: string; progressPath?: string; docsDir?: string }"
+      - "function createServer(config?: ServerConfig): Promise<McpServer>"
+    status: ACCEPTED
+    workers:
+      - {id: a98687c1de86a4560, phase: 4, verdict: ACCEPT}
+      - {id: a0306c414817362f0, phase: 4, verdict: ACCEPT, note: "Fix worker — skills path resolution + implementor test coverage"}
+    notes: "Phase 4 Unit 4a — MCP server wiring + skill stubs + integration tests. 10 tests pass."
+
+gates:
+  - phase: 1
+    g1_contract: PASS
+    g2_assertion: PASS
+    g3_spec_fidelity: PASS
+    g4_test_impact: PASS
+  - phase: 2
+    g1_contract: PASS
+    g2_assertion: PASS
+    g3_spec_fidelity: PASS
+    g4_test_impact: PASS
+  - phase: 3
+    g1_contract: PASS
+    g2_assertion: PASS
+    g3_spec_fidelity: PASS
+    g4_test_impact: PASS
+  - phase: 4
+    g1_contract: PASS
+    g2_assertion: PASS
+    g3_spec_fidelity: PASS
+    g4_test_impact: PASS
+
+decisions:
+  - unit: "1a"
+    what: "Per-path mutex registry instead of single global lock"
+    why: "Different ledger files can be written independently without contention"
+  - unit: "1b"
+    what: "Separate mutex instance from ledger (progressLockRegistry)"
+    why: "Spec requires separate mutex — ledger and progress are independent resources"
+  - unit: "3a"
+    what: "readLedger query:full returns JSON, not TOON"
+    why: "Design-summary serialization policy says JSON for deeply nested/irregular data. The full ledger is nested (phases→units→rejections)."
+  - unit: "4a"
+    what: "Skills path resolved with fallback from dist/ to src/skills/"
+    why: "tsc doesn't copy .md assets to dist/. Fallback ensures production and dev both work."
+
+codex_reviews:
+  - phase: 1
+    status: COMPLETED
+    findings:
+      - id: 1
+        severity: MEDIUM
+        summary: "Phase name drift — progress units stored phase key instead of phase name"
+        verdict: CONFIRMED
+        reason: "Fixed by worker a03b9"
+      - id: 2
+        severity: LOW
+        summary: "Ledger is THE workflow authority — host plan/task state is ephemeral"
+        verdict: REJECTED
+        reason: "Architectural decision, not a code bug — documented in PROGRESS.md"
+      - id: 3
+        severity: LOW
+        summary: "Implementor must run via SkillTool only"
+        verdict: REJECTED
+        reason: "Execution path concern — Phase 4 will address via skill frontmatter"
+    deferred_concerns: []
+
+  - phase: 2
+    status: COMPLETED
+    findings:
+      - id: 1
+        severity: MEDIUM
+        summary: "Timeout test doesn't verify partial output or SIGKILL escalation"
+        verdict: CONFIRMED
+        reason: "Test strengthened — now writes 'partial' before stalling and asserts it's preserved"
+      - id: 2
+        severity: LOW
+        summary: "Stdin test doesn't fail on unexpected data arrival"
+        verdict: CONFIRMED
+        reason: "Test strengthened — added 'data' handler that exits non-zero if data arrives"
+    deferred_concerns:
+      - "SIGKILL escalation path (SIGTERM-ignoring process) not tested — would need 5s+ test, deferred"
+
+  - phase: 3
+    status: COMPLETED
+    findings:
+      - id: 1
+        severity: HIGH
+        summary: "readLedger full query returns JSON instead of TOON"
+        verdict: REJECTED
+        reason: "Design-summary serialization policy says JSON for deeply nested/irregular data. The full ledger (phases→units→rejections) qualifies. TOON is used for the list queries (verdicts, rejections, phase_gates)."
+      - id: 2
+        severity: HIGH
+        summary: "writeProgress markdown regeneration is optional and unsynchronized"
+        verdict: REJECTED
+        reason: "Markdown is 'rendered view, not authoritative' (spec Change 4). JSON state IS synchronized. MCP calls are sequential per-server (spec Change 2), so concurrent writes through MCP can't race."
+      - id: 3
+        severity: MEDIUM
+        summary: "normalizeReview parser drops description after severity-only lines"
+        verdict: CONFIRMED
+        reason: "Parser bug — when severity line has no body text, subsequent lines weren't accumulated. Fixed by worker a12b9f626d85176dd."
+      - id: 4
+        severity: MEDIUM
+        summary: "toTable doesn't escape pipes in cell content"
+        verdict: REJECTED
+        reason: "TOON is a simple spec-defined format with no escape mechanism. Data sources are controlled (unit IDs, statuses, timestamps). Theoretical concern for a v2 enhancement."
+    deferred_concerns:
+      - "toTable pipe escaping — revisit if free-form user text enters TOON tables in a future phase"
+
+  - phase: 4
+    status: COMPLETED
+    findings:
+      - id: 1
+        severity: HIGH
+        summary: "Skills path resolves from __dirname, breaks when running from dist/"
+        verdict: CONFIRMED
+        reason: "tsc doesn't copy .md assets. dist/skills/ won't exist. Fixed by adding fileExists check with fallback to ../src/skills/. Also replaced silent catch with stderr warning."
+      - id: 2
+        severity: MEDIUM
+        summary: "Integration tests only exercise src path, not dist path"
+        verdict: REJECTED
+        reason: "Spec requires InMemoryTransport test client (MCP SDK testing pattern). Build pipeline testing is a CI concern, not a Phase 4 unit test requirement. Finding 1 fix addresses the underlying risk."
+      - id: 3
+        severity: LOW
+        summary: "Resource content tests only cover planner, not implementor"
+        verdict: CONFIRMED
+        reason: "Added test asserting implementor resource contains disableSlashCommand: true, slash-command guard text, and ledger prohibition."
+    deferred_concerns:
+      - "Pre-existing tsc --noEmit error in writeLedger.ts:17 (unit_id can be undefined for UpdatePhaseGateInput) — Phase 3 issue, not Phase 4 regression"
+
+rejections: []
