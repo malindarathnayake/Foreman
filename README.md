@@ -14,7 +14,7 @@
 
 ## Why This Exists
 
-AI coding agents (Claude Code, Cursor, Cline) are good at writing code but bad at staying on track. On multi-file, multi-phase projects they lose context across sessions, skip steps, can't resume after crashes, and leave no audit trail.
+AI coding agents (Claude Code, Cursor, Cline) are good at writing code but bad at staying on track. On multi-file, multi-phase projects they lose context across sessions, skip steps, may lose state after crashes, and leave no structured audit trail at the project level.
 
 ### Why not just a skill?
 
