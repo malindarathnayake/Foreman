@@ -172,6 +172,18 @@ export function truncateProgress(
     ? `${nextUnit.id} (${nextUnit.phase}): ${nextUnit.notes}`
     : "none"
 
+  // session_hint: actionable directive for the LLM
+  let sessionHint: string
+  if (totalCount === 0) {
+    sessionHint = "No units found. Run foreman:spec-generator to create the implementation plan."
+  } else if (completedCount === totalCount) {
+    sessionHint = `All ${totalCount} units complete. Run phase checkpoint, then start a new session for the next phase.`
+  } else if (nextUnit) {
+    sessionHint = `Resume at ${nextUnit.id} (${nextUnit.phase}). ${completedCount}/${totalCount} complete.`
+  } else {
+    sessionHint = `Phase ${summaryPhase} in progress. ${completedCount}/${totalCount} complete.`
+  }
+
   const status: StatusSummary = {
     phase: summaryPhase,
     last_completed: lastCompleted,
@@ -179,6 +191,7 @@ export function truncateProgress(
     blocked: "none",
     completed_count: completedCount,
     total_count: totalCount,
+    session_hint: sessionHint,
   }
 
   return {

@@ -25,9 +25,9 @@ afterEach(async () => {
 })
 
 describe("bundleStatus", () => {
-  it("returns TOON output containing bundle_version: 0.0.3", async () => {
+  it("returns TOON output containing bundle_version: 0.0.3-1", async () => {
     const result = await bundleStatus()
-    expect(result).toContain("bundle_version: 0.0.3")
+    expect(result).toContain("bundle_version: 0.0.3-1")
   })
 
   it("returns output containing compatible: true", async () => {
@@ -130,6 +130,38 @@ describe("handleReadLedger", () => {
 })
 
 describe("handleReadProgress", () => {
+  it("returns SESSION_HINT section before STATUS", async () => {
+    const result = await handleReadProgress(progressPath)
+    expect(result).toContain("SESSION_HINT")
+    const hintIdx = result.indexOf("SESSION_HINT")
+    const statusIdx = result.indexOf("STATUS")
+    expect(hintIdx).toBeLessThan(statusIdx)
+  })
+
+  it("session_hint says run spec-generator when no units exist", async () => {
+    const result = await handleReadProgress(progressPath)
+    expect(result).toContain("foreman:spec-generator")
+  })
+
+  it("session_hint says resume at next unit when units are pending", async () => {
+    await writeProgress(progressPath, {
+      operation: "update_status",
+      data: { unit_id: "u1", phase: "p1", status: "in_progress", notes: "working" },
+    })
+    const result = await handleReadProgress(progressPath)
+    expect(result).toContain("Resume at u1")
+  })
+
+  it("session_hint says run checkpoint when all units complete", async () => {
+    await writeProgress(progressPath, {
+      operation: "complete_unit",
+      data: { unit_id: "u1", phase: "p1", completed_at: "2026-04-06T10:00:00Z", notes: "done" },
+    })
+    const result = await handleReadProgress(progressPath)
+    expect(result).toContain("All 1 units complete")
+    expect(result).toContain("checkpoint")
+  })
+
   it("returns output with STATUS section on empty progress file", async () => {
     const result = await handleReadProgress(progressPath)
     expect(result).toContain("STATUS")
