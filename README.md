@@ -94,12 +94,36 @@ Add Foreman to your MCP settings:
 <details>
 <summary><strong>Claude Code</strong> (~/.claude/settings.json)</summary>
 
+If installed globally:
+```json
+{
+  "mcpServers": {
+    "foreman": {
+      "command": "foreman-mcp"
+    }
+  }
+}
+```
+
+Via npx (no install):
 ```json
 {
   "mcpServers": {
     "foreman": {
       "command": "npx",
       "args": ["-y", "@malindarathnayake/foreman-mcp"]
+    }
+  }
+}
+```
+
+On Windows, prefix with `cmd`:
+```json
+{
+  "mcpServers": {
+    "foreman": {
+      "command": "cmd",
+      "args": ["/c", "foreman-mcp"]
     }
   }
 }
