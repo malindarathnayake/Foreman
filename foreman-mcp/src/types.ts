@@ -119,6 +119,7 @@ export interface StatusSummary {
   blocked: string
   completed_count: number
   total_count: number
+  session_hint: string
 }
 
 export interface TruncatedView {

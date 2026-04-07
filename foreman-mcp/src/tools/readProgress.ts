@@ -6,7 +6,10 @@ export async function handleReadProgress(filePath: string, lastNCompleted?: numb
   const view = truncateProgress(progress, lastNCompleted)
 
   // Format as TOON sections
-  let output = "STATUS\n"
+  let output = "SESSION_HINT\n"
+  output += toKeyValue({ hint: view.status.session_hint })
+
+  output += "\nSTATUS\n"
   output += toKeyValue({
     phase: view.status.phase,
     last_completed: view.status.last_completed,
