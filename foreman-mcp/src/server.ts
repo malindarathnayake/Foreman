@@ -30,7 +30,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   const docsDir = config?.docsDir ?? "Docs"
 
   const server = new McpServer(
-    { name: "foreman", version: "0.0.3-2" },
+    { name: "foreman", version: "0.0.3-3" },
     { capabilities: { resources: {}, tools: {} } }
   )
 

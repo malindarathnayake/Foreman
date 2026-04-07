@@ -70,8 +70,8 @@ The **skills are the workers** — they do the thinking and the coding. The **MC
 Download the pre-built tarball from the repo and install directly:
 
 ```bash
-curl -LO https://github.com/malindarathnayake/Foreman/raw/main/artifacts/malindarathnayake-foreman-mcp-0.0.3-2.tgz
-npm install -g malindarathnayake-foreman-mcp-0.0.3-2.tgz
+curl -LO https://github.com/malindarathnayake/Foreman/raw/main/artifacts/malindarathnayake-foreman-mcp-0.0.3-3.tgz
+npm install -g malindarathnayake-foreman-mcp-0.0.3-3.tgz
 ```
 
 **Option B: GitHub Packages registry**

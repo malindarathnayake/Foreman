@@ -121,6 +121,69 @@ describe("ledger", () => {
     expect(rej[1].msg).toBe("Insufficient tests")
   })
 
+  // ─── Pitboss enforcement tests ───────────────────────────────────────────
+
+  it("set_verdict pass is BLOCKED without prior delegation", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "ip" },
+    })
+
+    await expect(
+      writeLedger(ledgerPath, {
+        operation: "set_verdict",
+        phase: "p1",
+        unit_id: "u1",
+        data: { v: "pass" },
+      })
+    ).rejects.toThrow("VERDICT BLOCKED")
+  })
+
+  it("set_verdict pass succeeds after delegation with brief", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "Worker brief: implement unit u1 types and constants per handoff spec section 1a" },
+    })
+
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass" },
+    })
+
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.units.u1.v).toBe("pass")
+    expect(ledger.phases.p1.units.u1.w).toContain("Worker brief")
+  })
+
+  it("delegation with too-short brief is rejected", async () => {
+    await expect(
+      writeLedger(ledgerPath, {
+        operation: "set_unit_status",
+        phase: "p1",
+        unit_id: "u1",
+        data: { s: "delegated", brief: "short" },
+      })
+    ).rejects.toThrow("DELEGATION REQUIRED")
+  })
+
+  it("set_verdict fail is allowed without delegation", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "fail" },
+    })
+
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.units.u1.v).toBe("fail")
+  })
+
   it("update_phase_gate sets the gate value correctly", async () => {
     await writeLedger(ledgerPath, {
       operation: "update_phase_gate",

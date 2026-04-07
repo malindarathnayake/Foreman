@@ -1,6 +1,6 @@
 ---
 name: foreman:design-partner
-version: 0.0.3-2
+version: 0.0.3-3
 description: Collaborative engineering design sessions. Pushes back on vague requirements, forces decisions, captures decisions in structured format. First stage of the Foreman pipeline.
 ---
 
