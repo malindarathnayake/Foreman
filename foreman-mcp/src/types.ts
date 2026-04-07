@@ -9,7 +9,7 @@ export interface Rejection {
 }
 
 export interface Unit {
-  s: "pending" | "ip" | "done" | "fail"
+  s: "pending" | "ip" | "delegated" | "done" | "fail"
   v: "pass" | "fail" | "pending"
   w: string | null
   rej: Rejection[]
@@ -34,7 +34,8 @@ const SetUnitStatusInput = z.object({
   unit_id: z.string(),
   phase: z.string(),
   data: z.object({
-    s: z.enum(["pending", "ip", "done", "fail"]),
+    s: z.enum(["pending", "ip", "delegated", "done", "fail"]),
+    brief: z.string().optional(),
   }),
 })
 

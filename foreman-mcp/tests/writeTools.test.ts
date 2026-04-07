@@ -60,6 +60,13 @@ describe("handleWriteLedger", () => {
   })
 
   it("set_verdict operation returns confirmation with correct operation", async () => {
+    // Must delegate before passing verdict (pitboss enforcement)
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "Worker brief: implement unit u1 types and constants per spec" },
+    })
     const result = await handleWriteLedger(ledgerPath, {
       operation: "set_verdict",
       phase: "p1",

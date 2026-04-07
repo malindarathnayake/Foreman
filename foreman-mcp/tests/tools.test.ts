@@ -25,9 +25,9 @@ afterEach(async () => {
 })
 
 describe("bundleStatus", () => {
-  it("returns TOON output containing bundle_version: 0.0.3-2", async () => {
+  it("returns TOON output containing bundle_version: 0.0.3-3", async () => {
     const result = await bundleStatus()
-    expect(result).toContain("bundle_version: 0.0.3-2")
+    expect(result).toContain("bundle_version: 0.0.3-3")
   })
 
   it("returns output containing compatible: true", async () => {
@@ -101,6 +101,13 @@ describe("handleReadLedger", () => {
   })
 
   it("returns verdicts table for query: verdicts", async () => {
+    // Must delegate before passing verdict (pitboss enforcement)
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "Worker brief: implement unit u1 types and constants per spec" },
+    })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",
       phase: "p1",
