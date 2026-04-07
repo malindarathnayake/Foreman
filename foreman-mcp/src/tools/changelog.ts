@@ -7,6 +7,7 @@ interface ChangelogEntry {
 }
 
 const CHANGELOG: ChangelogEntry[] = [
+  { version: "0.0.3-2", date: "2026-04-07", description: "session_hint enforces pitboss/worker pattern — workflow directive tells remote sessions to read implementor skill and deliberate with Codex CLI" },
   { version: "0.0.3-1", date: "2026-04-06", description: "session_hint in read_progress output — actionable directive for LLM session start" },
   { version: "0.0.3", date: "2026-04-05", description: "Tool schema enums for write_ledger/write_progress operations, design-partner YIELD directives for interactive pause" },
   { version: "0.0.2.1", date: "2026-04-04", description: "DX fix — document valid operations in write_ledger/write_progress tool descriptions, fix server version mismatch" },

@@ -92,7 +92,7 @@ describe("read skill resource — verify content", () => {
     expect(result.contents).toHaveLength(1)
     const text = result.contents[0].text as string
     expect(text).toContain("name: foreman:design-partner")
-    expect(text).toContain("version: 0.0.3-1")
+    expect(text).toContain("version: 0.0.3-2")
     expect(text).toContain("mcp__foreman__capability_check")
     expect(text).toContain("Foreman MCP bundle")
   })
@@ -102,7 +102,7 @@ describe("read skill resource — verify content", () => {
     expect(result.contents).toHaveLength(1)
     const text = result.contents[0].text as string
     expect(text).toContain("name: foreman:spec-generator")
-    expect(text).toContain("version: 0.0.3-1")
+    expect(text).toContain("version: 0.0.3-2")
     expect(text).toContain("mcp__foreman__write_ledger")
     expect(text).toContain("G1:")
   })
@@ -111,7 +111,7 @@ describe("read skill resource — verify content", () => {
     const result = await client.readResource({ uri: "skill://foreman/implementor" })
     expect(result.contents).toHaveLength(1)
     const text = result.contents[0].text as string
-    expect(text).toContain("version: 0.0.3-1")
+    expect(text).toContain("version: 0.0.3-2")
     expect(text).toContain("disableSlashCommand: true")
     expect(text).toContain("If you are running as a slash command")
     expect(text).toContain("mcp__foreman__read_ledger")
@@ -124,12 +124,12 @@ describe("bundle_status round-trip", () => {
     await setupServer()
   })
 
-  it("returns bundle_version and 0.0.3-1", async () => {
+  it("returns bundle_version and 0.0.3-2", async () => {
     const result = await client.callTool({ name: "bundle_status", arguments: {} })
     const content = result.content as Array<{ type: string; text: string }>
     expect(content[0].type).toBe("text")
     expect(content[0].text).toContain("bundle_version")
-    expect(content[0].text).toContain("0.0.3-1")
+    expect(content[0].text).toContain("0.0.3-2")
   })
 })
 

@@ -1,6 +1,6 @@
 ---
 name: foreman:implementor
-version: 0.0.3-1
+version: 0.0.3-2
 description: Pit-boss implementation orchestrator. Opus orchestrates disposable Sonnet workers, validates against spec. Third stage of the Foreman pipeline.
 disableSlashCommand: true
 ---

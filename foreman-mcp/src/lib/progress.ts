@@ -173,15 +173,30 @@ export function truncateProgress(
     : "none"
 
   // session_hint: actionable directive for the LLM
+  // This is the PRIMARY instruction a remote session sees — it must convey
+  // both WHERE to resume and HOW to implement (pitboss pattern, not direct code).
+  const workflowDirective =
+    "WORKFLOW: Read skill://foreman/implementor for the full protocol. " +
+    "Do NOT write code directly — use the pitboss/worker pattern: " +
+    "spawn Sonnet workers via Agent tool, validate against spec, run gates G1–G5. " +
+    "At phase checkpoints, deliberate with Codex CLI (mcp__foreman__capability_check) before marking complete."
+
   let sessionHint: string
   if (totalCount === 0) {
     sessionHint = "No units found. Run foreman:spec-generator to create the implementation plan."
   } else if (completedCount === totalCount) {
-    sessionHint = `All ${totalCount} units complete. Run phase checkpoint, then start a new session for the next phase.`
+    sessionHint =
+      `All ${totalCount} units complete. Run phase checkpoint: ` +
+      "deliberate with Codex CLI (capability_check → run-codex review), " +
+      "then start a new session for the next phase."
   } else if (nextUnit) {
-    sessionHint = `Resume at ${nextUnit.id} (${nextUnit.phase}). ${completedCount}/${totalCount} complete.`
+    sessionHint =
+      `Resume at ${nextUnit.id} (${nextUnit.phase}). ${completedCount}/${totalCount} complete. ` +
+      workflowDirective
   } else {
-    sessionHint = `Phase ${summaryPhase} in progress. ${completedCount}/${totalCount} complete.`
+    sessionHint =
+      `Phase ${summaryPhase} in progress. ${completedCount}/${totalCount} complete. ` +
+      workflowDirective
   }
 
   const status: StatusSummary = {

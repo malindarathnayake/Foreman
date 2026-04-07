@@ -1,6 +1,6 @@
 ---
 name: foreman:spec-generator
-version: 0.0.3-1
+version: 0.0.3-2
 description: Generate formal implementation documents from a design summary. Produces spec, handoff, progress tracker, and testing harness. Second stage of the Foreman pipeline.
 ---
 
