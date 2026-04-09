@@ -1,17 +1,13 @@
 ---
 name: foreman:implementor
-version: 0.0.3-3
+version: 0.0.4
 description: Pit-boss implementation orchestrator. Opus orchestrates disposable Sonnet workers, validates against spec. Third stage of the Foreman pipeline.
 disableSlashCommand: true
 ---
 
-Note: This skill is delivered by the Foreman MCP bundle. To customize it,
-create a local override at .claude/skills/foreman-implementor/SKILL.md
-
-If you are running as a slash command (not via SkillTool), STOP.
-Tell the user: "The Foreman implementor must be invoked via SkillTool,
-not as a slash command. Use: 'run the foreman:implementor skill' instead
-of '/foreman-implementor'."
+Note: This skill is delivered by the Foreman MCP bundle via the
+`mcp__foreman__pitboss_implementor` tool. To customize it, create a
+local override at .claude/skills/implementor/SKILL.md
 
 CRITICAL: Never write to Docs/.foreman-ledger.json using FileWriteTool or Edit.
 All ledger mutations MUST go through mcp__foreman__write_ledger.

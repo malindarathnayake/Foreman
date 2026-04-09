@@ -7,6 +7,7 @@ interface ChangelogEntry {
 }
 
 const CHANGELOG: ChangelogEntry[] = [
+  { version: "0.0.4", date: "2026-04-08", description: "Skill activation tools — design_partner, spec_generator, pitboss_implementor pipe skill protocols into LLM context as tools; skill:// resources kept for backward compatibility" },
   { version: "0.0.3-3", date: "2026-04-07", description: "Pitboss enforcement gate — set_verdict(pass) blocked without prior delegation; delegation requires worker brief (min 20 chars)" },
   { version: "0.0.3-2", date: "2026-04-07", description: "session_hint enforces pitboss/worker pattern — workflow directive tells remote sessions to read implementor skill and deliberate with Codex CLI" },
   { version: "0.0.3-1", date: "2026-04-06", description: "session_hint in read_progress output — actionable directive for LLM session start" },

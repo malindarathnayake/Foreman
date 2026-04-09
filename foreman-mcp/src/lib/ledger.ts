@@ -86,7 +86,7 @@ function applyOperation(ledger: LedgerFile, operation: WriteLedgerInput): void {
           throw new Error(
             "DELEGATION REQUIRED: set_unit_status with s:'delegated' requires a 'brief' field (min 20 chars) " +
             "containing the worker brief summary. The pitboss must build a brief and spawn a Sonnet worker — " +
-            "do NOT write implementation code directly. Read skill://foreman/implementor for the full protocol."
+            "do NOT write implementation code directly. Call mcp__foreman__pitboss_implementor to load the full protocol."
           )
         }
         ledger.phases[phase].units[unit_id].w = data.brief
@@ -105,7 +105,7 @@ function applyOperation(ledger: LedgerFile, operation: WriteLedgerInput): void {
             "VERDICT BLOCKED: Cannot set verdict 'pass' without prior delegation. " +
             "Unit must go through: set_unit_status(s:'ip') → set_unit_status(s:'delegated', brief:'...') → set_verdict(v:'pass'). " +
             "The pitboss must spawn a Sonnet worker via Agent tool before marking pass. " +
-            "Read skill://foreman/implementor for the full protocol."
+            "Call mcp__foreman__pitboss_implementor to load the full protocol."
           )
         }
       }

@@ -176,14 +176,14 @@ export function truncateProgress(
   // This is the PRIMARY instruction a remote session sees — it must convey
   // both WHERE to resume and HOW to implement (pitboss pattern, not direct code).
   const workflowDirective =
-    "WORKFLOW: Read skill://foreman/implementor for the full protocol. " +
+    "WORKFLOW: Call mcp__foreman__pitboss_implementor to load the full protocol. " +
     "Do NOT write code directly — use the pitboss/worker pattern: " +
     "spawn Sonnet workers via Agent tool, validate against spec, run gates G1–G5. " +
     "At phase checkpoints, deliberate with Codex CLI (mcp__foreman__capability_check) before marking complete."
 
   let sessionHint: string
   if (totalCount === 0) {
-    sessionHint = "No units found. Run foreman:spec-generator to create the implementation plan."
+    sessionHint = "No units found. Call mcp__foreman__spec_generator to create the implementation plan."
   } else if (completedCount === totalCount) {
     sessionHint =
       `All ${totalCount} units complete. Run phase checkpoint: ` +

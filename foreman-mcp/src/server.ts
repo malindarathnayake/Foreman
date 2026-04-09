@@ -14,6 +14,9 @@ import { capabilityCheck } from "./tools/capabilityCheck.js"
 import { handleWriteLedger } from "./tools/writeLedger.js"
 import { handleWriteProgress } from "./tools/writeProgress.js"
 import { normalizeReview } from "./tools/normalizeReview.js"
+import { activateImplementor } from "./tools/activateImplementor.js"
+import { activateDesignPartner } from "./tools/activateDesignPartner.js"
+import { activateSpecGenerator } from "./tools/activateSpecGenerator.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -30,7 +33,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   const docsDir = config?.docsDir ?? "Docs"
 
   const server = new McpServer(
-    { name: "foreman", version: "0.0.3-3" },
+    { name: "foreman", version: "0.0.4" },
     { capabilities: { resources: {}, tools: {} } }
   )
 
@@ -174,10 +177,77 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
 
   // Resolve skills directory — works from both src/ (dev) and dist/ (production)
   let skillsDir = path.resolve(__dirname, "skills")
-  // If running from dist/, skills are in the sibling src/skills/ directory
   if (!await fileExists(skillsDir)) {
     skillsDir = path.resolve(__dirname, "..", "src", "skills")
   }
+
+  // ── Skill Activation Tools ──────────────────────────────────────────────────
+
+  server.registerTool(
+    "pitboss_implementor",
+    {
+      description: [
+        "Activates the Foreman pitboss-implementor protocol.",
+        "Returns the full orchestration skill: pit-boss/worker pattern,",
+        "spec-driven validation, gates G1–G5, and Codex/Gemini deliberation",
+        "(falls back to Opus agents when external CLIs are unavailable).",
+        "The LLM MUST follow the returned instructions to orchestrate implementation.",
+        "Pass optional context to indicate resume state or handoff path.",
+      ].join(" "),
+      inputSchema: {
+        context: z.string().optional(),
+      },
+    },
+    async (args, _extra) => {
+      const text = await activateImplementor(skillsDir, args.context)
+      return { content: [{ type: "text" as const, text }] }
+    }
+  )
+
+  server.registerTool(
+    "design_partner",
+    {
+      description: [
+        "Activates the Foreman design-partner protocol.",
+        "Collaborative engineering design session that pushes back on vague requirements,",
+        "forces decisions on ambiguities, and runs multi-model deliberation.",
+        "Produces Docs/design-summary.md. First stage of the Foreman pipeline.",
+        "The LLM MUST follow the returned instructions to run the design session.",
+        "Pass optional context to describe the project or problem being designed.",
+      ].join(" "),
+      inputSchema: {
+        context: z.string().optional(),
+      },
+    },
+    async (args, _extra) => {
+      const text = await activateDesignPartner(skillsDir, args.context)
+      return { content: [{ type: "text" as const, text }] }
+    }
+  )
+
+  server.registerTool(
+    "spec_generator",
+    {
+      description: [
+        "Activates the Foreman spec-generator protocol.",
+        "Transforms a design summary into formal implementation documents:",
+        "spec.md, handoff.md, PROGRESS.md, testing-harness.md.",
+        "Seeds the Foreman ledger and progress tracker. Second stage of the Foreman pipeline.",
+        "The LLM MUST follow the returned instructions to generate spec documents.",
+        "Pass optional context to indicate the design summary source.",
+      ].join(" "),
+      inputSchema: {
+        context: z.string().optional(),
+      },
+    },
+    async (args, _extra) => {
+      const text = await activateSpecGenerator(skillsDir, args.context)
+      return { content: [{ type: "text" as const, text }] }
+    }
+  )
+
+  // ── Skill Resource Registration ─────────────────────────────────────────────
+
   let skillFiles: string[] = []
   try {
     const entries = await fs.readdir(skillsDir)

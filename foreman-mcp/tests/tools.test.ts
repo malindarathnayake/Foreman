@@ -25,9 +25,9 @@ afterEach(async () => {
 })
 
 describe("bundleStatus", () => {
-  it("returns TOON output containing bundle_version: 0.0.3-3", async () => {
+  it("returns TOON output containing bundle_version: 0.0.4", async () => {
     const result = await bundleStatus()
-    expect(result).toContain("bundle_version: 0.0.3-3")
+    expect(result).toContain("bundle_version: 0.0.4")
   })
 
   it("returns output containing compatible: true", async () => {
@@ -145,9 +145,9 @@ describe("handleReadProgress", () => {
     expect(hintIdx).toBeLessThan(statusIdx)
   })
 
-  it("session_hint says run spec-generator when no units exist", async () => {
+  it("session_hint says call spec_generator tool when no units exist", async () => {
     const result = await handleReadProgress(progressPath)
-    expect(result).toContain("foreman:spec-generator")
+    expect(result).toContain("mcp__foreman__spec_generator")
   })
 
   it("session_hint says resume at next unit when units are pending", async () => {
