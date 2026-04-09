@@ -34,17 +34,17 @@ The skills provide the *workflow* (design → spec → implement → gate). The 
 
 ### How Foreman Compares
 
-Most AI coding tools are either plumbing (single-purpose MCP servers) or single-shot executors (write code from a prompt). None enforce a design-before-code pipeline with independent review and persistent audit trails.
+The AI coding landscape in 2026 has matured — Cursor has Plan Mode, Codex CLI has session persistence, Devin can orchestrate child agents. But none enforce a design-before-code pipeline with cross-model deliberation and a structured audit ledger.
 
-| Feature | Foreman | MCP Servers | Cursor/Windsurf/Cline | Codex CLI | Devin/SWE-Agent |
-|---------|---------|-------------|----------------------|-----------|-----------------|
-| Design before code | Enforced stage | N/A | Optional/skipped | No | Skipped |
-| Independent review | Codex + Gemini (different models) | N/A | Same model self-review | N/A | Same agent |
-| Audit trail (ledger) | Built in | None | None | None | None |
-| Session persistence | Progress + ledger survive restarts | Stateless | Lost on new session | Single-shot | Partial |
-| Pit-boss/worker separation | Opus validates, Sonnet writes | N/A | Same agent does both | Single agent | Same agent |
-| MCP-delivered, locally overridable | Yes | Hardcoded | Hardcoded | N/A | Hardcoded |
-| Multi-model deliberation | Codex + Gemini + Opus at phase gates | No | No | No | No |
+| Feature | Foreman | Cursor 3 | Codex CLI | Devin | MCP Servers |
+|---------|---------|----------|-----------|-------|-------------|
+| Design before code | Enforced stage | Plan Mode (optional) | No | Needs clear upfront spec | N/A |
+| Independent review | Codex + Gemini (different models) | BugBot (8-pass, same model) | `/review` (same model) | Devin Review (same agent) | N/A |
+| Structured audit ledger | Verdicts, rejections, phase gates | Enterprise audit logs | Session threads (SQLite) | Session logs | None |
+| Session persistence | Ledger + progress survive restarts | Plans in `.cursor/plans/` | SQLite threads, `resume` | Partial | Stateless |
+| Writer/reviewer separation | Opus validates, Sonnet writes | Same agent writes + reviews | Single agent | Same agent | N/A |
+| Multi-model deliberation | Codex + Gemini + Opus at phase gates | `/best-of-n` (parallel, no gates) | No | "Devin manages Devins" (same model) | No |
+| Skill delivery + local override | MCP tools with 3-tier override | Hardcoded | N/A | Playbooks | Hardcoded |
 
 Foreman is a software development governance layer — it doesn't write code, it supervises agents that do and ensures they follow the spec.
 
