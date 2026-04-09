@@ -57,7 +57,7 @@ flowchart TD
 
 The **skills are the workers** — they do the thinking and the coding. The **MCP server is the foreman** — it holds the ledger, validates every status update, and ensures the workers can't corrupt shared state. Workers report to Foreman after every unit. Foreman never writes code.
 
-**~750 tokens idle overhead. 8 tools. 3 skills loaded on-demand.**
+**~750 tokens idle overhead. 11 tools. 3 skills loaded on-demand.**
 
 ---
 
@@ -174,15 +174,17 @@ That's it. Foreman tracks progress, enforces phase gates, and logs everything to
 
 ## What It Does
 
-### Skills (loaded on-demand as MCP resources)
+### Skill Activation Tools (3 tools — the Foreman pipeline)
 
-| Skill | Purpose |
-|-------|---------|
-| `design-partner` | Interactive design sessions with scoping questions, push-back, and YIELD directives that force the agent to stop and wait for user input |
-| `spec-generator` | Transforms a design summary into 4 implementation documents (spec, handoff, progress, testing harness) |
-| `implementor` | Executes the plan unit-by-unit with self-review gates at each phase checkpoint |
+| Tool | Purpose |
+|------|---------|
+| `design_partner` | Activates collaborative design session — scoping questions, push-back, YIELD directives, multi-model deliberation |
+| `spec_generator` | Activates spec generation — transforms design summary into spec, handoff, progress, testing harness; seeds ledger |
+| `pitboss_implementor` | Activates pitboss/worker orchestration — spawns Sonnet workers, validates against spec, runs gates G1-G5 |
 
-### Tools (8 total, enum-typed operations)
+Each tool pipes its full skill protocol into the LLM's context when called. Skills are also available as MCP resources (`skill://foreman/<name>`) for backward compatibility.
+
+### Data Tools (8 tools — enum-typed operations)
 
 | Tool | Purpose |
 |------|---------|
@@ -201,7 +203,7 @@ That's it. Foreman tracks progress, enforces phase gates, and logs everything to
 
 ```mermaid
 graph LR
-    A["AI Agent<br/>(Claude Code, Cursor, Cline)"] <-->|"stdio/MCP<br/>8 tools + 3 skills"| B["Foreman<br/>MCP Server"]
+    A["AI Agent<br/>(Claude Code, Cursor, Cline)"] <-->|"stdio/MCP<br/>11 tools + 3 skills"| B["Foreman<br/>MCP Server"]
     B -->|"read/write"| C[".foreman-ledger.json<br/>(compact JSON)"]
     B -->|"read/write"| D[".foreman-progress.json<br/>(compact JSON)"]
     B -.->|"on-demand"| E["Skills<br/>(markdown resources)"]
@@ -235,7 +237,7 @@ git clone https://github.com/malindarathnayake/foreman.git
 cd foreman/foreman-mcp
 npm install
 npm run build
-npm test          # 86 tests across 7 files
+npm test          # 103 tests across 8 files
 ```
 
 ---
