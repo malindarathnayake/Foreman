@@ -23,7 +23,7 @@ No existing tool combines all of these in a single MCP server:
 - **Bounded context reads** — `read_progress` returns ~400 tokens, not an unbounded file
 - **Phase gates as first-class operations** — pass/fail checkpoints enforced between phases
 - **Compact JSON ledger** — structured audit trail across sessions, across crashes
-- **On-demand skills** — design-partner, spec-generator, and implementor loaded only when needed
+- **Skill activation tools** — design-partner, spec-generator, and implementor protocols injected into LLM context on demand via tool calls
 - **Portable** — works with Claude Code, Cursor, Cline, or any MCP client
 
 ### Why not just a skill?
@@ -39,11 +39,11 @@ Foreman follows a **pitboss/worker** model — the Foreman doesn't write code, i
 ```mermaid
 flowchart TD
     User["User<br/>'Build me a CLI pomodoro timer'"]
-    DP["design-partner (skill)<br/>Scoping questions → decisions → design summary"]
-    SG["spec-generator (skill)<br/>Design summary → spec, handoff,<br/>progress, testing harness"]
-    IMP["implementor (skill / worker)<br/>Reads handoff → implements unit by unit"]
+    DP["design_partner (tool)<br/>Injects design protocol → scoping questions →<br/>decisions → Docs/design-summary.md"]
+    SG["spec_generator (tool)<br/>Injects spec protocol → spec, handoff,<br/>progress, testing harness → seeds ledger"]
+    IMP["pitboss_implementor (tool)<br/>Injects pitboss protocol → spawns Sonnet workers →<br/>validates against spec → gates G1–G5"]
     LOOP["After each unit:<br/>write_progress → report status<br/>write_ledger → record verdict<br/>read_progress → check what's next"]
-    GATE["At phase boundaries:<br/>write_ledger(update_phase_gate) → pass/fail"]
+    GATE["At phase boundaries:<br/>write_ledger(update_phase_gate) → pass/fail<br/>deliberate with Codex/Gemini or Opus fallback"]
     FMN["Foreman MCP Server<br/>validates writes, serializes state,<br/>serves bounded progress, enforces enums"]
 
     User --> DP
@@ -55,7 +55,7 @@ flowchart TD
     GATE --> FMN
 ```
 
-The **skills are the workers** — they do the thinking and the coding. The **MCP server is the foreman** — it holds the ledger, validates every status update, and ensures the workers can't corrupt shared state. Workers report to Foreman after every unit. Foreman never writes code.
+The **skill activation tools are the pipeline** — each tool injects a protocol that the LLM follows. The **pitboss never writes code** — it spawns disposable Sonnet workers and validates their output. The **MCP server is the foreman** — it holds the ledger, validates every status update, and ensures workers can't corrupt shared state.
 
 **~750 tokens idle overhead. 11 tools. 3 skills loaded on-demand.**
 
@@ -202,31 +202,49 @@ Each tool pipes its full skill protocol into the LLM's context when called. Skil
 ## Architecture
 
 ```mermaid
-graph LR
-    A["AI Agent<br/>(Claude Code, Cursor, Cline)"] <-->|"stdio/MCP<br/>11 tools + 3 skills"| B["Foreman<br/>MCP Server"]
-    B -->|"read/write"| C[".foreman-ledger.json<br/>(compact JSON)"]
-    B -->|"read/write"| D[".foreman-progress.json<br/>(compact JSON)"]
-    B -.->|"on-demand"| E["Skills<br/>(markdown resources)"]
+graph TD
+    Agent["AI Agent<br/>(Claude Code, Cursor, Cline)"]
+
+    subgraph Foreman MCP Server
+        direction TB
+        SKT["Skill Activation Tools<br/>design_partner · spec_generator · pitboss_implementor"]
+        DT["Data Tools<br/>read/write_ledger · read/write_progress<br/>bundle_status · changelog · capability_check · normalize_review"]
+        SL["Skill Loader<br/>project override → user override → bundled"]
+        SK["Skills<br/>design-partner.md · spec-generator.md · implementor.md"]
+    end
+
+    Ledger[".foreman-ledger.json"]
+    Progress[".foreman-progress.json"]
+
+    Agent <-->|"stdio/MCP"| SKT
+    Agent <-->|"stdio/MCP"| DT
+    SKT --> SL
+    SL --> SK
+    DT -->|"mutex-serialized read/write"| Ledger
+    DT -->|"mutex-serialized read/write"| Progress
 ```
 
 **Stack:** TypeScript (ESM) · `@modelcontextprotocol/sdk` · Zod
 **Transport:** stdio (MCP standard)
 **State:** Local JSON files in the project directory
 
-Foreman is designed to minimize context window cost — compact single-line JSON with short keys, TOON (plain-text) tool responses, bounded progress truncation, and on-demand skill loading.
+**How skill activation works:** The LLM calls a skill activation tool (e.g. `design_partner`). The tool resolves the skill file through a 3-tier override chain (project-local → user-global → bundled), and returns the full protocol as the tool response. The protocol is now in the LLM's context and it follows the instructions — no resource URIs, no extra steps.
+
+**Token efficiency:** Compact single-line JSON with short keys, TOON (plain-text) tool responses, bounded progress truncation, and skill protocols loaded only when the tool is called.
 
 ---
 
 ## Skill Overrides
 
-To customize any skill, create a local override:
+When a skill activation tool is called, the skill loader checks for local overrides before falling back to the bundled version:
 
 ```
+.claude/skills/<skill-name>/SKILL.md        # project-local (highest priority)
 ~/.claude/skills/<skill-name>/SKILL.md      # user-global
-.claude/skills/<skill-name>/SKILL.md        # project-local
+<bundled>/skills/<skill-name>.md            # packaged default
 ```
 
-Local skills always take precedence over MCP-delivered skills.
+Override names match the skill file: `design-partner`, `spec-generator`, `implementor`.
 
 ---
 
