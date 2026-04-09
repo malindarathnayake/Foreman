@@ -32,6 +32,22 @@ Skills are markdown prompts — they tell the agent *what to do* but can't enfor
 
 The skills provide the *workflow* (design → spec → implement → gate). The MCP server provides the *infrastructure* that makes the workflow reliable — validated writes, bounded reads, concurrent safety, and agent portability. This is all possible with skills alone. But MCP made sense as the distribution format: one `npx` command gives any MCP-compatible agent the full workflow with validated state tracking, instead of copying markdown files between projects.
 
+### How Foreman Compares
+
+Most AI coding tools are either plumbing (single-purpose MCP servers) or single-shot executors (write code from a prompt). None enforce a design-before-code pipeline with independent review and persistent audit trails.
+
+| Feature | Foreman | MCP Servers | Cursor/Windsurf/Cline | Codex CLI | Devin/SWE-Agent |
+|---------|---------|-------------|----------------------|-----------|-----------------|
+| Design before code | Enforced stage | N/A | Optional/skipped | No | Skipped |
+| Independent review | Codex + Gemini (different models) | N/A | Same model self-review | N/A | Same agent |
+| Audit trail (ledger) | Built in | None | None | None | None |
+| Session persistence | Progress + ledger survive restarts | Stateless | Lost on new session | Single-shot | Partial |
+| Pit-boss/worker separation | Opus validates, Sonnet writes | N/A | Same agent does both | Single agent | Same agent |
+| MCP-delivered, locally overridable | Yes | Hardcoded | Hardcoded | N/A | Hardcoded |
+| Multi-model deliberation | Codex + Gemini + Opus at phase gates | No | No | No | No |
+
+Foreman is a software development governance layer — it doesn't write code, it supervises agents that do and ensures they follow the spec.
+
 ### How it works: the Pitboss architecture
 
 Foreman follows a **pitboss/worker** model — the Foreman doesn't write code, it supervises agents that do.
