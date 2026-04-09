@@ -8,109 +8,27 @@
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg" alt="Node.js" /></a>
 </p>
 
-**An MCP server that adds structured progress tracking, phase gates, and implementation audit trails to AI coding agents.**
+**A software development governance layer for AI coding agents.** Foreman enforces a design → spec → implement pipeline, validates every state change through a structured ledger, and uses independent models (Codex, Gemini) to review work at phase gates. It doesn't write code — it supervises agents that do.
 
----
-
-## Why This Exists
-
-AI coding agents (Claude Code, Cursor, Cline) are good at writing code but bad at staying on track. On multi-file, multi-phase projects they lose context across sessions, skip steps, may lose state after crashes, and leave no structured audit trail at the project level.
-
-No existing tool combines all of these in a single MCP server:
-
-- **Mutex-serialized writes** — concurrent subagents can't corrupt shared state
-- **Enum-typed operations with schema validation** — `"staus"` is rejected at the tool level, not discovered 3 phases later
-- **Bounded context reads** — `read_progress` returns ~400 tokens, not an unbounded file
-- **Phase gates as first-class operations** — pass/fail checkpoints enforced between phases
-- **Compact JSON ledger** — structured audit trail across sessions, across crashes
-- **Skill activation tools** — design-partner, spec-generator, and implementor protocols injected into LLM context on demand via tool calls
-- **Portable** — works with Claude Code, Cursor, Cline, or any MCP client
-
-### Why not just a skill?
-
-Skills are markdown prompts — they tell the agent *what to do* but can't enforce *that it does it*. A skill can say "update PROGRESS.md after each unit" but the agent can forget, hallucinate the update, or silently skip it. There's no validation layer.
-
-The skills provide the *workflow* (design → spec → implement → gate). The MCP server provides the *infrastructure* that makes the workflow reliable — validated writes, bounded reads, concurrent safety, and agent portability. This is all possible with skills alone. But MCP made sense as the distribution format: one `npx` command gives any MCP-compatible agent the full workflow with validated state tracking, instead of copying markdown files between projects.
-
-### How Foreman Compares
-
-The AI coding landscape in 2026 has matured — Cursor has Plan Mode, Codex CLI has session persistence, Devin can orchestrate child agents. But none enforce a design-before-code pipeline with cross-model deliberation and a structured audit ledger.
-
-| Feature | Foreman | Cursor 3 | Codex CLI | Devin | MCP Servers |
-|---------|---------|----------|-----------|-------|-------------|
-| Design before code | Enforced stage | Plan Mode (optional) | No | Needs clear upfront spec | N/A |
-| Independent review | Codex + Gemini (different models) | BugBot (8-pass, same model) | `/review` (same model) | Devin Review (same agent) | N/A |
-| Structured audit ledger | Verdicts, rejections, phase gates | Enterprise audit logs | Session threads (SQLite) | Session logs | None |
-| Session persistence | Ledger + progress survive restarts | Plans in `.cursor/plans/` | SQLite threads, `resume` | Partial | Stateless |
-| Writer/reviewer separation | Opus validates, Sonnet writes | Same agent writes + reviews | Single agent | Same agent | N/A |
-| Multi-model deliberation | Codex + Gemini + Opus at phase gates | `/best-of-n` (parallel, no gates) | No | "Devin manages Devins" (same model) | No |
-| Skill delivery + local override | MCP tools with 3-tier override | Hardcoded | N/A | Playbooks | Hardcoded |
-
-Foreman is a software development governance layer — it doesn't write code, it supervises agents that do and ensures they follow the spec.
-
-### How it works: the Pitboss architecture
-
-Foreman follows a **pitboss/worker** model — the Foreman doesn't write code, it supervises agents that do.
-
-```mermaid
-flowchart TD
-    User["User<br/>'Build me a CLI pomodoro timer'"]
-    DP["design_partner (tool)<br/>Injects design protocol → scoping questions →<br/>decisions → Docs/design-summary.md"]
-    SG["spec_generator (tool)<br/>Injects spec protocol → spec, handoff,<br/>progress, testing harness → seeds ledger"]
-    IMP["pitboss_implementor (tool)<br/>Injects pitboss protocol → spawns Sonnet workers →<br/>validates against spec → gates G1–G5"]
-    LOOP["After each unit:<br/>write_progress → report status<br/>write_ledger → record verdict<br/>read_progress → check what's next"]
-    GATE["At phase boundaries:<br/>write_ledger(update_phase_gate) → pass/fail<br/>deliberate with Codex/Gemini or Opus fallback"]
-    FMN["Foreman MCP Server<br/>validates writes, serializes state,<br/>serves bounded progress, enforces enums"]
-
-    User --> DP
-    DP -->|"Docs/design-summary.md"| SG
-    SG -->|"Docs/spec.md, handoff.md, PROGRESS.md"| IMP
-    IMP --> LOOP
-    IMP --> GATE
-    LOOP --> FMN
-    GATE --> FMN
-```
-
-The **skill activation tools are the pipeline** — each tool injects a protocol that the LLM follows. The **pitboss never writes code** — it spawns disposable Sonnet workers and validates their output. The **MCP server is the foreman** — it holds the ledger, validates every status update, and ensures workers can't corrupt shared state.
-
-**~750 tokens idle overhead. 11 tools. 3 skills loaded on-demand.**
+**11 tools. 3 skill protocols. ~750 tokens idle overhead.**
 
 ---
 
 ## Quick Start
 
-### 1. Install
-
-**Option A: Local install (no auth required)**
-
-Download the pre-built tarball from the repo and install directly:
+### Install
 
 ```bash
 curl -LO https://github.com/malindarathnayake/Foreman/raw/main/artifacts/malindarathnayake-foreman-mcp-0.0.4.tgz
 npm install -g malindarathnayake-foreman-mcp-0.0.4.tgz
 ```
 
-**Option B: GitHub Packages registry**
+Or via GitHub Packages: `npm install -g @malindarathnayake/foreman-mcp` ([setup](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-npm-registry#authenticating-to-github-packages))
 
-```bash
-npm install -g @malindarathnayake/foreman-mcp
-```
+### Configure
 
-> Requires a one-time `.npmrc` setup:
-> ```
-> echo "@malindarathnayake:registry=https://npm.pkg.github.com" >> ~/.npmrc
-> echo "//npm.pkg.github.com/:_authToken=YOUR_GITHUB_TOKEN" >> ~/.npmrc
-> ```
-> Generate a token at **Settings > Developer settings > Personal access tokens** with `read:packages` scope.
+Add to your MCP settings (`~/.claude/settings.json`, `.cursor/mcp.json`, or Cline config):
 
-### 2. Configure your agent
-
-Add Foreman to your MCP settings:
-
-<details>
-<summary><strong>Claude Code</strong> (~/.claude/settings.json)</summary>
-
-If installed globally:
 ```json
 {
   "mcpServers": {
@@ -121,97 +39,101 @@ If installed globally:
 }
 ```
 
+<details>
+<summary>Other install methods (npx, Windows)</summary>
+
 Via npx (no install):
 ```json
-{
-  "mcpServers": {
-    "foreman": {
-      "command": "npx",
-      "args": ["-y", "@malindarathnayake/foreman-mcp"]
-    }
-  }
-}
+{ "mcpServers": { "foreman": { "command": "npx", "args": ["-y", "@malindarathnayake/foreman-mcp"] } } }
 ```
 
-On Windows, prefix with `cmd`:
+Windows:
 ```json
-{
-  "mcpServers": {
-    "foreman": {
-      "command": "cmd",
-      "args": ["/c", "foreman-mcp"]
-    }
-  }
-}
+{ "mcpServers": { "foreman": { "command": "cmd", "args": ["/c", "foreman-mcp"] } } }
 ```
 </details>
 
-<details>
-<summary><strong>Cursor</strong> (.cursor/mcp.json)</summary>
-
-```json
-{
-  "mcpServers": {
-    "foreman": {
-      "command": "npx",
-      "args": ["-y", "@malindarathnayake/foreman-mcp"]
-    }
-  }
-}
-```
-</details>
-
-<details>
-<summary><strong>Cline</strong> (MCP settings)</summary>
-
-```json
-{
-  "mcpServers": {
-    "foreman": {
-      "command": "npx",
-      "args": ["-y", "@malindarathnayake/foreman-mcp"]
-    }
-  }
-}
-```
-</details>
-
-### 3. Use
+### Use
 
 ```
-> call the foreman design_partner tool      # Interactive design session
-> call the foreman spec_generator tool      # Generate implementation docs
-> call the foreman pitboss_implementor tool # Execute the plan unit-by-unit
+> call the foreman design_partner tool      # workshop the design
+> call the foreman spec_generator tool      # generate spec + handoff + progress + test harness
+> call the foreman pitboss_implementor tool # implement unit-by-unit with worker agents
 ```
-
-That's it. Foreman tracks progress, enforces phase gates, and logs everything to a compact ledger — across sessions, across crashes.
 
 ---
 
-## What It Does
+## How It Works
 
-### Skill Activation Tools (3 tools — the Foreman pipeline)
+```mermaid
+flowchart LR
+    subgraph Pipeline
+        DP["design_partner"] --> SG["spec_generator"] --> PI["pitboss_implementor"]
+    end
+
+    subgraph "Per Unit"
+        direction TB
+        W["Sonnet worker<br/>writes code"] --> V["Opus pitboss<br/>validates against spec"]
+        V -->|pass| L["write_ledger<br/>record verdict"]
+        V -->|fail| R["spawn fresh worker<br/>with rejection context"]
+    end
+
+    subgraph "Phase Gate"
+        direction TB
+        G1["Gates G1–G5"] --> D["Deliberation<br/>Codex + Gemini + Opus"]
+        D --> PG["write_ledger<br/>update_phase_gate"]
+    end
+
+    PI --> W
+    L --> G1
+```
+
+Each skill activation tool injects a protocol into the LLM's context when called. The LLM follows the protocol — it doesn't need to figure out which tools to use or in what order.
+
+| Stage | Tool | What happens |
+|-------|------|-------------|
+| **Design** | `design_partner` | Scoping questions, push-back on vague requirements, YIELD directives that force the LLM to stop and wait for user input, multi-model deliberation on ambiguities |
+| **Spec** | `spec_generator` | Transforms design summary into 4 docs (spec, handoff, progress, testing harness), seeds ledger with phase/unit structure |
+| **Implement** | `pitboss_implementor` | Spawns disposable Sonnet workers per unit, validates output against spec, runs self-review gates G1-G5, deliberates with Codex/Gemini at phase boundaries |
+
+**The pitboss never writes code.** It reads the spec, builds a brief, spawns a worker, validates the result, and records the verdict. If the worker fails, it's killed and a fresh one gets the rejection context.
+
+---
+
+## What Makes This Different
+
+The AI coding landscape in 2026 has matured — Cursor has Plan Mode, Codex CLI has session persistence, Devin can orchestrate child agents. But none enforce a design-before-code pipeline with cross-model deliberation and a structured audit ledger.
+
+| | Foreman | Cursor 3 | Codex CLI | Devin |
+|---|---------|----------|-----------|-------|
+| **Design before code** | Enforced | Optional (Plan Mode) | No | Needs upfront spec |
+| **Independent review** | Codex + Gemini (different models) | BugBot (same model, 8 passes) | Same model | Same agent |
+| **Structured ledger** | Verdicts, rejections, phase gates | Enterprise audit logs | SQLite session threads | Session logs |
+| **Writer/reviewer split** | Opus validates, Sonnet writes | Same agent | Same agent | Same agent |
+| **Multi-model deliberation** | At every phase gate | `/best-of-n` (no gates) | No | Same model |
+
+---
+
+## Tools Reference
+
+### Skill Activation (3 tools)
+
+| Tool | Protocol injected |
+|------|-------------------|
+| `design_partner` | Collaborative design session with YIELD checkpoints |
+| `spec_generator` | Spec generation + ledger/progress seeding |
+| `pitboss_implementor` | Pitboss/worker orchestration with G1-G5 gates |
+
+### Data (8 tools)
 
 | Tool | Purpose |
 |------|---------|
-| `design_partner` | Activates collaborative design session — scoping questions, push-back, YIELD directives, multi-model deliberation |
-| `spec_generator` | Activates spec generation — transforms design summary into spec, handoff, progress, testing harness; seeds ledger |
-| `pitboss_implementor` | Activates pitboss/worker orchestration — spawns Sonnet workers, validates against spec, runs gates G1-G5 |
-
-Each tool pipes its full skill protocol into the LLM's context when called. Skills are also available as MCP resources (`skill://foreman/<name>`) for backward compatibility.
-
-### Data Tools (8 tools — enum-typed operations)
-
-| Tool | Purpose |
-|------|---------|
+| `read_ledger` / `write_ledger` | Unit status, verdicts, rejections, phase gates |
+| `read_progress` / `write_progress` | Bounded progress view, phase management |
 | `bundle_status` | Server version and override info |
 | `changelog` | Version history |
-| `read_ledger` | Query unit status, verdicts, rejections, phase gates |
-| `write_ledger` | Record unit status, verdicts, rejections, gate results |
-| `read_progress` | Bounded progress view (truncated to last N completed + all incomplete) |
-| `write_progress` | Start phases, update status, complete units, log errors |
-| `capability_check` | Verify external CLI tools are available |
-| `normalize_review` | Structure code review findings for remediation planning |
+| `capability_check` | Check if Codex/Gemini CLI is available |
+| `normalize_review` | Parse review findings into structured format |
 
 ---
 
@@ -223,36 +145,27 @@ graph TD
 
     subgraph Foreman MCP Server
         direction TB
-        SKT["Skill Activation Tools<br/>design_partner · spec_generator · pitboss_implementor"]
-        DT["Data Tools<br/>read/write_ledger · read/write_progress<br/>bundle_status · changelog · capability_check · normalize_review"]
-        SL["Skill Loader<br/>project override → user override → bundled"]
-        SK["Skills<br/>design-partner.md · spec-generator.md · implementor.md"]
+        SKT["Skill Activation Tools"]
+        DT["Data Tools"]
+        SL["Skill Loader<br/>project → user → bundled"]
+        SK["Skills (.md)"]
     end
 
     Ledger[".foreman-ledger.json"]
     Progress[".foreman-progress.json"]
 
-    Agent <-->|"stdio/MCP"| SKT
-    Agent <-->|"stdio/MCP"| DT
-    SKT --> SL
-    SL --> SK
-    DT -->|"mutex-serialized read/write"| Ledger
-    DT -->|"mutex-serialized read/write"| Progress
+    Agent <-->|"stdio / MCP"| SKT
+    Agent <-->|"stdio / MCP"| DT
+    SKT --> SL --> SK
+    DT -->|"mutex-serialized"| Ledger
+    DT -->|"mutex-serialized"| Progress
 ```
 
-**Stack:** TypeScript (ESM) · `@modelcontextprotocol/sdk` · Zod
-**Transport:** stdio (MCP standard)
-**State:** Local JSON files in the project directory
+**Stack:** TypeScript (ESM) · `@modelcontextprotocol/sdk` · Zod · stdio transport
 
-**How skill activation works:** The LLM calls a skill activation tool (e.g. `design_partner`). The tool resolves the skill file through a 3-tier override chain (project-local → user-global → bundled), and returns the full protocol as the tool response. The protocol is now in the LLM's context and it follows the instructions — no resource URIs, no extra steps.
+### Skill overrides
 
-**Token efficiency:** Compact single-line JSON with short keys, TOON (plain-text) tool responses, bounded progress truncation, and skill protocols loaded only when the tool is called.
-
----
-
-## Skill Overrides
-
-When a skill activation tool is called, the skill loader checks for local overrides before falling back to the bundled version:
+When a skill tool is called, the loader checks for local overrides first:
 
 ```
 .claude/skills/<skill-name>/SKILL.md        # project-local (highest priority)
@@ -260,7 +173,18 @@ When a skill activation tool is called, the skill loader checks for local overri
 <bundled>/skills/<skill-name>.md            # packaged default
 ```
 
-Override names match the skill file: `design-partner`, `spec-generator`, `implementor`.
+---
+
+## Why This Exists
+
+AI coding agents are good at writing code but bad at governance. On multi-file projects they lose context across sessions, skip design, self-review their own work, and leave no audit trail. Skills alone can't fix this — a skill can say "update the ledger after each unit" but the agent can forget or hallucinate the update.
+
+Foreman separates the concerns:
+- **Skills** provide the workflow (design → spec → implement → gate)
+- **MCP tools** provide the infrastructure (validated writes, bounded reads, mutex serialization, enum schemas)
+- **The ledger** provides the audit trail (survives crashes, sessions, and context resets)
+
+One `npm install` gives any MCP-compatible agent the full pipeline.
 
 ---
 
