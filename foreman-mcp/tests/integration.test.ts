@@ -23,14 +23,14 @@ afterEach(async () => {
   await server?.close()
 })
 
-describe("list tools — verify all 8 present, update_bundle absent", () => {
+describe("list tools — verify all 11 present, update_bundle absent", () => {
   beforeEach(async () => {
     await setupServer()
   })
 
-  it("lists exactly 8 tools", async () => {
+  it("lists exactly 11 tools", async () => {
     const result = await client.listTools()
-    expect(result.tools).toHaveLength(8)
+    expect(result.tools).toHaveLength(11)
   })
 
   it("includes all required tool names", async () => {
@@ -44,6 +44,9 @@ describe("list tools — verify all 8 present, update_bundle absent", () => {
     expect(names).toContain("write_ledger")
     expect(names).toContain("write_progress")
     expect(names).toContain("normalize_review")
+    expect(names).toContain("pitboss_implementor")
+    expect(names).toContain("design_partner")
+    expect(names).toContain("spec_generator")
   })
 
   it("does not include update_bundle", async () => {
@@ -92,7 +95,7 @@ describe("read skill resource — verify content", () => {
     expect(result.contents).toHaveLength(1)
     const text = result.contents[0].text as string
     expect(text).toContain("name: foreman:design-partner")
-    expect(text).toContain("version: 0.0.3-3")
+    expect(text).toContain("version: 0.0.4")
     expect(text).toContain("mcp__foreman__capability_check")
     expect(text).toContain("Foreman MCP bundle")
   })
@@ -102,7 +105,7 @@ describe("read skill resource — verify content", () => {
     expect(result.contents).toHaveLength(1)
     const text = result.contents[0].text as string
     expect(text).toContain("name: foreman:spec-generator")
-    expect(text).toContain("version: 0.0.3-3")
+    expect(text).toContain("version: 0.0.4")
     expect(text).toContain("mcp__foreman__write_ledger")
     expect(text).toContain("G1:")
   })
@@ -111,9 +114,8 @@ describe("read skill resource — verify content", () => {
     const result = await client.readResource({ uri: "skill://foreman/implementor" })
     expect(result.contents).toHaveLength(1)
     const text = result.contents[0].text as string
-    expect(text).toContain("version: 0.0.3-3")
-    expect(text).toContain("disableSlashCommand: true")
-    expect(text).toContain("If you are running as a slash command")
+    expect(text).toContain("version: 0.0.4")
+    expect(text).toContain("mcp__foreman__pitboss_implementor")
     expect(text).toContain("mcp__foreman__read_ledger")
     expect(text).toContain("mcp__foreman__write_ledger")
   })
@@ -129,7 +131,7 @@ describe("bundle_status round-trip", () => {
     const content = result.content as Array<{ type: string; text: string }>
     expect(content[0].type).toBe("text")
     expect(content[0].text).toContain("bundle_version")
-    expect(content[0].text).toContain("0.0.3-3")
+    expect(content[0].text).toContain("0.0.4")
   })
 })
 
@@ -175,6 +177,80 @@ describe("write_ledger → read_ledger round-trip", () => {
     const readContent = readResult.content as Array<{ type: string; text: string }>
     expect(readContent[0].text).toContain("phase1")
     expect(readContent[0].text).toContain("1a")
+  })
+})
+
+describe("pitboss_implementor round-trip", () => {
+  beforeEach(async () => {
+    await setupServer()
+  })
+
+  it("returns skill header and implementor protocol content", async () => {
+    const result = await client.callTool({ name: "pitboss_implementor", arguments: {} })
+    const content = result.content as Array<{ type: string; text: string }>
+    expect(content[0].type).toBe("text")
+    expect(content[0].text).toContain("skill: foreman:pitboss-implementor")
+    expect(content[0].text).toMatch(/source: (bundled|user-override|project-override)/)
+    expect(content[0].text).toContain("Pit-boss NEVER writes implementation code")
+    expect(content[0].text).toContain("mcp__foreman__write_ledger")
+  })
+
+  it("includes activation_context when provided", async () => {
+    const result = await client.callTool({
+      name: "pitboss_implementor",
+      arguments: { context: "resume phase 2" },
+    })
+    const content = result.content as Array<{ type: string; text: string }>
+    expect(content[0].text).toContain("activation_context: resume phase 2")
+  })
+})
+
+describe("design_partner round-trip", () => {
+  beforeEach(async () => {
+    await setupServer()
+  })
+
+  it("returns skill header and design-partner protocol content", async () => {
+    const result = await client.callTool({ name: "design_partner", arguments: {} })
+    const content = result.content as Array<{ type: string; text: string }>
+    expect(content[0].type).toBe("text")
+    expect(content[0].text).toContain("skill: foreman:design-partner")
+    expect(content[0].text).toMatch(/source: (bundled|user-override|project-override)/)
+    expect(content[0].text).toContain("Design")
+  })
+
+  it("includes activation_context when provided", async () => {
+    const result = await client.callTool({
+      name: "design_partner",
+      arguments: { context: "new MCP plugin for Slack" },
+    })
+    const content = result.content as Array<{ type: string; text: string }>
+    expect(content[0].text).toContain("activation_context: new MCP plugin for Slack")
+  })
+})
+
+describe("spec_generator round-trip", () => {
+  beforeEach(async () => {
+    await setupServer()
+  })
+
+  it("returns skill header and spec-generator protocol content", async () => {
+    const result = await client.callTool({ name: "spec_generator", arguments: {} })
+    const content = result.content as Array<{ type: string; text: string }>
+    expect(content[0].type).toBe("text")
+    expect(content[0].text).toContain("skill: foreman:spec-generator")
+    expect(content[0].text).toMatch(/source: (bundled|user-override|project-override)/)
+    expect(content[0].text).toContain("Ledger Seeding")
+    expect(content[0].text).toContain("mcp__foreman__write_ledger")
+  })
+
+  it("includes activation_context when provided", async () => {
+    const result = await client.callTool({
+      name: "spec_generator",
+      arguments: { context: "Docs/design-summary.md" },
+    })
+    const content = result.content as Array<{ type: string; text: string }>
+    expect(content[0].text).toContain("activation_context: Docs/design-summary.md")
   })
 })
 

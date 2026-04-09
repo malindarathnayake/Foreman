@@ -1,11 +1,11 @@
 ---
 name: foreman:spec-generator
-version: 0.0.3-3
+version: 0.0.4
 description: Generate formal implementation documents from a design summary. Produces spec, handoff, progress tracker, and testing harness. Second stage of the Foreman pipeline.
 ---
 
 Note: This skill is delivered by the Foreman MCP bundle. To customize it,
-create a local override at .claude/skills/foreman-spec-generator/SKILL.md
+create a local override at .claude/skills/spec-generator/SKILL.md
 
 CRITICAL: Never write to Docs/.foreman-ledger.json using FileWriteTool or Edit.
 All ledger mutations MUST go through mcp__foreman__write_ledger.
@@ -163,7 +163,7 @@ If missing critical sections → list what's missing, don't fill gaps with assum
 |-------|---------|
 | Blocker | Specific missing section(s) |
 | What I Need | Exact content required to proceed |
-| Next Step | Run `foreman:design-partner` to produce a complete design summary |
+| Next Step | Call `mcp__foreman__design_partner` to produce a complete design summary |
 
 Do NOT generate partial spec documents from incomplete design summaries. A spec built on gaps will produce an implementation that fails at the seams.
 
@@ -349,7 +349,7 @@ mcp__foreman__write_progress({
 
 Save four documents to `Docs/`. Tell the user:
 
-> Four documents generated in `Docs/`. Review `spec.md` first. To start implementation, invoke `foreman:implementor`.
+> Four documents generated in `Docs/`. Review `spec.md` first. To start implementation, call `mcp__foreman__pitboss_implementor`.
 
 If blocking open items remain, list them and refuse to hand off.
 

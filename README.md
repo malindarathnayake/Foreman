@@ -163,9 +163,9 @@ On Windows, prefix with `cmd`:
 ### 3. Use
 
 ```
-> run the foreman:design-partner skill     # Interactive design session
-> invoke foreman:spec-generator            # Generate implementation docs
-> invoke foreman:implementor               # Execute the plan unit-by-unit
+> call the foreman design_partner tool      # Interactive design session
+> call the foreman spec_generator tool      # Generate implementation docs
+> call the foreman pitboss_implementor tool # Execute the plan unit-by-unit
 ```
 
 That's it. Foreman tracks progress, enforces phase gates, and logs everything to a compact ledger — across sessions, across crashes.

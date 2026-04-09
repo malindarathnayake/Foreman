@@ -1,11 +1,11 @@
 ---
 name: foreman:design-partner
-version: 0.0.3-3
+version: 0.0.4
 description: Collaborative engineering design sessions. Pushes back on vague requirements, forces decisions, captures decisions in structured format. First stage of the Foreman pipeline.
 ---
 
 Note: This skill is delivered by the Foreman MCP bundle. To customize it,
-create a local override at .claude/skills/foreman-design-partner/SKILL.md
+create a local override at .claude/skills/design-partner/SKILL.md
 
 ## Session Start
 1. Call `mcp__foreman__bundle_status` — verify version, log warnings if degraded
@@ -217,7 +217,7 @@ Tasks: 1. Identify weakest points in opposing view 2. Challenge with codebase ev
 ## Phase 5: Handoff
 
 Once design summary is complete and user approves:
-> Design summary is ready. Invoke `foreman:spec-generator` to produce formal implementation documents.
+> Design summary is ready. Call `mcp__foreman__spec_generator` to produce formal implementation documents.
 
 If blocking open items remain:
 > Design summary has [N] blocking open items that must be resolved first. [List them.]
@@ -326,7 +326,7 @@ Design summary is ready when:
 
 ## What This Skill Does NOT Do
 
-- Generate specs (use foreman:spec-generator)
+- Generate specs (use mcp__foreman__spec_generator)
 - Write code
 - Make decisions for user
 - Research technologies (flag unknowns, use web search if available)
