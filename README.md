@@ -110,7 +110,7 @@ The AI coding landscape in 2026 has matured — Cursor has Plan Mode, Codex CLI 
 | **Independent review** | Codex + Gemini (different models) | BugBot (same model, 8 passes) | Same model | Same agent |
 | **Structured ledger** | Verdicts, rejections, phase gates | Enterprise audit logs | SQLite session threads | Session logs |
 | **Writer/reviewer split** | Opus validates, Sonnet writes | Same agent | Same agent | Same agent |
-| **Multi-model deliberation** | At every phase gate | `/best-of-n` (no gates) | No | Same model |
+| **Multi-model deliberation** | Per phase completion (optional, skippable) | `/best-of-n` (no gates) | No | Same model |
 
 ---
 
@@ -157,8 +157,8 @@ graph TD
     Agent <-->|"stdio / MCP"| SKT
     Agent <-->|"stdio / MCP"| DT
     SKT --> SL --> SK
-    DT -->|"mutex-serialized"| Ledger
-    DT -->|"mutex-serialized"| Progress
+    DT -->|"serialized · atomic write"| Ledger
+    DT -->|"serialized · atomic write"| Progress
 ```
 
 **Stack:** TypeScript (ESM) · `@modelcontextprotocol/sdk` · Zod · stdio transport
@@ -185,6 +185,30 @@ Foreman separates the concerns:
 - **The ledger** provides the audit trail (survives crashes, sessions, and context resets)
 
 One `npm install` gives any MCP-compatible agent the full pipeline.
+
+---
+
+## FAQ
+
+**Isn't the pitboss just an LLM grading another LLM's homework?**
+
+No. The pitboss re-runs the test command itself and reads stdout/stderr — it does not trust the worker's self-report (`implementor.md`, step 6). A unit cannot pass unless the tests actually execute and exit clean. On top of that, five named gates (G1–G5) check contract completeness, assertion integrity, spec fidelity, test-suite impact, and worker hygiene — several via deterministic grep/pattern matching, not LLM judgment. At phase boundaries the full test suite runs again before the phase gate can flip to `pass`. The LLM review layer handles *semantic* validation (does the code implement what the spec describes?) which static analysis and tests cannot cover.
+
+**Doesn't a flat JSON ledger fall over with parallel workers?**
+
+The architecture is single-writer by design. Workers never touch the ledger — only the pitboss writes verdicts after validating each unit. Writes are serialized via a per-path promise-chain lock and use atomic `.tmp`→`rename` to prevent partial corruption. There is no fan-out write contention because the pitboss dispatches units sequentially: dispatch → worker executes → pitboss validates → write ledger → next unit.
+
+**Multi-model deliberation at every gate must be incredibly slow and expensive.**
+
+Deliberation runs once per *phase completion*, not per unit. A 3-phase project triggers ~3 deliberation sessions total. It is also conditional: if Codex/Gemini CLIs aren't installed, the pitboss asks the user whether to proceed without them. Users can skip deliberation entirely with "skip council." The ~750 token idle overhead is the MCP server's baseline; active deliberation cost scales with the number of phases, not units.
+
+**Why not replace the Opus validation entirely with CI/CD?**
+
+Tests and linters answer "does it compile and pass assertions." They cannot answer "did you implement the requirement the spec describes" or "does this integration break the contract from a prior unit." Semantic validation — checking that code *means* what the spec *says* — is the gap the LLM review fills. Foreman layers both: deterministic gates first (tests, pattern matching), then LLM review for what automation can't catch.
+
+**What happens if the context window resets mid-implementation?**
+
+The ledger and progress files survive on disk. A new session reads them back and resumes from the last recorded state. Completed units keep their verdicts; in-progress units restart with the rejection history intact.
 
 ---
 
