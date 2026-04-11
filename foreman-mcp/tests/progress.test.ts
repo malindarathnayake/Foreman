@@ -236,4 +236,25 @@ describe("writeProgress / readProgress", () => {
     const backups = files.filter((f) => f.includes(".corrupt."))
     expect(backups).toHaveLength(1)
   })
+
+  it("error_log FIFO caps at 20 entries on disk", async () => {
+    // Write 25 error log entries
+    for (let i = 0; i < 25; i++) {
+      await writeProgress(progressPath, {
+        operation: "log_error",
+        data: {
+          date: `2026-01-${String(i + 1).padStart(2, "0")}`,
+          unit: `unit-${i}`,
+          what_failed: `failure ${i}`,
+          next_approach: `approach ${i}`,
+        },
+      })
+    }
+
+    const progress = await readProgress(progressPath)
+    expect(progress.error_log).toHaveLength(20)
+    // First entry should be entry #5 (0-indexed), since entries 0-4 were dropped
+    expect(progress.error_log[0].unit).toBe("unit-5")
+    expect(progress.error_log[19].unit).toBe("unit-24")
+  })
 })

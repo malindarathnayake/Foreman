@@ -1,6 +1,6 @@
 ---
 name: foreman:spec-generator
-version: 0.0.4
+version: 0.0.5
 description: Generate formal implementation documents from a design summary. Produces spec, handoff, progress tracker, and testing harness. Second stage of the Foreman pipeline.
 ---
 
@@ -15,7 +15,8 @@ Direct file writes to the ledger will be rejected by the Foreman review gate.
 1. Call `mcp__foreman__bundle_status` — verify version, log warnings if degraded
 2. Call `mcp__foreman__read_ledger` — check if a ledger already exists (avoid overwriting prior state)
 3. If ledger exists with active phases → WARN user: "Existing ledger found. Regenerating spec will overwrite it. Confirm before proceeding."
-4. Read design summary from `Docs/design-summary.md` or user-provided source
+4. `mcp__foreman__write_journal({ operation: "init_session", data: { target_version: "<version>", branch: "<branch>", phase: 0, units: ["spec"], env: { agent: "opus", worker: "n/a", codex: null, gemini: null } } })`
+5. Read design summary from `Docs/design-summary.md` or user-provided source
 
 ## Core Directive
 
@@ -64,21 +65,18 @@ When non-trivial ambiguities need resolution — escalate to multi-model deliber
 
 ### CLI Invocation
 
-**Codex:**
-```bash
-codex exec --skip-git-repo-check -s read-only -m gpt-5.4 \
-  -c reasoning.effort="high" -c hide_agent_reasoning=true "<PROMPT>"
-```
-Timeout: 300000ms.
+Both CLIs are invoked via the `invoke_advisor` tool. The tool handles platform
+detection (which/where), .cmd shim wrapping on Windows, and stdin prompt delivery
+internally — no shell commands needed.
 
-**Gemini (temp file approach):**
-```bash
-TMPFILE=$(mktemp /tmp/gemini-prompt.XXXXXX) && cat <<'PROMPT' > "$TMPFILE"
-<prompt content>
-PROMPT
-gemini -p "$(cat "$TMPFILE")" -m arch-review --approval-mode plan --output-format text; rm -f "$TMPFILE"
-```
-Timeout: 300000ms. Gemini is stateless — each call is fresh.
+**Codex:**
+`mcp__foreman__invoke_advisor({ cli: "codex", prompt: "<PROMPT>" })`
+
+**Gemini:**
+`mcp__foreman__invoke_advisor({ cli: "gemini", prompt: "<PROMPT>" })`
+
+Default timeout: 300000ms. Prompts are delivered via stdin to bypass OS arg length
+limits. Gemini is stateless — each call is fresh.
 
 **Opus agent fallback:** Use Agent tool with `model: "opus"` and adversarial critic prompt.
 
@@ -346,6 +344,8 @@ mcp__foreman__write_progress({
 ```
 
 ## Output + Handoff
+
+`mcp__foreman__write_journal({ operation: "end_session", data: { dur_min: <estimate>, ctx_used_pct: <estimate>, summary: { units_ok: 1, units_rej: 0, w_spawned: 0, w_wasted: 0, tok_wasted: 0, delay_min: 0, blockers: [], friction: <1-100> } } })`
 
 Save four documents to `Docs/`. Tell the user:
 

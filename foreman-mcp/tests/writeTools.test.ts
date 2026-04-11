@@ -7,6 +7,7 @@ import { handleWriteProgress } from "../src/tools/writeProgress.js"
 import { normalizeReview } from "../src/tools/normalizeReview.js"
 import { readLedger } from "../src/lib/ledger.js"
 import { readProgress } from "../src/lib/progress.js"
+import { NormalizeReviewInputSchema } from "../src/types.js"
 
 let tmpDir: string
 let ledgerPath: string
@@ -293,5 +294,19 @@ This has a high impact on the system and a low chance of being a false alarm.`
     expect(data.findings).toHaveLength(1)
     expect(data.findings[0].severity).toBe("critical")
     expect(data.findings[0].description).toContain("high impact")
+  })
+})
+
+describe("NormalizeReviewInputSchema caps", () => {
+  it("rejects reviewer exceeding 200 chars", () => {
+    expect(() =>
+      NormalizeReviewInputSchema.parse({ reviewer: "x".repeat(201), raw_text: "ok" })
+    ).toThrow()
+  })
+
+  it("rejects raw_text exceeding 50000 chars", () => {
+    expect(() =>
+      NormalizeReviewInputSchema.parse({ reviewer: "ok", raw_text: "x".repeat(50001) })
+    ).toThrow()
   })
 })

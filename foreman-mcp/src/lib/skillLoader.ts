@@ -38,10 +38,6 @@ export async function loadSkill(
     return { content, source: "bundled", path: bundled }
   }
 
-  throw new Error(
-    `Skill "${skillName}" not found. Checked:\n` +
-    `  project: ${projectOverride}\n` +
-    `  user:    ${userOverride}\n` +
-    `  bundled: ${bundled}`
-  )
+  console.error(`Skill "${skillName}" lookup paths: project=${projectOverride}, user=${userOverride}, bundled=${bundled}`)
+  throw new Error(`Skill "${skillName}" not found. Check .claude/skills/ overrides or reinstall the package.`)
 }

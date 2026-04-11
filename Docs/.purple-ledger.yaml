@@ -1,0 +1,129 @@
+version: 1
+plan_hash: "b006911d45dc0bcae43b81a29b6ed7f6686f646e"
+run_hash: "b006911d45dc0bcae43b81a29b6ed7f6686f646e"
+
+categories:
+  # ── v0.0.5 findings (carried forward) ──────────────────────────────
+  - id: INJECTION-v005
+    reset_strategy: none
+    attack_worker: null
+    analysis_worker: {id: w1, model: sonnet, verdict: ACCEPT}
+    scenarios:
+      - id: INJ-001
+        plan_classification: CONFIRMED_VULN
+        scenario_kind: audit
+        run_result: CONFIRMED
+        evidence_file: "output/results.json"
+        notes: "Skill override returns content verbatim. Zero validation."
+      - id: INJ-002
+        plan_classification: CONFIRMED_VULN
+        scenario_kind: audit
+        run_result: CONFIRMED
+        evidence_file: "output/results.json"
+        notes: "Skill name → path.join with no traversal guard."
+      - id: INJ-003
+        plan_classification: DEFENSE_GAP
+        scenario_kind: audit
+        run_result: CONFIRMED
+        evidence_file: "output/results.json"
+        notes: "runTests spawns allowlisted runner with unchecked args."
+
+  - id: ESCALATION-v005
+    reset_strategy: none
+    attack_worker: null
+    analysis_worker: {id: w1, model: sonnet, verdict: ACCEPT}
+    scenarios:
+      - id: ESC-001
+        plan_classification: DEFENSE_GAP
+        scenario_kind: audit
+        run_result: CONFIRMED
+        evidence_file: "output/results.json"
+        notes: "No write-tool auth. Any MCP caller can mutate ledger/progress."
+
+  - id: DISCLOSURE-v005
+    reset_strategy: none
+    attack_worker: null
+    analysis_worker: {id: w1, model: sonnet, verdict: ACCEPT}
+    scenarios:
+      - id: DIS-001
+        plan_classification: DEFENSE_GAP
+        scenario_kind: audit
+        run_result: CONFIRMED
+        evidence_file: "output/results.json"
+        notes: "Error messages echo user input (runner name, phase, unit_id)."
+
+  - id: EXHAUSTION-v005
+    reset_strategy: none
+    attack_worker: null
+    analysis_worker: {id: w1, model: sonnet, verdict: ACCEPT}
+    scenarios:
+      - id: EXH-001
+        plan_classification: DEFENSE_GAP
+        scenario_kind: audit
+        run_result: UNCONFIRMED
+        evidence_file: "output/results.json"
+        notes: "runTests buffers are capped. Not exploitable."
+      - id: EXH-002
+        plan_classification: DEFENSE_GAP
+        scenario_kind: audit
+        run_result: CONFIRMED
+        evidence_file: "output/results.json"
+        notes: "No timeout on ledger/progress writes."
+
+  # ── v0.0.6 findings (new) ─────────────────────────────────────────
+  - id: INJECTION-v006
+    reset_strategy: none
+    attack_worker: null
+    analysis_worker: {id: w3, model: sonnet, verdict: ACCEPT}
+    scenarios:
+      - id: INJ-006
+        plan_classification: DEFENSE_GAP
+        scenario_kind: audit
+        run_result: CONFIRMED
+        evidence_file: "output/analysis-INJECTION-v006.json"
+        notes: "ComSpec env poisoning. Requires env-write + Windows + .cmd only. P3."
+      - id: INJ-007
+        plan_classification: DEFENSE_GAP
+        scenario_kind: audit
+        run_result: CONFIRMED
+        evidence_file: "output/analysis-INJECTION-v006.json"
+        notes: "FOREMAN_TEST_ALLOWLIST bypass. Requires env-write + installed binary. P3."
+      - id: INJ-008
+        plan_classification: LIKELY_VULN
+        scenario_kind: audit
+        run_result: CONFIRMED
+        evidence_file: "output/analysis-INJECTION-v006.json"
+        notes: "npx in default allowlist = arbitrary package execution. P2. Worker upgraded to CONFIRMED."
+      - id: INJ-009
+        plan_classification: DEFENSE_GAP
+        scenario_kind: audit
+        run_result: CONFIRMED
+        evidence_file: "output/analysis-INJECTION-v006.json"
+        notes: "TOON injection via unescaped multi-line advisor stdout. P3."
+
+  - id: EXHAUSTION-v006
+    reset_strategy: none
+    attack_worker: null
+    analysis_worker: {id: w4, model: sonnet, verdict: ACCEPT}
+    scenarios:
+      - id: EXH-004
+        plan_classification: DEFENSE_GAP
+        scenario_kind: audit
+        run_result: CONFIRMED
+        evidence_file: "output/analysis-EXHAUSTION-v006.json"
+        notes: "Buffer grows after cap fires — append before settled check. Fix: add if(settled)return."
+      - id: EXH-005
+        plan_classification: DEFENSE_GAP
+        scenario_kind: audit
+        run_result: CONFIRMED
+        evidence_file: "output/analysis-EXHAUSTION-v006.json"
+        notes: "SIGTERM/SIGKILL only hits direct child. Grandchildren survive. Fix: detached + process group kill."
+
+rejections: []
+
+run_metadata:
+  timestamp: "2026-04-11T05:00:00Z"
+  mode: "static-only"
+  duration_categories: 2
+  workers_spawned: 2
+  workers_rejected: 0

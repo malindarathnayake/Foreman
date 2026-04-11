@@ -14,9 +14,13 @@ import { capabilityCheck } from "./tools/capabilityCheck.js"
 import { handleWriteLedger } from "./tools/writeLedger.js"
 import { handleWriteProgress } from "./tools/writeProgress.js"
 import { normalizeReview } from "./tools/normalizeReview.js"
+import { runTests } from "./tools/runTests.js"
 import { activateImplementor } from "./tools/activateImplementor.js"
 import { activateDesignPartner } from "./tools/activateDesignPartner.js"
 import { activateSpecGenerator } from "./tools/activateSpecGenerator.js"
+import { NormalizeReviewInputSchema } from "./types.js"
+import { readJournal, initSession, logEvent, endSession } from "./lib/journal.js"
+import { invokeAdvisor, formatAdvisorResult } from "./tools/invokeAdvisor.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -24,6 +28,7 @@ const __dirname = path.dirname(__filename)
 export interface ServerConfig {
   ledgerPath?: string
   progressPath?: string
+  journalPath?: string
   docsDir?: string
 }
 
@@ -31,9 +36,10 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   const ledgerPath = config?.ledgerPath ?? "Docs/.foreman-ledger.json"
   const progressPath = config?.progressPath ?? "Docs/.foreman-progress.json"
   const docsDir = config?.docsDir ?? "Docs"
+  const journalPath = config?.journalPath ?? "Docs/.foreman-journal.json"
 
   const server = new McpServer(
-    { name: "foreman", version: "0.0.4" },
+    { name: "foreman", version: "0.0.7" },
     { capabilities: { resources: {}, tools: {} } }
   )
 
@@ -53,7 +59,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     {
       description: "Returns the Foreman changelog, optionally since a version.",
       inputSchema: {
-        since_version: z.string().optional(),
+        since_version: z.string().max(20).optional(),
       },
     },
     async (args, _extra) => {
@@ -67,8 +73,8 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     {
       description: "Reads the Foreman ledger file.",
       inputSchema: {
-        unit_id: z.string().optional(),
-        phase: z.string().optional(),
+        unit_id: z.string().max(10000).optional(),
+        phase: z.string().max(10000).optional(),
         query: z.enum(["verdicts", "rejections", "phase_gates", "full"]).optional(),
       },
     },
@@ -83,12 +89,34 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     {
       description: "Reads the Foreman progress file.",
       inputSchema: {
-        last_n_completed: z.number().optional(),
+        last_n_completed: z.number().min(1).max(100).optional(),
       },
     },
     async (args, _extra) => {
       const text = await handleReadProgress(progressPath, args.last_n_completed)
       return { content: [{ type: "text" as const, text }] }
+    }
+  )
+
+  server.registerTool(
+    "read_journal",
+    {
+      description: "Reads the Foreman session journal. Returns session history with rollup.",
+      inputSchema: {
+        last_n: z.number().min(1).max(100).optional(),
+        rollup_only: z.boolean().optional(),
+      },
+    },
+    async (args, _extra) => {
+      const journal = await readJournal(journalPath)
+      if (args.rollup_only) {
+        return { content: [{ type: "text" as const, text: JSON.stringify(journal.rollup ?? null) }] }
+      }
+      if (args.last_n) {
+        const sliced = { ...journal, sessions: journal.sessions.slice(-args.last_n) }
+        return { content: [{ type: "text" as const, text: JSON.stringify(sliced) }] }
+      }
+      return { content: [{ type: "text" as const, text: JSON.stringify(journal) }] }
     }
   )
 
@@ -107,6 +135,23 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   )
 
   server.registerTool(
+    "invoke_advisor",
+    {
+      description: "Invoke codex|gemini CLI via stdin. Resolves binary cross-platform, wraps .cmd shims on win32.",
+      inputSchema: {
+        cli: z.enum(["codex", "gemini"]),
+        prompt: z.string().max(100000),
+        timeout_ms: z.number().min(5000).max(600000).default(300000),
+      },
+    },
+    async (args, _extra) => {
+      const result = await invokeAdvisor(args.cli, args.prompt, args.timeout_ms)
+      const text = formatAdvisorResult(args.cli, result)
+      return { content: [{ type: "text" as const, text }] }
+    }
+  )
+
+  server.registerTool(
     "write_ledger",
     {
       description: [
@@ -120,8 +165,8 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       ].join("\n"),
       inputSchema: {
         operation: z.enum(["set_unit_status", "set_verdict", "add_rejection", "update_phase_gate"]),
-        unit_id: z.string().optional(),
-        phase: z.string().optional(),
+        unit_id: z.string().max(10000).optional(),
+        phase: z.string().max(10000).optional(),
         data: z.record(z.unknown()),
       },
     },
@@ -155,16 +200,54 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   )
 
   server.registerTool(
-    "normalize_review",
+    "write_journal",
     {
-      description: "Normalizes raw review text into structured findings.",
+      description: "Writes to the Foreman session journal. Operations: init_session — start session with env; log_event — append operational event; end_session — finalize with summary.",
       inputSchema: {
-        reviewer: z.string(),
-        raw_text: z.string(),
+        operation: z.enum(["init_session", "log_event", "end_session"]),
+        data: z.record(z.unknown()),
       },
     },
     async (args, _extra) => {
+      const input = { operation: args.operation, data: args.data } as any
+      if (args.operation === "init_session") {
+        const journal = await initSession(journalPath, input)
+        return { content: [{ type: "text" as const, text: JSON.stringify({ ok: true, session_id: journal.sessions[journal.sessions.length - 1].id }) }] }
+      } else if (args.operation === "log_event") {
+        const result = await logEvent(journalPath, input)
+        return { content: [{ type: "text" as const, text: result }] }
+      } else {
+        const journal = await endSession(journalPath, input)
+        return { content: [{ type: "text" as const, text: JSON.stringify({ ok: true, sessions: journal.sessions.length, rollup: !!journal.rollup }) }] }
+      }
+    }
+  )
+
+  server.registerTool(
+    "normalize_review",
+    {
+      description: "Normalizes raw review text into structured findings.",
+      inputSchema: NormalizeReviewInputSchema.shape,
+    },
+    async (args, _extra) => {
       const { text } = normalizeReview(args.reviewer, args.raw_text)
+      return { content: [{ type: "text" as const, text }] }
+    }
+  )
+
+  server.registerTool(
+    "run_tests",
+    {
+      description: "Runs a test command with bounded output. Runner must be in allowlist (npm, pytest, go, cargo, dotnet, make). Use instead of Bash for test execution.",
+      inputSchema: {
+        runner: z.string().min(1).max(50),
+        args: z.array(z.string().max(10000)).max(100).default([]),
+        timeout_ms: z.number().min(1).max(600000).optional(),
+        max_output_chars: z.number().min(1).max(50000).optional(),
+      },
+    },
+    async (args, _extra) => {
+      const text = await runTests(args.runner, args.args, args.timeout_ms, args.max_output_chars)
       return { content: [{ type: "text" as const, text }] }
     }
   )
@@ -195,7 +278,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "Pass optional context to indicate resume state or handoff path.",
       ].join(" "),
       inputSchema: {
-        context: z.string().optional(),
+        context: z.string().max(10000).optional(),
       },
     },
     async (args, _extra) => {
@@ -216,7 +299,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "Pass optional context to describe the project or problem being designed.",
       ].join(" "),
       inputSchema: {
-        context: z.string().optional(),
+        context: z.string().max(10000).optional(),
       },
     },
     async (args, _extra) => {
@@ -237,7 +320,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "Pass optional context to indicate the design summary source.",
       ].join(" "),
       inputSchema: {
-        context: z.string().optional(),
+        context: z.string().max(10000).optional(),
       },
     },
     async (args, _extra) => {
