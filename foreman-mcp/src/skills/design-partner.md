@@ -1,6 +1,6 @@
 ---
 name: foreman:design-partner
-version: 0.0.4
+version: 0.0.5
 description: Collaborative engineering design sessions. Pushes back on vague requirements, forces decisions, captures decisions in structured format. First stage of the Foreman pipeline.
 ---
 
@@ -9,7 +9,8 @@ create a local override at .claude/skills/design-partner/SKILL.md
 
 ## Session Start
 1. Call `mcp__foreman__bundle_status` — verify version, log warnings if degraded
-2. Proceed with design session
+2. `mcp__foreman__write_journal({ operation: "init_session", data: { target_version: "<version>", branch: "<branch>", phase: 0, units: ["design"], env: { agent: "opus", worker: "n/a", codex: null, gemini: null } } })`
+3. Proceed with design session
 
 ## Core Directive
 Be useful, not pleasant.
@@ -149,21 +150,18 @@ When architectural ambiguities cannot be resolved through user Q&A alone — esc
 
 ### CLI Invocation
 
-**Codex:**
-```bash
-codex exec --skip-git-repo-check -s read-only -m gpt-5.4 \
-  -c reasoning.effort="high" -c hide_agent_reasoning=true "<PROMPT>"
-```
-Timeout: 300000ms. Use heredoc for multi-line prompts.
+Both CLIs are invoked via the `invoke_advisor` tool. The tool handles platform
+detection (which/where), .cmd shim wrapping on Windows, and stdin prompt delivery
+internally — no shell commands needed.
 
-**Gemini (temp file approach):**
-```bash
-TMPFILE=$(mktemp /tmp/gemini-prompt.XXXXXX) && cat <<'PROMPT' > "$TMPFILE"
-<prompt content>
-PROMPT
-gemini -p "$(cat "$TMPFILE")" -m arch-review --approval-mode plan --output-format text; rm -f "$TMPFILE"
-```
-Timeout: 300000ms. Gemini is stateless — each call is fresh.
+**Codex:**
+`mcp__foreman__invoke_advisor({ cli: "codex", prompt: "<PROMPT>" })`
+
+**Gemini:**
+`mcp__foreman__invoke_advisor({ cli: "gemini", prompt: "<PROMPT>" })`
+
+Default timeout: 300000ms. Prompts are delivered via stdin to bypass OS arg length
+limits. Both CLIs resolve to absolute paths with .cmd shim wrapping on Windows.
 
 **Opus agent fallback:** Use Agent tool with `model: "opus"` and adversarial critic prompt. For Opus+Opus tier, one agent proposes, one critiques.
 
@@ -217,6 +215,9 @@ Tasks: 1. Identify weakest points in opposing view 2. Challenge with codebase ev
 ## Phase 5: Handoff
 
 Once design summary is complete and user approves:
+
+`mcp__foreman__write_journal({ operation: "end_session", data: { dur_min: <estimate>, ctx_used_pct: <estimate>, summary: { units_ok: 1, units_rej: 0, w_spawned: 0, w_wasted: 0, tok_wasted: 0, delay_min: 0, blockers: [], friction: <1-100> } } })`
+
 > Design summary is ready. Call `mcp__foreman__spec_generator` to produce formal implementation documents.
 
 If blocking open items remain:

@@ -1,0 +1,35 @@
+{
+  "version": "0.0.4",
+  "timestamp": "2026-04-10T09:25:00Z",
+  "git_hash": "b006911d45dc0bcae43b81a29b6ed7f6686f646e",
+  "node": "v24.14.0",
+  "platform": "darwin arm64",
+  "summary": {
+    "test_files": 8,
+    "tests_passed": 103,
+    "tests_failed": 0,
+    "total_duration_s": 22.58,
+    "transform_ms": 535,
+    "collect_ms": 961,
+    "tests_ms": 23110,
+    "prepare_ms": 464
+  },
+  "per_file": {
+    "toon.test.ts": { "tests": 10, "duration_ms": 1 },
+    "skillLoader.test.ts": { "tests": 3, "duration_ms": 18 },
+    "progress.test.ts": { "tests": 9, "duration_ms": 35 },
+    "ledger.test.ts": { "tests": 11, "duration_ms": 91 },
+    "externalCli.test.ts": { "tests": 6, "duration_ms": 633 },
+    "writeTools.test.ts": { "tests": 23, "duration_ms": 48 },
+    "tools.test.ts": { "tests": 22, "duration_ms": 22192 },
+    "integration.test.ts": { "tests": 19, "duration_ms": 33 }
+  },
+  "slowest_tests": [
+    { "name": "capabilityCheck > returns available: false when codex CLI is not installed", "ms": 12124 },
+    { "name": "capabilityCheck > returns available: false for codex on systems without it", "ms": 10044 },
+    { "name": "externalCli > timeout kills the process and sets timedOut: true", "ms": 509 },
+    { "name": "externalCli > normal completion returns full output", "ms": 39 },
+    { "name": "ledger > concurrent writes are serialized", "ms": 28 }
+  ],
+  "notes": "Baseline before v0.0.5 (run_tests tool + security hardening). capabilityCheck dominates suite at 22s due to real CLI probes with 15s timeouts."
+}

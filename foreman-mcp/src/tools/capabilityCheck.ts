@@ -1,5 +1,8 @@
-import { runExternalCli } from "../lib/externalCli.js"
+import { runExternalCli, resolveInvocation, type SpawnPlan } from "../lib/externalCli.js"
 import { toKeyValue } from "../lib/toon.js"
+
+// Module-level cache for resolved SpawnPlans
+const resolvedPlans = new Map<string, SpawnPlan>()
 
 const HEALTH_COMMANDS: Record<string, { command: string; args: string[] }> = {
   codex: {
@@ -18,24 +21,34 @@ export async function capabilityCheck(cli: "codex" | "gemini"): Promise<string> 
     return toKeyValue({ cli, available: "false", version: "null", auth_status: "unknown" })
   }
 
+  // Resolve CLI to a SpawnPlan (platform-aware: which/where, .cmd wrapping)
+  let plan: SpawnPlan
+  if (resolvedPlans.has(cli)) {
+    plan = resolvedPlans.get(cli)!
+  } else {
+    const resolution = await resolveInvocation(config.command)
+    if (!resolution.ok) {
+      return toKeyValue({ cli, available: "false", version: "null", auth_status: "unknown" })
+    }
+    plan = resolution.plan
+    resolvedPlans.set(cli, plan)
+  }
+
   // First check version
   let version: string | null = null
   try {
-    const vResult = await runExternalCli(config.command, ["--version"], 5000)
+    const vResult = await runExternalCli(plan.command, [...plan.args, "--version"], 5000)
     if (vResult.exitCode === 0) {
-      version = vResult.stdout.trim().split("\n")[0] ?? null
+      version = vResult.stdout.trim().split(/\r?\n/)[0] ?? null
     }
   } catch {
     // Version check failed — CLI probably not available
   }
 
-  // If version check failed completely, CLI is not available
-  // But runExternalCli doesn't throw for ENOENT — it returns exitCode: -1
-  // So check the health command for availability
-  const result = await runExternalCli(config.command, config.args, 15000)
+  // Health check
+  const result = await runExternalCli(plan.command, [...plan.args, ...config.args], 15000)
 
   if (result.exitCode === -1 && !result.timedOut) {
-    // ENOENT or similar — CLI not available
     return toKeyValue({ cli, available: "false", version: "null", auth_status: "unknown" })
   }
 

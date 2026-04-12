@@ -1,6 +1,6 @@
 ---
 name: foreman:implementor
-version: 0.0.4
+version: 0.0.5
 description: Pit-boss implementation orchestrator. Opus orchestrates disposable Sonnet workers, validates against spec. Third stage of the Foreman pipeline.
 disableSlashCommand: true
 ---
@@ -35,8 +35,9 @@ On every session start:
 1. `mcp__foreman__bundle_status` — verify version, log warnings
 2. `mcp__foreman__read_ledger` with query "full" — get current state
 3. `mcp__foreman__read_progress` — truncated view
-4. Find handoff.md in `Docs/` or `docs/`
-5. Answer the five questions:
+4. `mcp__foreman__write_journal({ operation: "init_session", data: { target_version: "<version>", branch: "<branch>", phase: <N>, units: ["<unit ids>"], env: { agent: "opus", worker: "sonnet", codex: null, gemini: null } } })`
+5. Find handoff.md in `Docs/` or `docs/`
+6. Answer the five questions:
 
 | Question | Source |
 |----------|--------|
@@ -46,7 +47,7 @@ On every session start:
 | What has been tried? | Ledger unit history |
 | What failed? | Ledger rejection history |
 
-6. Do NOT rely on host plan/task state — ledger is the single authority
+7. Do NOT rely on host plan/task state — ledger is the single authority
 
 **Resume handling:**
 
@@ -58,6 +59,29 @@ On every session start:
 | Empty (no args) | Auto-detect: read ledger for current phase, find first pending unit |
 
 **Mid-flight handling:** If ledger shows a unit as `ip` (in-progress) at session start, treat it as not started — re-read the files, re-build the brief, re-spawn the worker. Do not assume the prior worker's changes are correct.
+
+## Journal — Friction Logging
+
+Log only failures and delays. Do NOT log successes, worker spawns, or test passes.
+
+`mcp__foreman__write_journal({ operation: "log_event", data: { t: "<CODE>", u: "<unit>", tok: 0, msg: "<≤200 chars>" } })`
+
+| Code | Trigger |
+|------|---------|
+| W_REJ | Pit-boss rejects worker output |
+| W_FAIL | Worker crashes or times out |
+| W_RETRY | 2nd/3rd outer-loop fix attempt |
+| GATE_FIX | Gate G1–G5 fails, requires fix |
+| CX_ERR | Codex/Gemini CLI error |
+| SPEC_AMB | Stopped — spec ambiguity, asking user |
+| T_FLAKE | Flaky test detected |
+| BLD_ERR | Build/compile failure after worker |
+| USR_INT | User interrupted or overrode |
+
+**Phase end (checkpoint):** Before "Mandatory New Session", call:
+```
+mcp__foreman__write_journal({ operation: "end_session", data: { dur_min: <estimate>, ctx_used_pct: <estimate>, summary: { units_ok: <N>, units_rej: <N>, w_spawned: <N>, w_wasted: <N>, tok_wasted: 0, delay_min: 0, blockers: [], friction: <1-100> } } })
+```
 
 ## Per-Unit Workflow
 
@@ -108,7 +132,7 @@ Worker isolation rules:
 After worker returns, pit-boss validates independently — do not trust worker's self-report:
 
 1. **Read every modified file** — confirm changes match the AFTER pattern from the brief
-2. **Re-run tests** — execute the test command yourself; do not accept worker's "tests pass" claim
+2. **Re-run tests** — call mcp__foreman__run_tests with the unit's test command; read exit_code for pass/fail, STDERR tail for failure context. Do not run tests via Bash — raw output can overflow context.
 3. **Spec check** — read the original spec directive sentence by sentence; confirm each has a corresponding code path
 4. **Export check** — verify exported names and signatures match what the ledger records as interface contracts
 5. **Consistency check** — confirm changes integrate cleanly with prior accepted units; no regressions introduced
@@ -191,6 +215,7 @@ At phase end, after all five gates pass:
 
 ### 1. Full Test Suite
 Run the complete test suite — not just this phase's tests.
+Run via mcp__foreman__run_tests, not Bash.
 
 ### 2. Review via Deliberation
 1. `mcp__foreman__capability_check({ cli: "codex" })` + `mcp__foreman__capability_check({ cli: "gemini" })`

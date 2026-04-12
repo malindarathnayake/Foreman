@@ -1,0 +1,168 @@
+version: 1
+project:
+  name: "foreman-mcp"
+  version: "0.0.7"
+  git_hash: "b006911"
+  type: "mcp-server"
+  assessed_at: "2026-04-11T01:10:00Z"
+
+deployment_context:
+  environment: "Developer laptops"
+  network: "ZTNA"
+  users: "Internal devs"
+  endpoint_protection: "EDR"
+
+scores:
+  current:
+    D1_input_validation:
+      score: 8
+      weight: 0.10
+      evidence: "Zod schemas on all 15 tools — .max() length caps (10K default, 50K for raw_text, 100K for prompts), enum restrictions on operations/status/event codes, regex filter on runner names (/^[a-zA-Z0-9_.-]+$/), discriminated unions for write operations. Validation at boundary (server.ts + types.ts)."
+    D2_authentication:
+      score: 5
+      weight: 0.15
+      evidence: "Stdio-only transport (StdioServerTransport). No per-tool auth. Trust-the-transport model — parent process (Claude Code) is the auth boundary. ESC-001 accepted: same-user privilege, ZTNA+EDR compensating."
+    D3_authorization:
+      score: 1
+      weight: 0.10
+      evidence: "No RBAC, scopes, or role checks. All tools available to all callers. Pitboss gate (set_verdict requires prior delegation) is workflow enforcement, not security authz. ESC-001 accepted."
+    D4_transport:
+      score: 5
+      weight: 0.10
+      evidence: "Stdio-only (server.ts:521-524). No HTTP/network exposure. No TLS needed. Trust-the-transport appropriate for stdio."
+    D5_injection:
+      score: 8
+      weight: 0.15
+      evidence: "Multi-layer defense: runner allowlist (6 runners), regex filter on env entries, npx explicitly denied (INJ-008), absolute path resolution via which/where, .cmd/.bat rejection on Windows, stdin delivery for advisor prompts (not args), ComSpec via SystemRoot (INJ-006), block format output (INJ-009). Accepted residual: npm exec. spawn() uses array args, no shell=true."
+    D6_secrets:
+      score: 6
+      weight: 0.10
+      evidence: "No secrets in source, env, or config. No credential handling. Error responses are generic (no leaks). Only env vars read: SystemRoot (OS-set), FOREMAN_TEST_ALLOWLIST (config). No vault needed — no secrets to manage."
+    D7_resources:
+      score: 7
+      weight: 0.10
+      evidence: "Buffer caps: externalCli 16KB, runTests 4x multiplier hardCap. Timeouts: all external calls bounded (1ms-600s via Zod). FIFO caps: rejection array 20, journal events 200/session, sessions 50, error_log 20. Input length caps on all strings. Settled guards prevent double-resolution. No rate limiting (MCP-level concern). EXH-004 fixed."
+    D8_disclosure:
+      score: 7
+      weight: 0.10
+      evidence: "Generic error messages in all tool responses. Stack traces to stderr only (startup diagnostics). DIS-001 fixed v0.0.5: skill loader returns generic errors. Minor: skill loader logs lookup paths to stderr (non-client-facing)."
+    D9_dependencies:
+      score: 7
+      weight: 0.05
+      evidence: "2 prod deps (MCP SDK, Zod). 3 dev deps. npm audit: 2 moderate (hono cookie/serveStatic/IP via MCP SDK transitive) — not reachable via stdio transport but present in tree. Fixable via npm audit fix. Lock file committed."
+    D10_execution:
+      score: 6
+      weight: 0.05
+      evidence: "3 spawn calls (runExternalCli, runWithStdin, runTests) — all safe: no shell=true, array args, absolute paths. Zero eval/Function/vm/dynamic imports. Atomic file writes. Runner allowlist + regex. Accepted residual: npm exec. Open: EXH-005 grandchild process kill deferred to v0.0.8."
+    composite: 60
+    grade: "D"
+
+  projected:
+    D1_input_validation: {score: 8, delta: 0}
+    D2_authentication: {score: 5, delta: 0}
+    D3_authorization: {score: 1, delta: 0}
+    D4_transport: {score: 5, delta: 0}
+    D5_injection: {score: 8, delta: 0}
+    D6_secrets: {score: 6, delta: 0}
+    D7_resources: {score: 7, delta: 0}
+    D8_disclosure: {score: 7, delta: 0}
+    D9_dependencies: {score: 8, delta: +1, fix: "npm audit fix resolves hono transitive CVEs"}
+    D10_execution: {score: 7, delta: +1, fix: "EXH-005 process group kill in v0.0.8"}
+    composite: 61
+    grade: "D"
+
+  delta_summary:
+    current_score: 60
+    projected_score: 61
+    improvement: +1
+    current_grade: "D"
+    projected_grade: "D"
+    note: "D2/D3 are structural (stdio MCP server model). Reaching C requires auth/authz work."
+
+findings_mapped:
+  - finding: INJ-001
+    dimension: D5_injection
+    impact: -1
+    status: ACCEPT
+    note: "Skill override requires filesystem write — compensated by ZTNA+EDR"
+  - finding: INJ-002
+    dimension: D5_injection
+    impact: -1
+    status: ACCEPT
+    note: "JSON tampering requires file write — same threat model as INJ-001"
+  - finding: INJ-004
+    dimension: D5_injection
+    impact: 0
+    status: FIX
+    fix_version: "v0.0.5"
+    note: "Fixed — notes field sanitized"
+  - finding: INJ-005
+    dimension: D10_execution
+    impact: 0
+    status: FIX
+    fix_version: "v0.0.5"
+    note: "Fixed — absolute path resolution"
+  - finding: INJ-006
+    dimension: D10_execution
+    impact: 0
+    status: FIX
+    fix_version: "v0.0.7"
+    note: "Fixed — ComSpec via SystemRoot"
+  - finding: INJ-007
+    dimension: D5_injection
+    impact: 0
+    status: FIX
+    fix_version: "v0.0.7"
+    note: "Fixed — regex filter on env allowlist"
+  - finding: INJ-008
+    dimension: D5_injection
+    impact: 0
+    status: FIX
+    fix_version: "v0.0.7"
+    note: "Fixed — npx removed + denied"
+  - finding: INJ-009
+    dimension: D5_injection
+    impact: 0
+    status: FIX
+    fix_version: "v0.0.7"
+    note: "Fixed — block format output"
+  - finding: ESC-001
+    dimension: D2_authentication
+    impact: -5
+    status: ACCEPT
+    note: "Stdio-only, same-user privilege — structural limitation"
+  - finding: DIS-001
+    dimension: D8_disclosure
+    impact: 0
+    status: FIX
+    fix_version: "v0.0.5"
+    note: "Fixed — generic skill loader errors"
+  - finding: EXH-002
+    dimension: D7_resources
+    impact: 0
+    status: FIX
+    fix_version: "v0.0.5"
+    note: "Fixed — FIFO cap on rejection array"
+  - finding: EXH-004
+    dimension: D7_resources
+    impact: 0
+    status: FIX
+    fix_version: "v0.0.7"
+    note: "Fixed — settled guard on data handlers"
+  - finding: EXH-005
+    dimension: D10_execution
+    impact: -1
+    status: FIX
+    fix_version: "v0.0.8"
+    note: "Open — grandchild process kill deferred"
+
+roadmap_to_next_grade:
+  current: "D (60)"
+  target: "C (70)"
+  gap: 10
+  recommended_fixes:
+    - {dimension: D3, action: "Tool-level scope restrictions (read-only vs write tools, pitboss-gated tools)", delta: "+4", effort: "medium", points: "1->5 = +4 weighted = +4.0"}
+    - {dimension: D2, action: "MCP session capability tokens or tool-level auth headers", delta: "+3", effort: "large", points: "5->7 = +2 weighted = +3.0"}
+    - {dimension: D9, action: "npm audit fix + automated audit in CI pipeline", delta: "+0.5", effort: "small", points: "7->8 = +1 weighted = +0.5"}
+    - {dimension: D10, action: "EXH-005 process group kill + restrict npm subcommands", delta: "+0.5", effort: "medium", points: "6->7 = +1 weighted = +0.5"}
+    - {dimension: D4, action: "Add SSE transport option with 127.0.0.1 bind + TLS", delta: "+2", effort: "large", points: "5->7 = +2 weighted = +2.0"}

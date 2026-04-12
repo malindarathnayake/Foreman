@@ -1,5 +1,5 @@
 import { describe, test, expect } from 'vitest'
-import { runExternalCli } from '../src/lib/externalCli.js'
+import { runExternalCli, MAX_OUTPUT } from '../src/lib/externalCli.js'
 
 describe('runExternalCli', () => {
   test('normal completion returns full output', async () => {
@@ -48,5 +48,35 @@ describe('runExternalCli', () => {
     )
     expect(result.stdout).toBe('out')
     expect(result.stderr).toBe('err')
+  })
+
+  test('large stdout is truncated at MAX_OUTPUT', async () => {
+    const result = await runExternalCli('node', ['-e', `process.stdout.write("x".repeat(${MAX_OUTPUT + 5000}))`], 5000)
+    expect(result.truncated).toBe(true)
+    expect(result.stdout).toContain('...(truncated)')
+    expect(result.stdout.length).toBeLessThan(MAX_OUTPUT + 100)
+  })
+
+  test('large stderr is truncated at MAX_OUTPUT', async () => {
+    const result = await runExternalCli('node', ['-e', `process.stderr.write("y".repeat(${MAX_OUTPUT + 5000}))`], 5000)
+    expect(result.truncated).toBe(true)
+    expect(result.stderr).toContain('...(truncated)')
+    expect(result.stderr.length).toBeLessThan(MAX_OUTPUT + 100)
+  })
+
+  test('small output is not truncated', async () => {
+    const result = await runExternalCli('node', ['-e', `process.stdout.write("z".repeat(100))`], 5000)
+    expect(result.truncated).toBe(false)
+    expect(result.stdout.length).toBe(100)
+  })
+
+  test('truncation preserves tail', async () => {
+    const result = await runExternalCli(
+      'node',
+      ['-e', `process.stdout.write("a".repeat(${MAX_OUTPUT + 5000}) + "TAIL_MARKER")`],
+      5000,
+    )
+    expect(result.truncated).toBe(true)
+    expect(result.stdout).toContain('TAIL_MARKER')
   })
 })

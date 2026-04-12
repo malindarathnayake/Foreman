@@ -115,11 +115,13 @@ function applyOperation(ledger: LedgerFile, operation: WriteLedgerInput): void {
     case "add_rejection": {
       const { phase, unit_id, data } = operation
       ensureUnit(ledger, phase, unit_id)
-      ledger.phases[phase].units[unit_id].rej.push({
+      const unit = ledger.phases[phase].units[unit_id]
+      unit.rej.push({
         r: data.r,
         msg: data.msg,
         ts: data.ts,
       })
+      if (unit.rej.length > 20) unit.rej = unit.rej.slice(-20)
       break
     }
     case "update_phase_gate": {

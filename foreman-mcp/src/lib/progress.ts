@@ -94,6 +94,7 @@ export async function writeProgress(
       case "log_error": {
         const { date, unit, what_failed, next_approach } = operation.data
         progress.error_log.push({ date, unit, what_failed, next_approach })
+        if (progress.error_log.length > 20) progress.error_log = progress.error_log.slice(-20)
         break
       }
     }

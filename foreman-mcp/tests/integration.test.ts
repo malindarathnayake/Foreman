@@ -23,14 +23,14 @@ afterEach(async () => {
   await server?.close()
 })
 
-describe("list tools — verify all 11 present, update_bundle absent", () => {
+describe("list tools — verify all 15 present, update_bundle absent", () => {
   beforeEach(async () => {
     await setupServer()
   })
 
-  it("lists exactly 11 tools", async () => {
+  it("lists exactly 15 tools", async () => {
     const result = await client.listTools()
-    expect(result.tools).toHaveLength(11)
+    expect(result.tools).toHaveLength(15)
   })
 
   it("includes all required tool names", async () => {
@@ -47,6 +47,10 @@ describe("list tools — verify all 11 present, update_bundle absent", () => {
     expect(names).toContain("pitboss_implementor")
     expect(names).toContain("design_partner")
     expect(names).toContain("spec_generator")
+    expect(names).toContain("run_tests")
+    expect(names).toContain("write_journal")
+    expect(names).toContain("read_journal")
+    expect(names).toContain("invoke_advisor")
   })
 
   it("does not include update_bundle", async () => {
@@ -95,7 +99,7 @@ describe("read skill resource — verify content", () => {
     expect(result.contents).toHaveLength(1)
     const text = result.contents[0].text as string
     expect(text).toContain("name: foreman:design-partner")
-    expect(text).toContain("version: 0.0.4")
+    expect(text).toContain("version: 0.0.5")
     expect(text).toContain("mcp__foreman__capability_check")
     expect(text).toContain("Foreman MCP bundle")
   })
@@ -105,7 +109,7 @@ describe("read skill resource — verify content", () => {
     expect(result.contents).toHaveLength(1)
     const text = result.contents[0].text as string
     expect(text).toContain("name: foreman:spec-generator")
-    expect(text).toContain("version: 0.0.4")
+    expect(text).toContain("version: 0.0.5")
     expect(text).toContain("mcp__foreman__write_ledger")
     expect(text).toContain("G1:")
   })
@@ -114,7 +118,7 @@ describe("read skill resource — verify content", () => {
     const result = await client.readResource({ uri: "skill://foreman/implementor" })
     expect(result.contents).toHaveLength(1)
     const text = result.contents[0].text as string
-    expect(text).toContain("version: 0.0.4")
+    expect(text).toContain("version: 0.0.5")
     expect(text).toContain("mcp__foreman__pitboss_implementor")
     expect(text).toContain("mcp__foreman__read_ledger")
     expect(text).toContain("mcp__foreman__write_ledger")
@@ -126,12 +130,12 @@ describe("bundle_status round-trip", () => {
     await setupServer()
   })
 
-  it("returns bundle_version and 0.0.3-3", async () => {
+  it("returns bundle_version and 0.0.6", async () => {
     const result = await client.callTool({ name: "bundle_status", arguments: {} })
     const content = result.content as Array<{ type: string; text: string }>
     expect(content[0].type).toBe("text")
     expect(content[0].text).toContain("bundle_version")
-    expect(content[0].text).toContain("0.0.4")
+    expect(content[0].text).toContain("0.0.7")
   })
 })
 
