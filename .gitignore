@@ -3,10 +3,8 @@ dist/
 .claude/
 .DS_Store
 
-# Foreman local state files
-Docs/.foreman-ledger.json
-Docs/.foreman-progress.json
-Docs/.pitboss-ledger*.yaml*
+# Foreman working docs (specs, ledgers, pentest artifacts)
+Docs/
 
 # Keep assets/ but ignore generation prompts
 assets/prompts.md
