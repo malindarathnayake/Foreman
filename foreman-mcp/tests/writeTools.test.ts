@@ -3,11 +3,12 @@ import fs from "fs/promises"
 import os from "os"
 import path from "path"
 import { handleWriteLedger } from "../src/tools/writeLedger.js"
-import { handleWriteProgress } from "../src/tools/writeProgress.js"
+import { handleWriteProgress, FENCE_START, FENCE_END } from "../src/tools/writeProgress.js"
 import { normalizeReview } from "../src/tools/normalizeReview.js"
 import { readLedger } from "../src/lib/ledger.js"
 import { readProgress } from "../src/lib/progress.js"
-import { NormalizeReviewInputSchema } from "../src/types.js"
+import { NormalizeReviewInputSchema, WriteLedgerInputSchema, PhaseScopeSchema } from "../src/types.js"
+import { detectTestFiles } from "../src/lib/detectTestFiles.js"
 
 let tmpDir: string
 let ledgerPath: string
@@ -104,52 +105,104 @@ describe("handleWriteProgress", () => {
     expect(result).toContain("operation: update_status")
   })
 
-  it("with docsDir → regenerates PROGRESS.md markdown file", async () => {
-    await handleWriteProgress(
-      progressPath,
-      {
-        operation: "complete_unit",
-        data: { unit_id: "u1", phase: "p1", completed_at: "2026-04-02T10:00:00Z", notes: "done" },
+  it("with docsDir + existing PROGRESS.md + ledger → splices checklist into fenced block", async () => {
+    // Seed ledger with one passing unit
+    const ledgerPath = path.join(tmpDir, ".foreman-ledger.json")
+    await fs.writeFile(ledgerPath, JSON.stringify({
+      v: 1,
+      ts: "2026-04-17T00:00:00Z",
+      phases: {
+        "p1": {
+          s: "ip",
+          g: "pending",
+          units: { "u1": { s: "done", v: "pass", w: null, rej: [] } },
+        },
       },
-      tmpDir
+    }))
+
+    // Seed PROGRESS.md with empty fenced block
+    const markdownPath = path.join(tmpDir, "PROGRESS.md")
+    await fs.writeFile(
+      markdownPath,
+      `preamble\n${FENCE_START}\nOLD\n${FENCE_END}\npostamble\n`,
     )
 
-    const markdownPath = path.join(tmpDir, "PROGRESS.md")
-    const exists = await fs
-      .access(markdownPath)
-      .then(() => true)
-      .catch(() => false)
-    expect(exists).toBe(true)
-  })
-
-  it("PROGRESS.md contains [x] checkbox for complete units", async () => {
-    await handleWriteProgress(
-      progressPath,
-      {
-        operation: "complete_unit",
-        data: { unit_id: "u1", phase: "p1", completed_at: "2026-04-02T10:00:00Z", notes: "done" },
-      },
-      tmpDir
-    )
-
-    const markdownPath = path.join(tmpDir, "PROGRESS.md")
-    const content = await fs.readFile(markdownPath, "utf-8")
-    expect(content).toContain("[x]")
-  })
-
-  it("PROGRESS.md contains [ ] checkbox for pending units", async () => {
     await handleWriteProgress(
       progressPath,
       {
         operation: "update_status",
-        data: { unit_id: "u1", phase: "p1", status: "pending", notes: "not started" },
+        data: { unit_id: "u1", phase: "p1", status: "in_progress", notes: "n" },
       },
-      tmpDir
+      tmpDir,
+      ledgerPath,
     )
 
-    const markdownPath = path.join(tmpDir, "PROGRESS.md")
     const content = await fs.readFile(markdownPath, "utf-8")
-    expect(content).toContain("[ ]")
+    expect(content).toContain("preamble")
+    expect(content).toContain("postamble")
+    expect(content).toContain(FENCE_START)
+    expect(content).toContain(FENCE_END)
+    expect(content).toContain("- [x] u1")
+    expect(content).not.toContain("OLD")
+  })
+
+  it("with docsDir + fenceless PROGRESS.md → appends fenced checklist block", async () => {
+    const ledgerPath = path.join(tmpDir, ".foreman-ledger.json")
+    await fs.writeFile(ledgerPath, JSON.stringify({
+      v: 1,
+      ts: "2026-04-17T00:00:00Z",
+      phases: {
+        "p1": {
+          s: "ip",
+          g: "pending",
+          units: { "u1": { s: "done", v: "pass", w: null, rej: [] } },
+        },
+      },
+    }))
+
+    const markdownPath = path.join(tmpDir, "PROGRESS.md")
+    await fs.writeFile(markdownPath, "# Notes\nHand-written content.\n")
+
+    await handleWriteProgress(
+      progressPath,
+      {
+        operation: "complete_unit",
+        data: { unit_id: "u1", phase: "p1", completed_at: "2026-04-02T10:00:00Z", notes: "done" },
+      },
+      tmpDir,
+      ledgerPath,
+    )
+
+    const content = await fs.readFile(markdownPath, "utf-8")
+    expect(content).toContain("# Notes")
+    expect(content).toContain("Hand-written content.")
+    expect(content).toContain(FENCE_START)
+    expect(content).toContain(FENCE_END)
+    expect(content).toContain("- [x] u1")
+  })
+
+  it("with docsDir but missing PROGRESS.md → does NOT create it", async () => {
+    const ledgerPath = path.join(tmpDir, ".foreman-ledger.json")
+    await fs.writeFile(ledgerPath, JSON.stringify({
+      v: 1, ts: "2026-04-17T00:00:00Z", phases: {},
+    }))
+
+    const markdownPath = path.join(tmpDir, "PROGRESS.md")
+    // ensure it doesn't pre-exist
+    await fs.rm(markdownPath, { force: true })
+
+    await handleWriteProgress(
+      progressPath,
+      {
+        operation: "update_status",
+        data: { unit_id: "u1", phase: "p1", status: "pending", notes: "n" },
+      },
+      tmpDir,
+      ledgerPath,
+    )
+
+    const exists = await fs.access(markdownPath).then(() => true).catch(() => false)
+    expect(exists).toBe(false)
   })
 
   it("invalid input → throws Zod error", async () => {
@@ -308,5 +361,427 @@ describe("NormalizeReviewInputSchema caps", () => {
     expect(() =>
       NormalizeReviewInputSchema.parse({ reviewer: "ok", raw_text: "x".repeat(50001) })
     ).toThrow()
+  })
+})
+
+// ─── v0.0.7.5: VerdictInput + PhaseScope schema extensions ───────────────
+describe("WriteLedgerInputSchema — verdict with via/note", () => {
+  it("accepts set_verdict without via/note (backward compat)", () => {
+    const result = WriteLedgerInputSchema.safeParse({
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass" },
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("accepts set_verdict with via and note present", () => {
+    const result = WriteLedgerInputSchema.safeParse({
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass", via: "worker", note: "delegated and validated" },
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("accepts all three via enum values", () => {
+    for (const via of ["worker", "pitboss-direct", "n/a"] as const) {
+      const result = WriteLedgerInputSchema.safeParse({
+        operation: "set_verdict",
+        phase: "p1",
+        unit_id: "u1",
+        data: { v: "pass", via },
+      })
+      expect(result.success).toBe(true)
+    }
+  })
+
+  it("rejects invalid via enum value", () => {
+    const result = WriteLedgerInputSchema.safeParse({
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass", via: "auto" },
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it("accepts note up to 10000 chars", () => {
+    const result = WriteLedgerInputSchema.safeParse({
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass", note: "x".repeat(10000) },
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("rejects note > 10000 chars", () => {
+    const result = WriteLedgerInputSchema.safeParse({
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass", note: "x".repeat(10001) },
+    })
+    expect(result.success).toBe(false)
+  })
+})
+
+describe("PhaseScopeSchema", () => {
+  it("accepts valid scope with all three booleans", () => {
+    const result = PhaseScopeSchema.safeParse({
+      has_tests: true,
+      has_api: false,
+      has_build: true,
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("rejects scope with non-boolean value", () => {
+    const result = PhaseScopeSchema.safeParse({
+      has_tests: "yes",
+      has_api: false,
+      has_build: true,
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it("rejects scope missing a field", () => {
+    const result = PhaseScopeSchema.safeParse({
+      has_tests: true,
+      has_api: false,
+    })
+    expect(result.success).toBe(false)
+  })
+})
+
+// ─── v0.0.7.5: set_verdict via/note — handler end-to-end ─────────────────
+describe("handleWriteLedger — set_verdict via/note end-to-end", () => {
+  // delegation helper — every v:"pass" test needs it
+  async function delegate(unit: string) {
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: unit,
+      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+    })
+  }
+
+  it("persists via on the unit when set_verdict includes via: 'worker'", async () => {
+    await delegate("u1")
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass", via: "worker" },
+    })
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.units.u1.via).toBe("worker")
+  })
+
+  it("persists note on the unit when set_verdict includes note", async () => {
+    await delegate("u2")
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u2",
+      data: { v: "pass", via: "pitboss-direct", note: "downloaded JAR manually" },
+    })
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.units.u2.via).toBe("pitboss-direct")
+    expect(ledger.phases.p1.units.u2.note).toBe("downloaded JAR manually")
+  })
+
+  it("stores via: undefined when set_verdict omits via (backward compat)", async () => {
+    await delegate("u3")
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u3",
+      data: { v: "pass" },
+    })
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.units.u3.via).toBeUndefined()
+    expect(ledger.phases.p1.units.u3.note).toBeUndefined()
+  })
+
+  it("rejects invalid via enum value via schema", async () => {
+    await delegate("u4")
+    await expect(
+      handleWriteLedger(ledgerPath, {
+        operation: "set_verdict",
+        phase: "p1",
+        unit_id: "u4",
+        data: { v: "pass", via: "auto" }, // not a valid enum value
+      })
+    ).rejects.toThrow()
+  })
+
+  it("accepts note at exactly 10000 chars", async () => {
+    await delegate("u5")
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u5",
+      data: { v: "pass", note: "x".repeat(10000) },
+    })
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.units.u5.note).toHaveLength(10000)
+  })
+
+  it("rejects note > 10000 chars via schema (no truncation)", async () => {
+    await delegate("u6")
+    await expect(
+      handleWriteLedger(ledgerPath, {
+        operation: "set_verdict",
+        phase: "p1",
+        unit_id: "u6",
+        data: { v: "pass", note: "x".repeat(10001) },
+      })
+    ).rejects.toThrow()
+  })
+
+  it("accepts all three via enum values through the handler", async () => {
+    for (const via of ["worker", "pitboss-direct", "n/a"] as const) {
+      const unit = `u-${via}`
+      await delegate(unit)
+      await handleWriteLedger(ledgerPath, {
+        operation: "set_verdict",
+        phase: "p1",
+        unit_id: unit,
+        data: { v: "pass", via },
+      })
+      const ledger = await readLedger(ledgerPath)
+      expect(ledger.phases.p1.units[unit].via).toBe(via)
+    }
+  })
+})
+
+// ─── detectTestFiles ──────────────────────────────────────────────────────────
+
+describe("detectTestFiles", () => {
+  it("returns empty array for empty directory", async () => {
+    const result = await detectTestFiles(tmpDir)
+    expect(result).toEqual([])
+  })
+
+  it("detects .test.ts files at project root", async () => {
+    await fs.writeFile(path.join(tmpDir, "foo.test.ts"), "")
+    await fs.writeFile(path.join(tmpDir, "bar.ts"), "")
+    const result = await detectTestFiles(tmpDir)
+    expect(result).toContain("foo.test.ts")
+    expect(result).not.toContain("bar.ts")
+  })
+
+  it("detects all 7 test-file patterns", async () => {
+    const patterns = [
+      "a.test.ts",
+      "b.test.js",
+      "c.spec.ts",
+      "test_d.py",
+      "e_test.go",
+      "FTest.java",
+      "GSpec.scala",
+    ]
+    for (const p of patterns) {
+      await fs.writeFile(path.join(tmpDir, p), "")
+    }
+    const result = await detectTestFiles(tmpDir)
+    for (const p of patterns) {
+      expect(result).toContain(p)
+    }
+  })
+
+  it("finds files buried in nested subdirectories", async () => {
+    const nested = path.join(tmpDir, "src", "deep", "inside")
+    await fs.mkdir(nested, { recursive: true })
+    await fs.writeFile(path.join(nested, "buried.test.ts"), "")
+    const result = await detectTestFiles(tmpDir)
+    expect(result).toContain(path.join("src", "deep", "inside", "buried.test.ts"))
+  })
+
+  it("skips node_modules even if test files exist inside", async () => {
+    const nm = path.join(tmpDir, "node_modules", "some-pkg")
+    await fs.mkdir(nm, { recursive: true })
+    await fs.writeFile(path.join(nm, "buried.test.ts"), "")
+    const result = await detectTestFiles(tmpDir)
+    expect(result).toEqual([])
+  })
+
+  it("skips all 5 excluded directories", async () => {
+    for (const dir of ["node_modules", "dist", "build", "target", ".git"]) {
+      const d = path.join(tmpDir, dir)
+      await fs.mkdir(d, { recursive: true })
+      await fs.writeFile(path.join(d, "trap.test.ts"), "")
+    }
+    const result = await detectTestFiles(tmpDir)
+    expect(result).toEqual([])
+  })
+
+  it("enforces the MAX_FILES cap at 500 and logs a warning", async () => {
+    // Create 501 test files
+    for (let i = 0; i < 501; i++) {
+      await fs.writeFile(path.join(tmpDir, `t${i}.test.ts`), "")
+    }
+    const errors: string[] = []
+    const origError = console.error
+    console.error = (msg: string) => { errors.push(String(msg)) }
+    try {
+      const result = await detectTestFiles(tmpDir)
+      expect(result).toHaveLength(500)
+      expect(errors.some(e => e.includes("capped at 500"))).toBe(true)
+    } finally {
+      console.error = origError
+    }
+  })
+
+  it("does not recurse beyond depth 10", async () => {
+    // Build 11 levels of nesting
+    let current = tmpDir
+    for (let i = 0; i < 11; i++) {
+      current = path.join(current, `level${i}`)
+      await fs.mkdir(current)
+    }
+    await fs.writeFile(path.join(current, "too-deep.test.ts"), "")
+    const result = await detectTestFiles(tmpDir)
+    expect(result).not.toContain(path.join(
+      "level0","level1","level2","level3","level4",
+      "level5","level6","level7","level8","level9","level10","too-deep.test.ts"
+    ))
+  })
+})
+
+// ─── handleWriteLedger — set_phase_scope operation ───────────────────────────
+
+describe("handleWriteLedger — set_phase_scope operation", () => {
+  let originalCwd: string
+
+  beforeEach(() => {
+    originalCwd = process.cwd()
+    process.chdir(tmpDir)
+  })
+
+  afterEach(() => {
+    process.chdir(originalCwd)
+  })
+
+  it("stores scope on the phase (happy path)", async () => {
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_phase_scope",
+      phase: "v75-p1",
+      data: { has_tests: true, has_api: false, has_build: true },
+    })
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases["v75-p1"].scope).toEqual({
+      has_tests: true,
+      has_api: false,
+      has_build: true,
+    })
+  })
+
+  it("creates the phase entry if it doesn't exist yet", async () => {
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_phase_scope",
+      phase: "brand-new",
+      data: { has_tests: false, has_api: true, has_build: false },
+    })
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases["brand-new"]).toBeDefined()
+    expect(ledger.phases["brand-new"].scope).toEqual({
+      has_tests: false,
+      has_api: true,
+      has_build: false,
+    })
+  })
+
+  it("throws scope_already_set when scope declared twice on same phase", async () => {
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_phase_scope",
+      phase: "v75-p1",
+      data: { has_tests: true, has_api: false, has_build: true },
+    })
+    await expect(
+      handleWriteLedger(ledgerPath, {
+        operation: "set_phase_scope",
+        phase: "v75-p1",
+        data: { has_tests: false, has_api: false, has_build: true },
+      })
+    ).rejects.toThrow(/scope_already_set/)
+  })
+
+  it("rejects invalid scope (non-boolean) via schema", async () => {
+    await expect(
+      handleWriteLedger(ledgerPath, {
+        operation: "set_phase_scope",
+        phase: "v75-p1",
+        data: { has_tests: "yes" as any, has_api: false, has_build: true },
+      })
+    ).rejects.toThrow()
+  })
+
+  it("logs warning to stderr when has_tests:false but test files detected", async () => {
+    // Plant a test file in the fixture cwd
+    await fs.writeFile(path.join(tmpDir, "mock.test.ts"), "")
+
+    const warnings: string[] = []
+    const origError = console.error
+    console.error = (msg: string) => { warnings.push(String(msg)) }
+
+    try {
+      await handleWriteLedger(ledgerPath, {
+        operation: "set_phase_scope",
+        phase: "v75-p1",
+        data: { has_tests: false, has_api: false, has_build: true },
+      })
+    } finally {
+      console.error = origError
+    }
+
+    expect(warnings.some(w => w.includes("has_tests: false declared but") && w.includes("1 test files detected"))).toBe(true)
+
+    // Scope is still stored despite the warning
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases["v75-p1"].scope?.has_tests).toBe(false)
+  })
+
+  it("does NOT log warning when has_tests:false and no test files present", async () => {
+    const warnings: string[] = []
+    const origError = console.error
+    console.error = (msg: string) => { warnings.push(String(msg)) }
+
+    try {
+      await handleWriteLedger(ledgerPath, {
+        operation: "set_phase_scope",
+        phase: "v75-p1",
+        data: { has_tests: false, has_api: false, has_build: true },
+      })
+    } finally {
+      console.error = origError
+    }
+
+    expect(warnings.filter(w => w.includes("has_tests: false declared")).length).toBe(0)
+  })
+
+  it("does NOT log warning when has_tests:true (detection skipped)", async () => {
+    // Even with test files present, no warning because has_tests:true
+    await fs.writeFile(path.join(tmpDir, "present.test.ts"), "")
+
+    const warnings: string[] = []
+    const origError = console.error
+    console.error = (msg: string) => { warnings.push(String(msg)) }
+
+    try {
+      await handleWriteLedger(ledgerPath, {
+        operation: "set_phase_scope",
+        phase: "v75-p1",
+        data: { has_tests: true, has_api: false, has_build: true },
+      })
+    } finally {
+      console.error = origError
+    }
+
+    expect(warnings.filter(w => w.includes("has_tests: false declared")).length).toBe(0)
   })
 })

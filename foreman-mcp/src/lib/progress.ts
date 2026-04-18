@@ -22,7 +22,10 @@ function freshProgress(): ProgressFile {
 }
 
 // ─── Read ─────────────────────────────────────────────────────────────────────
-export async function readProgress(filePath: string): Promise<ProgressFile> {
+export async function readProgress(
+  filePath: string,
+  opts?: { readOnly?: boolean }
+): Promise<ProgressFile> {
   let raw: string
   try {
     raw = await fs.readFile(filePath, "utf-8")
@@ -37,9 +40,11 @@ export async function readProgress(filePath: string): Promise<ProgressFile> {
   try {
     return JSON.parse(raw) as ProgressFile
   } catch {
-    // Corrupt JSON — back it up and return fresh progress
-    const backupPath = `${filePath}.corrupt.${Date.now()}`
-    await fs.rename(filePath, backupPath)
+    // Corrupt JSON — back it up and return fresh progress (unless read-only)
+    if (!opts?.readOnly) {
+      const backupPath = `${filePath}.corrupt.${Date.now()}`
+      await fs.rename(filePath, backupPath)
+    }
     return freshProgress()
   }
 }

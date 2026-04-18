@@ -2,20 +2,11 @@
 name: foreman:implementor
 version: 0.0.5
 description: Pit-boss implementation orchestrator. Opus orchestrates disposable Sonnet workers, validates against spec. Third stage of the Foreman pipeline.
-disableSlashCommand: true
 ---
 
-Note: This skill is delivered by the Foreman MCP bundle via the
-`mcp__foreman__pitboss_implementor` tool. To customize it, create a
-local override at .claude/skills/implementor/SKILL.md
+{{include: ledger-critical}}
 
-CRITICAL: Never write to Docs/.foreman-ledger.json using FileWriteTool or Edit.
-All ledger mutations MUST go through mcp__foreman__write_ledger.
-Direct file writes to the ledger will be rejected by the Foreman review gate.
-
-## Model Check (MANDATORY)
-- If running as Sonnet or Haiku: STOP. Tell user: "Foreman implementor requires Opus. Switch with `/model opus`."
-- If running as Opus: Proceed.
+**Model Check:** Opus required. If Sonnet/Haiku, STOP and ask user to switch (`/model opus`).
 
 ## Core Rules
 
@@ -28,37 +19,7 @@ Direct file writes to the ledger will be rejected by the Foreman review gate.
 | Ledger is durable — persisted after every verdict | State survives sessions |
 | Mandatory new session at phase checkpoints | Context accumulation degrades quality |
 
-## Session Start Protocol
-
-On every session start:
-
-1. `mcp__foreman__bundle_status` — verify version, log warnings
-2. `mcp__foreman__read_ledger` with query "full" — get current state
-3. `mcp__foreman__read_progress` — truncated view
-4. `mcp__foreman__write_journal({ operation: "init_session", data: { target_version: "<version>", branch: "<branch>", phase: <N>, units: ["<unit ids>"], env: { agent: "opus", worker: "sonnet", codex: null, gemini: null } } })`
-5. Find handoff.md in `Docs/` or `docs/`
-6. Answer the five questions:
-
-| Question | Source |
-|----------|--------|
-| Where am I? | Ledger current phase/unit status |
-| Where am I going? | Progress checklist |
-| What is the goal? | spec.md Intent |
-| What has been tried? | Ledger unit history |
-| What failed? | Ledger rejection history |
-
-7. Do NOT rely on host plan/task state — ledger is the single authority
-
-**Resume handling:**
-
-| Input | Action |
-|-------|--------|
-| "resume" | Trust ledger position; pick up at first non-passing unit |
-| "phase N" | Verify all units in phases before N show pass verdicts; then proceed |
-| Path to handoff | Use that file as handoff; cross-reference with ledger for position |
-| Empty (no args) | Auto-detect: read ledger for current phase, find first pending unit |
-
-**Mid-flight handling:** If ledger shows a unit as `ip` (in-progress) at session start, treat it as not started — re-read the files, re-build the brief, re-spawn the worker. Do not assume the prior worker's changes are correct.
+{{include: session-start}}
 
 ## Journal — Friction Logging
 
@@ -78,10 +39,7 @@ Log only failures and delays. Do NOT log successes, worker spawns, or test passe
 | BLD_ERR | Build/compile failure after worker |
 | USR_INT | User interrupted or overrode |
 
-**Phase end (checkpoint):** Before "Mandatory New Session", call:
-```
-mcp__foreman__write_journal({ operation: "end_session", data: { dur_min: <estimate>, ctx_used_pct: <estimate>, summary: { units_ok: <N>, units_rej: <N>, w_spawned: <N>, w_wasted: <N>, tok_wasted: 0, delay_min: 0, blockers: [], friction: <1-100> } } })
-```
+Phase-end `end_session` call: see Checkpoint Protocol below.
 
 ## Per-Unit Workflow
 
@@ -104,10 +62,7 @@ Before building brief, read actual source. Capture:
 - Exported symbols: names, signatures, and types that other units depend on
 - Test file structure: how tests are organized so worker places new tests correctly
 
-Do NOT rely on memory or prior reads from earlier in the session. Always re-read to get the current state.
-
 ### Step 4: Build Worker Brief
-
 ```
 # Worker Brief — Unit [ID]
 ## Task — [directive from handoff, verbatim or paraphrased]
@@ -119,10 +74,23 @@ Do NOT rely on memory or prior reads from earlier in the session. Always re-read
 ## Inner Loop Rules — compile/import/type errors: self-fix max 2. Logic/spec issues: return immediately.
 ```
 
+### Step 4.5: Brief Preflight Gate
+
+Runs AFTER drafting the brief, BEFORE calling the Agent tool. Five mechanical steps:
+
+1. **Extract key symbols** from the brief — type names, field names, function names, file paths, specific values (numeric caps, enum literals, magic strings). Write them down.
+2. **Grep `spec.md` for each symbol** — every occurrence across the spec, not only the Unit directive block.
+3. **Read each hit with ±5 lines of context** — prioritize: Error Handling tables, Core Behavior sections, other Unit directives, Decisions & Notes rows.
+4. **Diff the brief against the full symbol footprint:**
+   - (a) Does the brief impose a constraint that another spec row contradicts?
+   - (b) Does the brief omit a constraint from a row outside the Unit directive block?
+   - (c) Does the brief encode a literal value (e.g. `.max(500)`) that appears with different semantics elsewhere in the spec?
+5. **If any contradiction or omission found: revise the brief before spawning.** Worker tests validate the brief, not the spec — they cannot catch spec/brief drift.
+
+Anti-pattern: *"I read Unit X's directive section carefully."* The spec is a graph, not a list. Every symbol has a cross-reference footprint across multiple sections (data model, error handling, phase directives, decisions table). Grep first.
+
 ### Step 5: Spawn Sonnet Worker
 Use Agent tool with `model: "sonnet"`. Pass only the worker brief — no spec, no ledger, no progress file.
-
-Worker isolation rules:
 - Worker sees ONLY: its brief, the BEFORE/AFTER excerpts you include, and its own tool calls
 - Worker MUST NOT be given the handoff.md path to read directly
 - Worker MUST NOT be given access to the ledger or progress file
@@ -130,19 +98,18 @@ Worker isolation rules:
 
 ### Step 6: Validate
 After worker returns, pit-boss validates independently — do not trust worker's self-report:
-
-1. **Read every modified file** — confirm changes match the AFTER pattern from the brief
-2. **Re-run tests** — call mcp__foreman__run_tests with the unit's test command; read exit_code for pass/fail, STDERR tail for failure context. Do not run tests via Bash — raw output can overflow context.
-3. **Spec check** — read the original spec directive sentence by sentence; confirm each has a corresponding code path
-4. **Export check** — verify exported names and signatures match what the ledger records as interface contracts
-5. **Consistency check** — confirm changes integrate cleanly with prior accepted units; no regressions introduced
+1. Read every modified file — confirm changes match the AFTER pattern from the brief
+2. Re-run tests — call mcp__foreman__run_tests with the unit's test command; read exit_code for pass/fail, STDERR tail for failure context. Do not run tests via Bash.
+3. Spec check — read the original spec directive sentence by sentence; confirm each has a corresponding code path
+4. Export check — verify exported names and signatures match what the ledger records as interface contracts
+5. Consistency check — confirm changes integrate cleanly with prior accepted units; no regressions introduced
 
 ### Step 7: Verdict
 
 **ACCEPT:**
 ```
 mcp__foreman__write_ledger({ operation: "set_unit_status", phase, unit_id, data: { s: "ip" } })   // when starting
-mcp__foreman__write_ledger({ operation: "set_verdict", phase, unit_id, data: { v: "pass" } })     // when accepted
+mcp__foreman__write_ledger({ operation: "set_verdict", phase, unit_id, data: { v: "pass", note: "<attestation — required when scope.has_tests===false>" } })  // when accepted
 mcp__foreman__write_progress({ operation: "complete_unit", data: { unit_id, phase, completed_at, notes } })
 ```
 
@@ -152,16 +119,13 @@ mcp__foreman__write_ledger({ operation: "add_rejection", phase, unit_id, data: {
 mcp__foreman__write_progress({ operation: "log_error", data: { date, unit, what_failed, next_approach } })
 ```
 
+{{include: no-test-attestation}}
+
 ## Two-Tier Fix Protocol
 
-### Inner Loop (same worker)
-- Compile / import / type errors → worker self-fixes, max 2 attempts
-- Logic or spec errors → return to pit-boss immediately
-- Inner loop attempts do NOT count toward outer fix limit
+**Inner Loop (same worker):** Compile/import/type errors → self-fix max 2. Logic/spec errors → return to pit-boss immediately. Inner loop attempts do NOT count toward outer fix limit.
 
-### Outer Loop (fresh worker, max 3 attempts)
-
-Fix brief template:
+**Outer Loop (fresh worker, max 3 attempts)** — Fix brief template:
 ```
 # Fix Brief — Unit [ID], Attempt [N of 3]
 ## What Was Wrong — file:line reference + specific problem description
@@ -185,17 +149,17 @@ After 3 outer-loop failures: STOP. Escalate to user with full rejection history 
 - "Worker said it handled the edge case" — read the code
 - "Checking all four gates would take too long" — run them
 
-**Gate 1 — Contract Completeness:** Every return type field is populated by this function (not deferred to caller). Tests assert field values, not just shapes or non-nil.
+| Gate | Applicability | Check |
+|------|---------------|-------|
+| G1 | always | **Contract Completeness** — Every return field populated by this function (not deferred to caller); tests assert values not shapes |
+| G2 | scope.has_tests | **Assertion Integrity** — No `or True`, no bare except, no skipped assertion without documented reason; fix flakiness don't weaken |
+| G3 | always | **Spec Fidelity** — Every sentence in the spec directive has a corresponding code path; parameter names match literally, not paraphrased |
+| G4 | scope.has_tests | **Test-Suite Impact** — Grep the full test suite for changed function/class/constant names; update any old assertions on prior behavior |
+| G5 | always | **Worker Hygiene** — dead imports, test determinism, assertion completeness, module resolution, fragile timing |
 
-**Gate 2 — Assertion Integrity:** No `or True`, no bare except, no skipped assertion without documented reason. Flaky assertions must be fixed, not weakened.
+**Gate skip protocol:** If `phase.scope.has_tests === false`, gates G2 and G4 auto-skip with `status: n/a` in the verdict. Record the skip in the verdict `note` field.
 
-**Gate 3 — Spec Fidelity:** Every sentence in the spec directive has a corresponding code path. Parameter names, field names, and semantics match spec literally — not paraphrased.
-
-**Gate 4 — Test-Suite Impact:** Grep the full test suite for changed function/class/constant names. Update any old assertions that reference prior behavior.
-
-**Gate 5 — Worker Hygiene:** Language-agnostic checks on every file the worker touched. These catch the class of issues that pass tests but degrade code quality.
-
-Run these checks by reading every modified file:
+### G5 — Worker Hygiene (expanded)
 
 | Check | What to look for | Why |
 |-------|-----------------|-----|
@@ -209,15 +173,14 @@ Run these checks by reading every modified file:
 
 **How to run all gates:** list all functions touched → apply G1 → grep for G2 patterns → read each spec sentence → G3 match → grep G4 symbols → scan modified files for G5 patterns. Do NOT mark CHECKPOINT REACHED until all five pass.
 
+{{include: advisor-grounding}}
+
 ## Checkpoint Protocol
 
 At phase end, after all five gates pass:
+**1. Full Test Suite:** Run the complete test suite via mcp__foreman__run_tests, not Bash.
 
-### 1. Full Test Suite
-Run the complete test suite — not just this phase's tests.
-Run via mcp__foreman__run_tests, not Bash.
-
-### 2. Review via Deliberation
+**2. Review via Deliberation:**
 1. `mcp__foreman__capability_check({ cli: "codex" })` + `mcp__foreman__capability_check({ cli: "gemini" })`
 2. Map to tier:
 
@@ -229,57 +192,30 @@ Run via mcp__foreman__run_tests, not Bash.
 | ✗ | ✗ | Opus agent | Opus agent | Opus (you) |
 
 3. Ask each advisor: "Review these phase changes against the spec. List any: (a) spec directives not implemented, (b) implementations that contradict the spec, (c) missing error handling, (d) test gaps. Be specific — file:line references required."
+
 4. `mcp__foreman__normalize_review` — parse review output into structured findings
 5. Classify each finding: CONFIRMED / REJECTED / UNVERIFIED
 6. If no CLIs available: ask user "Independent review unavailable. Proceed with pit-boss gates only? [y/N]"
 
-### 3. Persist State
+**3. Persist State:**
 ```
 mcp__foreman__write_ledger({ operation: "update_phase_gate", phase, data: { g: "pass" } })
 mcp__foreman__write_progress({ operation: "complete_unit", data: { ... } })
 ```
 Include: unit verdicts, gate results, review findings with classifications, deferred concerns.
 
-### 4. Deliberation Summary
-Present to user: what was built, worker stats, gate results, review findings, test results.
+**4. Deliberation Summary:** Present to user: what was built, worker stats, gate results, review findings, test results.
 
-### 5. Mandatory New Session
-> "Phase [N] complete. New session required. All state persisted to ledger + progress."
+**5. Mandatory New Session:** "Phase [N] complete. New session required. All state persisted to ledger + progress." Default: new session. User can override with `--force-continue`. Before ending, call:
+```
+mcp__foreman__write_journal({ operation: "end_session", data: { dur_min: <estimate>, ctx_used_pct: <estimate>, summary: { units_ok: <N>, units_rej: <N>, w_spawned: <N>, w_wasted: <N>, tok_wasted: 0, delay_min: 0, blockers: [], friction: <1-100> } } })
+```
 
-Default: new session. User can override with `--force-continue`. Verify writes before ending.
+{{include: context-budget}}
 
-## Agent Delegation
+{{include: agent-delegation}}
 
-Use a `code-searcher` sub-agent (Agent tool, no model override needed) for search-heavy tasks:
-- Gate 4: grep the full test suite for changed function/class/constant names
-- Gate 3: search for data flow patterns across multiple files
-- Session start: locate plan docs, handoff.md, and scan project structure
-- Any task requiring searching more than 3 files for a pattern
-
-Do NOT spawn a sub-agent for tasks you can do in one or two reads. Sub-agents cost context — use them where grep scope is large.
-
-## Error Handling
-
-### Scenario Table
-
-| Scenario | Behavior |
-|----------|----------|
-| Worker timeout/crash | Log in ledger, spawn new worker |
-| Worker code doesn't compile | Worker inner loop. Still failing → pit-boss fix worker |
-| Tests fail after worker | Inner loop for mechanical. Spec failures → pit-boss rejects |
-| 3 fix attempts exhausted | Escalate to user with ledger history |
-| CLI unavailable for review | Ask user for explicit waiver |
-| Spec ambiguity discovered | STOP, ask user. Do not guess. |
-| MCP tool call fails | Retry once. If persistent, log error and continue with degraded state |
-
-### Recovery Table
-
-| Attempt | Action |
-|---------|--------|
-| 1 | Diagnose root cause, targeted fix |
-| 2 | Different approach entirely |
-| 3 | Check docs/examples for correct pattern |
-| 4+ | STOP — escalate to user |
+{{include: error-handling-standard}}
 
 ## Common Implementation Traps
 

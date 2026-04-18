@@ -195,3 +195,114 @@ describe("ledger", () => {
     expect(ledger.phases.p1.g).toBe("pass")
   })
 })
+
+describe("ledger v0.0.7.5 backward compat", () => {
+  it("reads an existing ledger without via/scope and returns fields as undefined", async () => {
+    const legacy = {
+      v: 1,
+      ts: "2026-01-01T00:00:00.000Z",
+      phases: {
+        p1: {
+          s: "ip",
+          g: "pending",
+          units: {
+            u1: { s: "done", v: "pass", w: "worker brief", rej: [] },
+          },
+        },
+      },
+    }
+    await fs.writeFile(ledgerPath, JSON.stringify(legacy), "utf-8")
+
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.scope).toBeUndefined()
+    expect(ledger.phases.p1.units.u1.via).toBeUndefined()
+    expect(ledger.phases.p1.units.u1.note).toBeUndefined()
+  })
+
+  it("reads an existing ledger with scope on phase — returns scope populated", async () => {
+    const withScope = {
+      v: 1,
+      ts: "2026-01-01T00:00:00.000Z",
+      phases: {
+        p1: {
+          s: "ip",
+          g: "pending",
+          scope: { has_tests: true, has_api: false, has_build: true },
+          units: {},
+        },
+      },
+    }
+    await fs.writeFile(ledgerPath, JSON.stringify(withScope), "utf-8")
+
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.scope).toEqual({ has_tests: true, has_api: false, has_build: true })
+  })
+
+  it("set_verdict with via and note — roundtrips both fields", async () => {
+    // Delegate first
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "worker brief long enough to pass the 20-char minimum check here" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass", via: "worker", note: "tests green" },
+    })
+
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.units.u1.v).toBe("pass")
+    expect(ledger.phases.p1.units.u1.via).toBe("worker")
+    expect(ledger.phases.p1.units.u1.note).toBe("tests green")
+  })
+
+  it("set_verdict without via/note — on-disk JSON omits those keys entirely", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "worker brief long enough to pass the minimum length check" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass" },
+    })
+
+    const raw = await fs.readFile(ledgerPath, "utf-8")
+    // Keys should NOT appear in the serialized JSON when undefined
+    expect(raw).not.toContain("\"via\"")
+    expect(raw).not.toContain("\"note\"")
+    // Sanity: the v field IS present
+    expect(raw).toContain("\"v\":\"pass\"")
+  })
+
+  it("subsequent set_verdict without via clears a previously-set via", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "worker brief long enough to pass the minimum length check" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass", via: "worker", note: "first" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass" },
+    })
+
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.units.u1.via).toBeUndefined()
+    expect(ledger.phases.p1.units.u1.note).toBeUndefined()
+  })
+})

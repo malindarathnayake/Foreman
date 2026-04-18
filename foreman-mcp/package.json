@@ -1,6 +1,6 @@
 {
   "name": "@malindarathnayake/foreman-mcp",
-  "version": "0.0.7",
+  "version": "0.0.7.5",
   "description": "Foreman MCP server — workflow orchestrator for planning and implementation skills",
   "type": "module",
   "main": "dist/server.js",

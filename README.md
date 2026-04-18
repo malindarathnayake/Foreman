@@ -10,7 +10,7 @@
 
 **A software development governance layer for AI coding agents.** Foreman enforces a design → spec → implement pipeline, validates every state change through a structured ledger, and uses independent models (Codex, Gemini) to review work at phase gates. It doesn't write code — it supervises agents that do.
 
-**15 tools. 3 skill protocols. ~750 tokens idle overhead.**
+**16 tools. 3 skill protocols. Skill bodies trimmed ~30% in v0.0.7.5 for tighter context budgets.**
 
 ---
 
@@ -19,8 +19,8 @@
 ### Install
 
 ```bash
-curl -LO https://github.com/malindarathnayake/Foreman/raw/main/artifacts/malindarathnayake-foreman-mcp-0.0.7.tgz
-npm install -g malindarathnayake-foreman-mcp-0.0.7.tgz
+curl -LO https://github.com/malindarathnayake/Foreman/raw/main/artifacts/malindarathnayake-foreman-mcp-0.0.7.5.tgz
+npm install -g malindarathnayake-foreman-mcp-0.0.7.5.tgz
 ```
 
 Or via GitHub Packages: `npm install -g @malindarathnayake/foreman-mcp` ([setup](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-npm-registry#authenticating-to-github-packages))
@@ -104,13 +104,14 @@ flowchart LR
 | `spec_generator` | Spec generation + ledger/progress seeding |
 | `pitboss_implementor` | Pitboss/worker orchestration with G1-G5 gates |
 
-### Data (8 tools)
+### Data (9 tools)
 
 | Tool | Purpose |
 |------|---------|
-| `read_ledger` / `write_ledger` | Unit status, verdicts, rejections, phase gates |
-| `read_progress` / `write_progress` | Bounded progress view, phase management |
+| `read_ledger` / `write_ledger` | Unit status, verdicts (with `via` attribution), rejections, phase gates, phase scope |
+| `read_progress` / `write_progress` | Bounded progress view, phase management, fenced PROGRESS.md auto-sync |
 | `read_journal` / `write_journal` | Session telemetry — friction events, rollups |
+| `session_orient` | Returns current phase, last completed, and next-up unit in one call |
 | `bundle_status` | Server version and override info |
 | `changelog` | Version history |
 
@@ -177,7 +178,7 @@ Foreman is a **stdio-only MCP server**. The trust boundary is the parent process
 
 | Layer | What It Protects | How |
 |-------|-----------------|-----|
-| **Input validation** | All 15 MCP tools | Zod schemas with `.max()` length caps, enum restrictions, regex filters on every input |
+| **Input validation** | All 16 MCP tools | Zod schemas with `.max()` length caps, enum restrictions, regex filters on every input |
 | **Runner allowlist** | `run_tests` tool | Only `npm`, `pytest`, `go`, `cargo`, `dotnet`, `make`. Regex filter (`/^[a-zA-Z0-9_.-]+$/`) on env-supplied entries. `npx` explicitly denied |
 | **Absolute path resolution** | CLI invocation | All external CLIs resolved to absolute paths via `which`/`where`. Relative paths and `.cmd`/`.bat` shims rejected on Windows |
 | **Stdin delivery** | `invoke_advisor` tool | Prompts sent via stdin pipe, not command-line args. Bypasses shell metacharacter injection and OS `ARG_MAX` limits |
@@ -203,6 +204,8 @@ Foreman is a **stdio-only MCP server**. The trust boundary is the parent process
 | v0.0.5 | 8 | 5 | 3 | 0 |
 | v0.0.6 | 6 | 5 | 0 | 1 |
 | **Total** | **14** | **10** | **3** | **1** |
+
+v0.0.7.5 is a workflow-hygiene patch — skill trim, ledger honesty, session orient. No new attack surface; all existing defenses intact.
 
 ### Dependencies
 
@@ -236,7 +239,7 @@ git clone https://github.com/malindarathnayake/foreman.git
 cd foreman/foreman-mcp
 npm install
 npm run build
-npm test          # 146 tests across 10 files
+npm test          # 301 tests across 13 files
 ```
 
 ---

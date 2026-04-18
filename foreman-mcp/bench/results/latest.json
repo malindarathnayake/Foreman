@@ -1,0 +1,90 @@
+{
+  "timestamp": "2026-04-18T06:00:06.880Z",
+  "version": "0.0.7.5",
+  "node": "v24.14.0",
+  "platform": "darwin arm64",
+  "test_count": 13,
+  "test_duration_s": 19.8,
+  "benchmarks": [
+    {
+      "name": "ledger_write_unit_status",
+      "ops": 50,
+      "avg_ms": 0.44,
+      "min_ms": 0.22,
+      "max_ms": 0.98,
+      "p95_ms": 0.95
+    },
+    {
+      "name": "ledger_write_add_rejection",
+      "ops": 50,
+      "avg_ms": 0.41,
+      "min_ms": 0.23,
+      "max_ms": 0.91,
+      "p95_ms": 0.78
+    },
+    {
+      "name": "ledger_read_full_small",
+      "ops": 50,
+      "avg_ms": 0.06,
+      "min_ms": 0.04,
+      "max_ms": 0.14,
+      "p95_ms": 0.11
+    },
+    {
+      "name": "ledger_read_full_large_100units",
+      "ops": 50,
+      "avg_ms": 0.1,
+      "min_ms": 0.06,
+      "max_ms": 0.25,
+      "p95_ms": 0.21
+    },
+    {
+      "name": "progress_write_read_cycle",
+      "ops": 50,
+      "avg_ms": 0.37,
+      "min_ms": 0.23,
+      "max_ms": 0.73,
+      "p95_ms": 0.61
+    },
+    {
+      "name": "normalize_review_5_findings",
+      "ops": 50,
+      "avg_ms": 0,
+      "min_ms": 0,
+      "max_ms": 0.02,
+      "p95_ms": 0.01
+    },
+    {
+      "name": "normalize_review_100_findings",
+      "ops": 50,
+      "avg_ms": 0.07,
+      "min_ms": 0.06,
+      "max_ms": 0.21,
+      "p95_ms": 0.12
+    },
+    {
+      "name": "normalize_review_10kb_input",
+      "ops": 50,
+      "avg_ms": 65.31,
+      "min_ms": 60.92,
+      "max_ms": 81.2,
+      "p95_ms": 78.65
+    },
+    {
+      "name": "toon_key_value",
+      "ops": 500,
+      "avg_ms": 0,
+      "min_ms": 0,
+      "max_ms": 0.02,
+      "p95_ms": 0
+    },
+    {
+      "name": "toon_table_50_rows",
+      "ops": 500,
+      "avg_ms": 0,
+      "min_ms": 0,
+      "max_ms": 0.11,
+      "p95_ms": 0.01
+    }
+  ]
+}
