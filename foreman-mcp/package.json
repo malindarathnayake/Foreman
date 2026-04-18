@@ -15,9 +15,7 @@
     "node": ">=22"
   },
   "license": "AGPL-3.0-only",
-  "publishConfig": {
-    "registry": "https://npm.pkg.github.com"
-  },
+  "private": true,
   "scripts": {
     "build": "tsc",
     "test": "vitest run",
