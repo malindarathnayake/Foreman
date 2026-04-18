@@ -23,7 +23,7 @@ curl -LO https://github.com/malindarathnayake/Foreman/raw/main/artifacts/malinda
 npm install -g malindarathnayake-foreman-mcp-0.0.7.5.tgz
 ```
 
-Or via GitHub Packages: `npm install -g @malindarathnayake/foreman-mcp` ([setup](https://docs.github.com/en/packages/working-with-a-github-packages-registry/working-with-the-npm-registry#authenticating-to-github-packages))
+Or grab the latest tarball directly from the [Releases page](https://github.com/malindarathnayake/Foreman/releases/latest).
 
 ### Configure
 
@@ -40,14 +40,8 @@ Add to your MCP settings (`~/.claude/settings.json`, `.cursor/mcp.json`, or Clin
 ```
 
 <details>
-<summary>Other install methods (npx, Windows)</summary>
+<summary>Windows install note</summary>
 
-Via npx (no install):
-```json
-{ "mcpServers": { "foreman": { "command": "npx", "args": ["-y", "@malindarathnayake/foreman-mcp"] } } }
-```
-
-Windows:
 ```json
 { "mcpServers": { "foreman": { "command": "cmd", "args": ["/c", "foreman-mcp"] } } }
 ```
