@@ -4,123 +4,17 @@ version: 0.0.5
 description: Generate formal implementation documents from a design summary. Produces spec, handoff, progress tracker, and testing harness. Second stage of the Foreman pipeline.
 ---
 
-Note: This skill is delivered by the Foreman MCP bundle. To customize it,
-create a local override at .claude/skills/spec-generator/SKILL.md
+{{include: ledger-critical}}
 
-CRITICAL: Never write to Docs/.foreman-ledger.json using FileWriteTool or Edit.
-All ledger mutations MUST go through mcp__foreman__write_ledger.
-Direct file writes to the ledger will be rejected by the Foreman review gate.
-
-## Session Start
-1. Call `mcp__foreman__bundle_status` — verify version, log warnings if degraded
-2. Call `mcp__foreman__read_ledger` — check if a ledger already exists (avoid overwriting prior state)
-3. If ledger exists with active phases → WARN user: "Existing ledger found. Regenerating spec will overwrite it. Confirm before proceeding."
-4. `mcp__foreman__write_journal({ operation: "init_session", data: { target_version: "<version>", branch: "<branch>", phase: 0, units: ["spec"], env: { agent: "opus", worker: "n/a", codex: null, gemini: null } } })`
-5. Read design summary from `Docs/design-summary.md` or user-provided source
+{{include: session-start}}
 
 ## Core Directive
 
 Transform a design summary into the complete implementation document set. No creativity — this is a translation step. Decisions are already made; format them into documents implementation agents can execute without asking questions.
 
-## Ambiguity Resolution Protocol
+{{include: ambiguity-resolution}}
 
-This is MANDATORY. The spec writer's #1 failure mode is glossing over ambiguities.
-
-**What counts as ambiguous:**
-
-| Pattern | Example |
-|---------|---------|
-| Vague error handling | "handle errors appropriately" |
-| Unspecified protocol | "use a queue" but not which one |
-| Missing auth/retry/timeout | Integration without error behavior |
-| Undefined schema | Data flow in prose, shape unspecified |
-| Deferred architecture | "defer to implementation" for arch decisions |
-| Fuzzy scope | "maybe include X in v1" |
-| Unquantified requirements | Performance mentioned but not quantified |
-
-**Resolution flow:**
-1. **Detect** — flag every ambiguity while validating design summary or designing implementation order
-2. **Classify** — Trivial (one sensible answer given context → resolve with note) or Non-trivial (genuine tradeoffs → escalate)
-3. **Escalate non-trivial** — use the built-in Deliberation Protocol (below)
-4. **Wait** — do NOT proceed until user arbitrates each ambiguity
-5. **Incorporate** — update design context with resolved decisions
-
-**Skip condition:** If user says "skip council" or "just ask me directly", present ambiguities as numbered list for inline resolution.
-
-## Deliberation Protocol
-
-When non-trivial ambiguities need resolution — escalate to multi-model deliberation.
-
-### Detection
-1. `mcp__foreman__capability_check({ cli: "codex" })` → codex available?
-2. `mcp__foreman__capability_check({ cli: "gemini" })` → gemini available?
-
-### Tier Mapping
-| Codex | Gemini | Advisor A | Advisor B | Moderator |
-|-------|--------|-----------|-----------|-----------|
-| ✓ | ✓ | Codex CLI | Gemini CLI | Opus (you) |
-| ✓ | ✗ | Codex CLI | Opus agent | Opus (you) |
-| ✗ | ✓ | Gemini CLI | Opus agent | Opus (you) |
-| ✗ | ✗ | Opus agent | Opus agent (adversarial) | Opus (you) |
-
-### CLI Invocation
-
-Both CLIs are invoked via the `invoke_advisor` tool. The tool handles platform
-detection (which/where), .cmd shim wrapping on Windows, and stdin prompt delivery
-internally — no shell commands needed.
-
-**Codex:**
-`mcp__foreman__invoke_advisor({ cli: "codex", prompt: "<PROMPT>" })`
-
-**Gemini:**
-`mcp__foreman__invoke_advisor({ cli: "gemini", prompt: "<PROMPT>" })`
-
-Default timeout: 300000ms. Prompts are delivered via stdin to bypass OS arg length
-limits. Gemini is stateless — each call is fresh.
-
-**Opus agent fallback:** Use Agent tool with `model: "opus"` and adversarial critic prompt.
-
-### Prompt Template (both advisors)
-```
-You are an expert software architect on an architecture review council.
-Context: Generating implementation spec from design summary for [project].
-AMBIGUITIES: <numbered list of unresolved decisions>
-CONSTRAINTS: <from design summary>
-CODEBASE CONTEXT: You have access to the codebase in the current directory.
-
-For each ambiguity: recommend a concrete approach with rationale, list tradeoffs,
-rate confidence (LOW/MEDIUM/HIGH). Be opinionated. Take a clear position.
-```
-
-### Protocol (6 phases, max 3 cross-examination rounds)
-| Phase | Action |
-|-------|--------|
-| 1. Independent Analysis | Send same ambiguities to both advisors in parallel |
-| 2. Moderator Digest | Summarize positions, flag: [HALLUCINATION RISK], [OVER-ENGINEERING], [MISSING EVIDENCE], [SYNCOPHANCY RISK] |
-| 3. Cross-Examination | Each challenges the other. Max 3 rounds. Re-embed context for Gemini. |
-| 4. Convergence Check | Full → Phase 5. Partial → another round. Deadlock after 3 → present both. |
-| 5. Council Report | Consensus or competing proposals with moderator recommendation |
-| 6. User Arbitration | User picks. Do NOT proceed until user decides. |
-
-### Cross-Examination Prompt Template
-```
-SPEC COUNCIL — ROUND N CROSS-EXAMINATION
-CODEBASE CONTEXT: <key excerpts for stateless advisors>
-Your previous recommendation: <summary>
-Opposing recommendation: <summary>
-Their key arguments: <bullets>
-
-Tasks: 1. Identify weakest points in opposing view 2. Challenge with codebase evidence
-3. Defend where you're right 4. CONCEDE where opposing view is better
-5. Propose synthesis if both have merit. Do NOT be agreeable for the sake of it.
-```
-
-### Anti-Patterns
-- Do NOT relay outputs verbatim — summarize and compare
-- Do NOT let advisors see raw output from each other
-- Do NOT average recommendations — push for a winner
-- Do NOT accept unanimous agreement without verification
-- Do NOT run more than 3 cross-examination rounds
+{{include: deliberation-protocol}}
 
 ## Agent Delegation
 
@@ -131,21 +25,9 @@ Use `code-searcher` sub-agent for grounding checks:
 - G7: test suite grep for changed symbols
 - G8: controller/handler response models
 
-Launch multiple agents in parallel for independent checks. Do not wait for one to finish before starting another.
+Launch multiple agents in parallel for independent checks.
 
-## Uncertainty Protocol
-
-When facts cannot be confirmed from available files, declare explicitly:
-
-**`UNKNOWN: [thing]`** — not knowable without external input
-- State what is unknown and the fastest way to find out
-- State what spec section is blocked until resolved
-
-**`UNVERIFIED: [claim]`** — believed true but not confirmed from live files
-- State confidence level and how to verify
-- State what is blocked until verified
-
-Rules: Never use "maybe", "might", "I think", "probably" for system behavior in any generated document. All UNKNOWN/UNVERIFIED items in the spec must appear in Out of Scope or as explicit blocking items.
+{{include: uncertainty-protocol}}
 
 ## Inputs
 
@@ -162,8 +44,6 @@ If missing critical sections → list what's missing, don't fill gaps with assum
 | Blocker | Specific missing section(s) |
 | What I Need | Exact content required to proceed |
 | Next Step | Call `mcp__foreman__design_partner` to produce a complete design summary |
-
-Do NOT generate partial spec documents from incomplete design summaries. A spec built on gaps will produce an implementation that fails at the seams.
 
 ## Procedure
 
@@ -209,8 +89,6 @@ Write `Docs/spec.md`, `Docs/handoff.md`, `Docs/PROGRESS.md`, `Docs/testing-harne
 ## Document Templates
 
 ### Document 1: `Docs/spec.md`
-
-Sections (terse):
 - **Intent** — one paragraph, what this builds and why
 - **Decisions & Notes** — table: Decision | Choice | Rationale | Source
 - **Architecture** — mermaid or text diagram + file structure tree
@@ -225,8 +103,6 @@ Sections (terse):
 - **Implementation Order** — phases with units; each unit has: files, directives, test command, DO NOT items; checkpoints between phases
 
 ### Document 2: `Docs/handoff.md`
-
-Sections (terse):
 - **Project Overview** — one paragraph + link to spec.md
 - **Before Starting** — session protocol (read spec, read this, read PROGRESS.md)
 - **Rules** — implementation rules list (no scope additions, no skipping tests, etc.)
@@ -236,8 +112,6 @@ Sections (terse):
 - **Start** — first session instructions vs resuming mid-implementation
 
 ### Document 3: `Docs/PROGRESS.md`
-
-Sections (terse):
 - **Current Status** — phase, last completed unit, next up, blocked (if any)
 - **Checklist** — per-phase checkboxes with file names and checkpoint commands
 - **Decisions & Notes** — table: Decision | Value | Source (populated from spec)
@@ -247,8 +121,6 @@ Sections (terse):
 - **Environment Notes** — language version, required env vars, setup commands
 
 ### Document 4: `Docs/testing-harness.md`
-
-Sections (terse):
 - **Archetype** — named archetype with one-line description
 - **Operator Questions** — pre-filled where known, UNKNOWN where not
 - **Test Tiers** — unit → mocked integration → real integration → e2e (per-tier: what it tests, how to run, when to run)
@@ -312,8 +184,6 @@ When a unit includes "check endpoint X for Y":
 
 ## Ledger Seeding
 
-After generating the handoff document, seed the ledger with the implementation structure:
-
 For each phase and unit in the implementation order:
 ```
 mcp__foreman__write_ledger({
@@ -324,11 +194,7 @@ mcp__foreman__write_ledger({
 })
 ```
 
-This creates the phase/unit structure so the implementor starts with pre-populated state.
-
 ## Progress Seeding
-
-After generating PROGRESS.md, seed the progress state:
 
 ```
 mcp__foreman__write_progress({

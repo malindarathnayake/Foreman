@@ -21,6 +21,8 @@ import { activateSpecGenerator } from "./tools/activateSpecGenerator.js"
 import { NormalizeReviewInputSchema } from "./types.js"
 import { readJournal, initSession, logEvent, endSession } from "./lib/journal.js"
 import { invokeAdvisor, formatAdvisorResult } from "./tools/invokeAdvisor.js"
+import { sessionOrient } from "./tools/sessionOrient.js"
+import { renderIncludes, loadSkill } from "./lib/skillLoader.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -39,7 +41,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   const journalPath = config?.journalPath ?? "Docs/.foreman-journal.json"
 
   const server = new McpServer(
-    { name: "foreman", version: "0.0.7" },
+    { name: "foreman", version: "0.0.7.5" },
     { capabilities: { resources: {}, tools: {} } }
   )
 
@@ -162,9 +164,10 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "  set_verdict     — Record pass/fail verdict. data: { v: 'pass'|'fail'|'pending' }. Requires: phase, unit_id.",
         "  add_rejection   — Log a rejection. data: { r: string, msg: string, ts: string }. Requires: phase, unit_id.",
         "  update_phase_gate — Set phase gate result. data: { g: 'pass'|'fail'|'pending' }. Requires: phase.",
+        "  set_phase_scope — Declare phase scope for gate applicability. data: { has_tests, has_api, has_build: boolean }. Requires: phase.",
       ].join("\n"),
       inputSchema: {
-        operation: z.enum(["set_unit_status", "set_verdict", "add_rejection", "update_phase_gate"]),
+        operation: z.enum(["set_unit_status", "set_verdict", "add_rejection", "update_phase_gate", "set_phase_scope"]),
         unit_id: z.string().max(10000).optional(),
         phase: z.string().max(10000).optional(),
         data: z.record(z.unknown()),
@@ -194,7 +197,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
     },
     async (args, _extra) => {
-      const text = await handleWriteProgress(progressPath, args, docsDir)
+      const text = await handleWriteProgress(progressPath, args, docsDir, ledgerPath)
       return { content: [{ type: "text" as const, text }] }
     }
   )
@@ -248,6 +251,17 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const text = await runTests(args.runner, args.args, args.timeout_ms, args.max_output_chars)
+      return { content: [{ type: "text" as const, text }] }
+    }
+  )
+
+  server.registerTool(
+    "session_orient",
+    {
+      description: "Returns current Foreman session state: current phase, unit, next pending, blocked status. Call at session start for orientation.",
+    },
+    async (_extra) => {
+      const text = await sessionOrient(ledgerPath, progressPath)
       return { content: [{ type: "text" as const, text }] }
     }
   )
@@ -334,7 +348,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   let skillFiles: string[] = []
   try {
     const entries = await fs.readdir(skillsDir)
-    skillFiles = entries.filter((f) => f.endsWith(".md"))
+    skillFiles = entries.filter((f) => f.endsWith(".md") && !f.startsWith("_"))
   } catch {
     console.error(`[foreman] Warning: skills directory not found at ${skillsDir}`)
   }
@@ -352,9 +366,19 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         mimeType: "text/markdown",
       },
       async (resourceUri, _extra) => {
-        const text = await fs.readFile(filePath, "utf-8")
-        return {
-          contents: [{ uri: resourceUri.href, mimeType: "text/markdown", text }],
+        try {
+          const result = await loadSkill(name, skillsDir)
+          return {
+            contents: [{ uri: resourceUri.href, mimeType: "text/markdown", text: result.content }],
+          }
+        } catch (err) {
+          console.error(`[foreman] Resource read failed for "${name}": ${(err as Error).message}`)
+          // Fall back to bundled raw + renderIncludes, which is the existing behavior
+          const raw = await fs.readFile(filePath, "utf-8")
+          const text = await renderIncludes(raw, filePath)
+          return {
+            contents: [{ uri: resourceUri.href, mimeType: "text/markdown", text }],
+          }
         }
       }
     )
@@ -429,7 +453,7 @@ async function runDiag(): Promise<void> {
   log("exists", String(skillsDirExists))
   if (skillsDirExists) {
     const entries = await fs.readdir(resolvedSkillsDir)
-    const mdFiles = entries.filter((f) => f.endsWith(".md"))
+    const mdFiles = entries.filter((f) => f.endsWith(".md") && !f.startsWith("_"))
     log("skill files", mdFiles.length > 0 ? mdFiles.join(", ") : "(none)")
   }
 

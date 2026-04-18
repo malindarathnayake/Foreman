@@ -23,14 +23,14 @@ afterEach(async () => {
   await server?.close()
 })
 
-describe("list tools — verify all 15 present, update_bundle absent", () => {
+describe("list tools — verify all 16 present, update_bundle absent", () => {
   beforeEach(async () => {
     await setupServer()
   })
 
-  it("lists exactly 15 tools", async () => {
+  it("lists exactly 16 tools", async () => {
     const result = await client.listTools()
-    expect(result.tools).toHaveLength(15)
+    expect(result.tools).toHaveLength(16)
   })
 
   it("includes all required tool names", async () => {
@@ -51,6 +51,32 @@ describe("list tools — verify all 15 present, update_bundle absent", () => {
     expect(names).toContain("write_journal")
     expect(names).toContain("read_journal")
     expect(names).toContain("invoke_advisor")
+    expect(names).toContain("session_orient")
+  })
+
+  it("session_orient invocation returns a non-empty string", async () => {
+    const result = await client.callTool({
+      name: "session_orient",
+      arguments: {},
+    })
+    const content = result.content as Array<{ type: string; text: string }>
+    expect(content).toHaveLength(1)
+    expect(content[0].type).toBe("text")
+    expect(typeof content[0].text).toBe("string")
+    expect(content[0].text.length).toBeGreaterThan(0)
+    // On the default test setup the ledger is fresh (or non-existent),
+    // so the orient tool returns the empty-ledger shape.
+    expect(content[0].text).toContain("status:")
+    expect(content[0].text).toContain("phases_total:")
+  })
+
+  it("session_orient tool description matches spec exactly", async () => {
+    const result = await client.listTools()
+    const tool = result.tools.find((t) => t.name === "session_orient")
+    expect(tool).toBeDefined()
+    expect(tool!.description).toBe(
+      "Returns current Foreman session state: current phase, unit, next pending, blocked status. Call at session start for orientation."
+    )
   })
 
   it("does not include update_bundle", async () => {
@@ -68,6 +94,10 @@ describe("list resources — verify skill URIs", () => {
   it("lists exactly 3 skill resources", async () => {
     const result = await client.listResources()
     expect(result.resources).toHaveLength(3)
+    for (const r of result.resources) {
+      expect(r.uri).not.toContain("_common-protocol")
+      expect(r.uri).not.toMatch(/\/_[^/]+$/)
+    }
   })
 
   it("includes skill://foreman/design-partner", async () => {
@@ -94,14 +124,13 @@ describe("read skill resource — verify content", () => {
     await setupServer()
   })
 
-  it("design-partner contains frontmatter, deliberation, and override notice", async () => {
+  it("design-partner contains frontmatter and deliberation", async () => {
     const result = await client.readResource({ uri: "skill://foreman/design-partner" })
     expect(result.contents).toHaveLength(1)
     const text = result.contents[0].text as string
     expect(text).toContain("name: foreman:design-partner")
     expect(text).toContain("version: 0.0.5")
     expect(text).toContain("mcp__foreman__capability_check")
-    expect(text).toContain("Foreman MCP bundle")
   })
 
   it("spec-generator contains frontmatter, ledger prohibition, and grounding checks", async () => {
@@ -114,12 +143,11 @@ describe("read skill resource — verify content", () => {
     expect(text).toContain("G1:")
   })
 
-  it("implementor contains disableSlashCommand, slash-command guard, and MCP tool refs", async () => {
+  it("implementor contains frontmatter and MCP tool refs", async () => {
     const result = await client.readResource({ uri: "skill://foreman/implementor" })
     expect(result.contents).toHaveLength(1)
     const text = result.contents[0].text as string
     expect(text).toContain("version: 0.0.5")
-    expect(text).toContain("mcp__foreman__pitboss_implementor")
     expect(text).toContain("mcp__foreman__read_ledger")
     expect(text).toContain("mcp__foreman__write_ledger")
   })
@@ -280,5 +308,78 @@ LOW: src/lib/toon.ts:8 — Variable name could be more descriptive
     expect(content[0].type).toBe("text")
     expect(content[0].text).toContain("test-reviewer")
     expect(content[0].text).toContain("findings")
+  })
+})
+
+describe("set_phase_scope round-trip via MCP", () => {
+  let tmpDir: string
+  let ledgerPath: string
+  let progressPath: string
+  let originalCwd: string
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "integration-scope-"))
+    ledgerPath = path.join(tmpDir, "ledger.json")
+    progressPath = path.join(tmpDir, "progress.json")
+    originalCwd = process.cwd()
+    process.chdir(tmpDir)
+    await setupServer({ ledgerPath, progressPath })
+  })
+
+  afterEach(async () => {
+    process.chdir(originalCwd)
+    await fs.rm(tmpDir, { recursive: true, force: true })
+  })
+
+  it("writes scope via MCP client and reads it back", async () => {
+    const writeResult = await client.callTool({
+      name: "write_ledger",
+      arguments: {
+        operation: "set_phase_scope",
+        phase: "v75-p1",
+        data: { has_tests: true, has_api: false, has_build: true },
+      },
+    })
+    const writeContent = writeResult.content as Array<{ type: string; text: string }>
+    expect(writeContent[0].text).toContain("ok")
+    expect(writeContent[0].text).toContain("set_phase_scope")
+
+    const readResult = await client.callTool({
+      name: "read_ledger",
+      arguments: { phase: "v75-p1", query: "full" },
+    })
+    const readContent = readResult.content as Array<{ type: string; text: string }>
+    const text = readContent[0].text
+    // read_ledger returns JSON-ish body; just check the scope fields are present
+    expect(text).toContain("has_tests")
+    expect(text).toContain("has_api")
+    expect(text).toContain("has_build")
+  })
+
+  it("rejects unknown operation at the MCP surface", async () => {
+    // The enum at server.ts line 167 is the MCP-surface gate.
+    // Unknown operation should produce an error response rather than a silent pass-through.
+    const result = await client.callTool({
+      name: "write_ledger",
+      arguments: {
+        operation: "set_phase_scope_typo" as any,
+        phase: "v75-p1",
+        data: { has_tests: true, has_api: false, has_build: true },
+      },
+    })
+    // MCP client errors are surfaced via `isError: true` on the result
+    expect(result.isError).toBe(true)
+  })
+
+  it("write_ledger tool inputSchema.operation enum includes set_phase_scope", async () => {
+    const result = await client.listTools()
+    const writeLedgerTool = result.tools.find((t) => t.name === "write_ledger")
+    expect(writeLedgerTool).toBeDefined()
+    const operationSchema = (writeLedgerTool!.inputSchema as any).properties.operation
+    expect(operationSchema.enum).toContain("set_phase_scope")
+    expect(operationSchema.enum).toContain("set_unit_status")
+    expect(operationSchema.enum).toContain("set_verdict")
+    expect(operationSchema.enum).toContain("add_rejection")
+    expect(operationSchema.enum).toContain("update_phase_gate")
   })
 })

@@ -7,6 +7,7 @@ interface ChangelogEntry {
 }
 
 const CHANGELOG: ChangelogEntry[] = [
+  { version: "0.0.7.5", date: "2026-04-17", description: "Workflow hygiene patch: ledger honesty (via field, phase scope), session_orient tool, PROGRESS.md fenced auto-sync, skill trim ~30% via common protocol extraction" },
   { version: "0.0.7", date: "2026-04-11", description: "Pentest triage fixes — remove npx from run_tests allowlist + deny via env (INJ-008), regex filter on FOREMAN_TEST_ALLOWLIST (INJ-007), settled guard on runTests data handlers (EXH-004), ComSpec via SystemRoot (INJ-006), block format for invoke_advisor output (INJ-009)" },
   { version: "0.0.6", date: "2026-04-11", description: "Security hardening, cross-platform CLI invoker, session journal — input length caps on all inline schemas, normalize_review schema extraction, error_log FIFO cap, cross-platform invoke_advisor tool (SpawnPlan + stdin delivery + .cmd shim wrapping + CRLF handling), capabilityCheck adopts SpawnPlan, runTests rejects .cmd runners on Windows, session journal for operational telemetry" },
   { version: "0.0.5", date: "2026-04-09", description: "run_tests tool — bounded test output with command allowlist; externalCli buffer cap; security hardening: input length caps, rejection array cap, absolute CLI path resolution, generic skill loader errors (pentest triage v0.0.5)" },

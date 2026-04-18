@@ -11,6 +11,8 @@ export interface Rejection {
 export interface Unit {
   s: "pending" | "ip" | "delegated" | "done" | "fail"
   v: "pass" | "fail" | "pending"
+  via?: "worker" | "pitboss-direct" | "n/a"
+  note?: string
   w: string | null
   rej: Rejection[]
 }
@@ -18,7 +20,14 @@ export interface Unit {
 export interface Phase {
   s: "ip" | "done" | "blocked"
   g: "pass" | "fail" | "pending"
+  scope?: PhaseScope
   units: Record<string, Unit>
+}
+
+export interface PhaseScope {
+  has_tests: boolean
+  has_api: boolean
+  has_build: boolean
 }
 
 export interface LedgerFile {
@@ -45,6 +54,8 @@ const SetVerdictInput = z.object({
   phase: z.string().max(10000),
   data: z.object({
     v: z.enum(["pass", "fail", "pending"]),
+    via: z.enum(["worker", "pitboss-direct", "n/a"]).optional(),
+    note: z.string().max(10000).optional(),
   }),
 })
 
@@ -68,11 +79,24 @@ const UpdatePhaseGateInput = z.object({
   }),
 })
 
+export const PhaseScopeSchema = z.object({
+  has_tests: z.boolean(),
+  has_api: z.boolean(),
+  has_build: z.boolean(),
+})
+
+const SetPhaseScopeInput = z.object({
+  operation: z.literal("set_phase_scope"),
+  phase: z.string().max(10000),
+  data: PhaseScopeSchema,
+})
+
 export const WriteLedgerInputSchema = z.discriminatedUnion("operation", [
   SetUnitStatusInput,
   SetVerdictInput,
   AddRejectionInput,
   UpdatePhaseGateInput,
+  SetPhaseScopeInput,
 ])
 
 export type WriteLedgerInput = z.infer<typeof WriteLedgerInputSchema>

@@ -1,6 +1,7 @@
 import fs from "fs/promises"
 import path from "path"
 import type { LedgerFile, WriteLedgerInput } from "../types.js"
+import { detectTestFiles } from "./detectTestFiles.js"
 
 // ─── Per-path mutex registry ──────────────────────────────────────────────────
 // Each ledger path gets its own promise-chain lock so different files can be
@@ -23,7 +24,10 @@ function freshLedger(): LedgerFile {
 }
 
 // ─── Read ─────────────────────────────────────────────────────────────────────
-export async function readLedger(filePath: string): Promise<LedgerFile> {
+export async function readLedger(
+  filePath: string,
+  opts?: { readOnly?: boolean }
+): Promise<LedgerFile> {
   let raw: string
   try {
     raw = await fs.readFile(filePath, "utf-8")
@@ -38,9 +42,11 @@ export async function readLedger(filePath: string): Promise<LedgerFile> {
   try {
     return JSON.parse(raw) as LedgerFile
   } catch {
-    // Corrupt JSON — back it up and return a fresh ledger
-    const backupPath = `${filePath}.corrupt.${Date.now()}`
-    await fs.rename(filePath, backupPath)
+    // Corrupt JSON — back it up and return a fresh ledger (unless read-only)
+    if (!opts?.readOnly) {
+      const backupPath = `${filePath}.corrupt.${Date.now()}`
+      await fs.rename(filePath, backupPath)
+    }
     return freshLedger()
   }
 }
@@ -75,7 +81,7 @@ function ensurePhase(ledger: LedgerFile, phase: string): void {
 }
 
 // ─── Apply mutation ───────────────────────────────────────────────────────────
-function applyOperation(ledger: LedgerFile, operation: WriteLedgerInput): void {
+async function applyOperation(ledger: LedgerFile, operation: WriteLedgerInput): Promise<void> {
   switch (operation.operation) {
     case "set_unit_status": {
       const { phase, unit_id, data } = operation
@@ -109,7 +115,18 @@ function applyOperation(ledger: LedgerFile, operation: WriteLedgerInput): void {
           )
         }
       }
-      ledger.phases[phase].units[unit_id].v = data.v
+      const unit = ledger.phases[phase].units[unit_id]
+      unit.v = data.v
+      if (data.via !== undefined) {
+        unit.via = data.via
+      } else {
+        delete unit.via
+      }
+      if (data.note !== undefined) {
+        unit.note = data.note
+      } else {
+        delete unit.note
+      }
       break
     }
     case "add_rejection": {
@@ -130,6 +147,27 @@ function applyOperation(ledger: LedgerFile, operation: WriteLedgerInput): void {
       ledger.phases[phase].g = data.g
       break
     }
+    case "set_phase_scope": {
+      const { phase, data } = operation
+      ensurePhase(ledger, phase)
+      if (ledger.phases[phase].scope !== undefined) {
+        throw new Error(
+          `scope_already_set: phase '${phase}' already has scope declared. ` +
+          `Existing: ${JSON.stringify(ledger.phases[phase].scope)}. ` +
+          `Clear manually if re-declaration is intended (out of scope for v0.0.7.5).`
+        )
+      }
+      if (!data.has_tests) {
+        const found = await detectTestFiles(process.cwd())
+        if (found.length > 0) {
+          console.error(
+            `[foreman write_ledger] has_tests: false declared but ${found.length} test files detected`
+          )
+        }
+      }
+      ledger.phases[phase].scope = { ...data }
+      break
+    }
   }
 }
 
@@ -141,7 +179,7 @@ export async function writeLedger(
   return withLedgerLock(filePath, async () => {
     const ledger = await readLedger(filePath)
 
-    applyOperation(ledger, operation)
+    await applyOperation(ledger, operation)
     ledger.ts = new Date().toISOString()
 
     // Atomic write: write to .tmp then rename

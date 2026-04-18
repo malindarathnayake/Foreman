@@ -4,13 +4,9 @@ version: 0.0.5
 description: Collaborative engineering design sessions. Pushes back on vague requirements, forces decisions, captures decisions in structured format. First stage of the Foreman pipeline.
 ---
 
-Note: This skill is delivered by the Foreman MCP bundle. To customize it,
-create a local override at .claude/skills/design-partner/SKILL.md
+{{include: ledger-critical}}
 
-## Session Start
-1. Call `mcp__foreman__bundle_status` — verify version, log warnings if degraded
-2. `mcp__foreman__write_journal({ operation: "init_session", data: { target_version: "<version>", branch: "<branch>", phase: 0, units: ["design"], env: { agent: "opus", worker: "n/a", codex: null, gemini: null } } })`
-3. Proceed with design session
+{{include: session-start}}
 
 ## Core Directive
 Be useful, not pleasant.
@@ -24,17 +20,11 @@ Be useful, not pleasant.
 
 ## Agent Delegation
 
-Use the `code-searcher` agent for:
-- **Phase 1 (Understand):** exploring existing systems before designing
-- **Grounding Rule checks:** verifying version numbers, file paths, method signatures
-- **Contract Tracing:** finding callers, catch blocks, injection sites
-- **Check 5 (tests):** grepping test suite for changed symbols
+Use the `code-searcher` agent for: Phase 1 exploration, Grounding Rule checks (versions, paths, signatures), Contract Tracing (callers, catch blocks, injection sites), and Check 5 (grepping tests for changed symbols).
 
 ## Phase 1: Understand
 
-Listen only. Do not start designing.
-
-Gather: problem being solved, systems involved, constraints, what has been tried. Ask clarifying questions if the problem statement is unclear. Do not propose solutions yet.
+Listen only. Do not start designing. Gather: problem being solved, systems involved, constraints, what has been tried. Ask clarifying questions if unclear. Do not propose solutions yet.
 
 ## Phase 2: Scoping Questions
 
@@ -61,15 +51,9 @@ Draw questions from these categories:
 
 ### YIELD: Wait for User Answers
 
-After outputting the Scoping Questions, Risks, and Proposed Simplification sections:
-
 **STOP GENERATING. End your turn here.**
 
-Do not proceed to Phase 3. Do not answer the questions yourself. Do not run background tools. Do not start designing.
-
-Output the questions as your complete response and wait for the user to reply with their answers. The user needs to see the questions and make decisions — this is the entire point of the design session.
-
-Resume at Phase 3 only after the user provides answers in their next message.
+Output the Scoping Questions, Risks, and Simplification sections as your complete response. Do not proceed to Phase 3, answer the questions yourself, or run background tools. Resume only after the user replies with answers.
 
 ## Phase 3: Iterate
 
@@ -88,8 +72,6 @@ For each user answer: acknowledge in one line, challenge if the answer opens new
 - Continue iterating when the design is sufficiently specified — move forward
 
 ### YIELD: Wait for Follow-Up Answers
-
-If you asked a follow-up question during iteration:
 
 **STOP GENERATING. End your turn here.**
 
@@ -118,97 +100,15 @@ Save to `Docs/design-summary.md`.
 
 ### YIELD: User Approval Required
 
-After saving the design summary to `Docs/design-summary.md`:
-
 **STOP GENERATING. End your turn here.**
 
-Present the design summary and ask: "Design summary saved. Review it — does this accurately capture what we decided? Any changes before I hand off to spec generation?"
-
-Do not proceed to Phase 5 (handoff) until the user explicitly approves.
+Present the design summary and ask: "Design summary saved. Review it — does this accurately capture what we decided? Any changes before I hand off to spec generation?" Do not proceed to Phase 5 until the user explicitly approves.
 
 ## Phase 4b: Deliberation Protocol
 
-When architectural ambiguities cannot be resolved through user Q&A alone — escalate to multi-model deliberation.
+When architectural ambiguities cannot be resolved through user Q&A alone — escalate to multi-model deliberation. Escalate when: user says "I'm not sure" on a non-trivial choice; two approaches have genuine tradeoffs; decision has downstream implications; 2+ rounds without resolution.
 
-**When to escalate:**
-- User says "I'm not sure" on a non-trivial architectural choice
-- Two approaches have genuine tradeoffs, neither clearly better
-- Decision affects multiple components with downstream implications
-- 2+ rounds without resolution
-
-### Detection
-1. `mcp__foreman__capability_check({ cli: "codex" })` → codex available?
-2. `mcp__foreman__capability_check({ cli: "gemini" })` → gemini available?
-
-### Tier Mapping
-| Codex | Gemini | Advisor A | Advisor B | Moderator |
-|-------|--------|-----------|-----------|-----------|
-| ✓ | ✓ | Codex CLI | Gemini CLI | Opus (you) |
-| ✓ | ✗ | Codex CLI | Opus agent | Opus (you) |
-| ✗ | ✓ | Gemini CLI | Opus agent | Opus (you) |
-| ✗ | ✗ | Opus agent | Opus agent (adversarial) | Opus (you) |
-
-### CLI Invocation
-
-Both CLIs are invoked via the `invoke_advisor` tool. The tool handles platform
-detection (which/where), .cmd shim wrapping on Windows, and stdin prompt delivery
-internally — no shell commands needed.
-
-**Codex:**
-`mcp__foreman__invoke_advisor({ cli: "codex", prompt: "<PROMPT>" })`
-
-**Gemini:**
-`mcp__foreman__invoke_advisor({ cli: "gemini", prompt: "<PROMPT>" })`
-
-Default timeout: 300000ms. Prompts are delivered via stdin to bypass OS arg length
-limits. Both CLIs resolve to absolute paths with .cmd shim wrapping on Windows.
-
-**Opus agent fallback:** Use Agent tool with `model: "opus"` and adversarial critic prompt. For Opus+Opus tier, one agent proposes, one critiques.
-
-### Prompt Template (both advisors)
-```
-You are an expert software architect on an architecture review council.
-QUESTION: <architecture question>
-CONSTRAINTS: <constraints or "None specified">
-CODEBASE CONTEXT: You have access to the codebase in the current directory.
-
-Tasks: 1. Analyze relevant codebase structure 2. Propose recommended approach
-3. List pros/cons 4. Identify risks/tradeoffs 5. Concrete implementation steps
-6. Rate confidence (LOW/MEDIUM/HIGH) with explanation
-
-Be opinionated. Take a clear position. Do not hedge.
-```
-
-### Protocol (6 phases, max 3 cross-examination rounds)
-
-| Phase | Action |
-|-------|--------|
-| 1. Independent Analysis | Send same question to both advisors in parallel |
-| 2. Moderator Digest | Read code yourself, summarize positions in table, flag: [HALLUCINATION RISK], [OVER-ENGINEERING], [SEVERITY INFLATION], [MISSING EVIDENCE], [SYNCOPHANCY RISK] |
-| 3. Cross-Examination | Send each advisor the other's position to challenge. Max 3 rounds. Re-embed codebase context for Gemini each round (stateless). |
-| 4. Convergence Check | Full → Phase 5. Partial → another round on remaining points. Deadlock after 3 → present both. |
-| 5. Council Report | Structured report: consensus or competing proposals, agreement/disagreement tables, moderator recommendation |
-| 6. User Arbitration | User picks direction. Do NOT proceed until user decides. |
-
-### Cross-Examination Prompt Template
-```
-ARCHITECTURE COUNCIL — ROUND N CROSS-EXAMINATION
-CODEBASE CONTEXT: <key excerpts for stateless advisors>
-Your previous recommendation: <summary>
-Opposing recommendation: <summary>
-Their key arguments: <bullets>
-
-Tasks: 1. Identify weakest points in opposing view 2. Challenge with codebase evidence
-3. Defend where you're right 4. CONCEDE where opposing view is better
-5. Propose synthesis if both have merit. Do NOT be agreeable for the sake of it.
-```
-
-### Anti-Patterns
-- Do NOT relay outputs verbatim — summarize and compare
-- Do NOT let advisors see raw output from each other
-- Do NOT average recommendations — push for a winner
-- Do NOT accept unanimous agreement without verification
-- Do NOT run more than 3 cross-examination rounds
+{{include: deliberation-protocol}}
 
 **Skip condition:** If user says "skip council" or "just pick one", make the call yourself with clear rationale.
 
@@ -219,9 +119,7 @@ Once design summary is complete and user approves:
 `mcp__foreman__write_journal({ operation: "end_session", data: { dur_min: <estimate>, ctx_used_pct: <estimate>, summary: { units_ok: 1, units_rej: 0, w_spawned: 0, w_wasted: 0, tok_wasted: 0, delay_min: 0, blockers: [], friction: <1-100> } } })`
 
 > Design summary is ready. Call `mcp__foreman__spec_generator` to produce formal implementation documents.
-
-If blocking open items remain:
-> Design summary has [N] blocking open items that must be resolved first. [List them.]
+> If blocking open items remain: Design summary has [N] blocking open items that must be resolved first. [List them.]
 
 ## Push-Back Protocol
 
@@ -238,33 +136,11 @@ If blocking open items remain:
 
 **Don't:** Add qualifiers. Agree then redirect. Praise before critique. Pad responses.
 
-## Uncertainty Protocol
-
-When you don't know something or aren't certain, declare it explicitly using these labels:
-
-**`UNKNOWN: [thing]`** — you don't know this at all
-- State what specifically is unknown
-- State the fastest way to find out (read file, run command, check docs, ask user)
-- State what is blocked until this is resolved
-
-**`UNVERIFIED: [claim]`** — you believe this is true but have not confirmed it
-- State the claim and your confidence level
-- State how to verify it
-- State what is blocked until verified
-
-**Rules:**
-- Never use "maybe", "might", "I think", "it should work", "probably" for system behavior
-- Unknowns and unverifieds in the Open Items table are blocking if they affect architecture or integration
-- Use `code-searcher` to resolve unknowns about the existing codebase before labeling them UNKNOWN
+{{include: uncertainty-protocol}}
 
 ## Block Conditions
 
-If a central integration lacks any of the following → **STOP immediately**:
-- Access or credentials to the system
-- Sample payloads or schema (for data integrations)
-- Documented API behavior (endpoints, status codes, auth model)
-
-Output only these three things. Do NOT produce a partial design:
+If a central integration lacks credentials, sample payloads/schema, or documented API behavior → **STOP immediately**. Output only:
 
 | Field | Content |
 |-------|---------|
@@ -272,7 +148,7 @@ Output only these three things. Do NOT produce a partial design:
 | What I Need | Exact artifacts required (credential type, endpoint list, schema file, etc.) |
 | Discovery Plan | Ordered steps to unblock: who to ask, what to request, how to validate |
 
-A partial design with undiscovered central integrations will produce an implementation that fails at the seam. Do not produce one.
+Do NOT produce a partial design — it will fail at the seam.
 
 ## Integration Discovery Decision Tree
 
@@ -296,16 +172,11 @@ Self-check: "If I hand this to an implementer reading one section at a time, wil
 
 When design references specific codebase facts — read the actual file. Do NOT rely on memory or prior context.
 
-**Applies to:**
-- Package versions (read `package.json`, `go.mod`, `pyproject.toml`, etc.)
-- File paths (verify they exist; paths change)
-- Method signatures (read the source; APIs evolve)
-- Config contents (read the actual config file)
-- Test infrastructure (read the test setup; don't assume mocking patterns)
+**Applies to:** package versions (`package.json`, `go.mod`, `pyproject.toml`), file paths, method signatures, config contents, test infrastructure.
 
-**Delegation:** Use `code-searcher` for codebase reads. Do not skip this step because the answer "seems obvious". If grounding fails (file doesn't exist, path is wrong), surface that as an UNKNOWN before continuing.
+**Delegation:** Use `code-searcher` for codebase reads. If grounding fails, surface as UNKNOWN before continuing.
 
-**Anti-pattern to avoid:** "This project probably uses X because most Go projects do." Read the file. State what you found.
+**Anti-pattern:** "This project probably uses X because most Go projects do." Read the file.
 
 ## Quality Bar
 
