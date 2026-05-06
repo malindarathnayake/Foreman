@@ -39,14 +39,18 @@ jobs:
       - name: Package
         working-directory: foreman-mcp
         run: |
-          mkdir -p ../artifacts
-          npm pack --pack-destination ../artifacts/
+          # Pack into a fresh CI-only directory (release-pkg/), NOT the
+          # committed artifacts/ archive. This guarantees the Release step
+          # ships ONLY the current version's tarball — historical tarballs
+          # live in artifacts/ for archival reference, not for redistribution.
+          mkdir -p ../release-pkg
+          npm pack --pack-destination ../release-pkg/
 
       - name: Upload CI artifact (30-day retention)
         uses: actions/upload-artifact@v4
         with:
           name: foreman-mcp-${{ github.sha }}
-          path: artifacts/*.tgz
+          path: release-pkg/*.tgz
           retention-days: 30
 
       - name: Publish to GitHub Packages
@@ -60,6 +64,6 @@ jobs:
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*.tgz
+          files: release-pkg/*.tgz
           generate_release_notes: true
           draft: false

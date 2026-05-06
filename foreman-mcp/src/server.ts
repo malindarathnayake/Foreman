@@ -50,7 +50,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   const host: HostId = config?.host ?? "claude-code"
 
   const server = new McpServer(
-    { name: "foreman", version: "0.0.8" },
+    { name: "foreman", version: "0.0.8.1" },
     { capabilities: { resources: {}, tools: {} } }
   )
 

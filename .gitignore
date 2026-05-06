@@ -8,3 +8,8 @@ Docs/
 
 # Keep assets/ but ignore generation prompts
 assets/prompts.md
+
+# CI-only release pack output. The committed artifacts/ folder is the
+# archival history; release-pkg/ is the per-build staging dir used by the
+# build workflow so the Release upload only ships the current version.
+release-pkg/
