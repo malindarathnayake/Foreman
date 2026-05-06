@@ -23,6 +23,8 @@ import { readJournal, initSession, logEvent, endSession } from "./lib/journal.js
 import { invokeAdvisor, formatAdvisorResult } from "./tools/invokeAdvisor.js"
 import { sessionOrient } from "./tools/sessionOrient.js"
 import { renderIncludes, loadSkill } from "./lib/skillLoader.js"
+import { hostStatus } from "./tools/hostStatus.js"
+import { type HostId, resolveHost, parseHostFlag, getProfile } from "./lib/hostProfiles.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -32,6 +34,12 @@ export interface ServerConfig {
   progressPath?: string
   journalPath?: string
   docsDir?: string
+  /**
+   * Active host. Controls how skill placeholders ({{worker_invoke}},
+   * {{advisor_a}}, {{advisor_b}}) are rendered and how capability_check
+   * responds. Default: "claude-code".
+   */
+  host?: HostId
 }
 
 export async function createServer(config?: ServerConfig): Promise<McpServer> {
@@ -39,9 +47,10 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   const progressPath = config?.progressPath ?? "Docs/.foreman-progress.json"
   const docsDir = config?.docsDir ?? "Docs"
   const journalPath = config?.journalPath ?? "Docs/.foreman-journal.json"
+  const host: HostId = config?.host ?? "claude-code"
 
   const server = new McpServer(
-    { name: "foreman", version: "0.0.7.5" },
+    { name: "foreman", version: "0.0.9" },
     { capabilities: { resources: {}, tools: {} } }
   )
 
@@ -52,6 +61,17 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     { description: "Returns the Foreman bundle version and override info." },
     async (_extra) => {
       const text = await bundleStatus()
+      return { content: [{ type: "text" as const, text }] }
+    }
+  )
+
+  server.registerTool(
+    "host_status",
+    {
+      description: "Returns the active Foreman host and the model slugs used for worker / advisor invocation. Use to confirm whether skills are rendered for Claude Code, Cursor, or another host.",
+    },
+    async (_extra) => {
+      const text = hostStatus(host)
       return { content: [{ type: "text" as const, text }] }
     }
   )
@@ -125,13 +145,13 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   server.registerTool(
     "capability_check",
     {
-      description: "Checks whether codex or gemini CLI is available.",
+      description: "Checks whether codex or gemini CLI is available. In cursor host mode, returns a synthetic available response (Task subagent is always reachable).",
       inputSchema: {
         cli: z.enum(["codex", "gemini"]),
       },
     },
     async (args, _extra) => {
-      const text = await capabilityCheck(args.cli)
+      const text = await capabilityCheck(args.cli, host)
       return { content: [{ type: "text" as const, text }] }
     }
   )
@@ -296,7 +316,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
     },
     async (args, _extra) => {
-      const text = await activateImplementor(skillsDir, args.context)
+      const text = await activateImplementor(skillsDir, args.context, host)
       return { content: [{ type: "text" as const, text }] }
     }
   )
@@ -317,7 +337,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
     },
     async (args, _extra) => {
-      const text = await activateDesignPartner(skillsDir, args.context)
+      const text = await activateDesignPartner(skillsDir, args.context, host)
       return { content: [{ type: "text" as const, text }] }
     }
   )
@@ -338,7 +358,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
     },
     async (args, _extra) => {
-      const text = await activateSpecGenerator(skillsDir, args.context)
+      const text = await activateSpecGenerator(skillsDir, args.context, host)
       return { content: [{ type: "text" as const, text }] }
     }
   )
@@ -367,13 +387,16 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
       async (resourceUri, _extra) => {
         try {
-          const result = await loadSkill(name, skillsDir)
+          const result = await loadSkill(name, skillsDir, host)
           return {
             contents: [{ uri: resourceUri.href, mimeType: "text/markdown", text: result.content }],
           }
         } catch (err) {
           console.error(`[foreman] Resource read failed for "${name}": ${(err as Error).message}`)
-          // Fall back to bundled raw + renderIncludes, which is the existing behavior
+          // Fall back to bundled raw + renderIncludes, which is the existing behavior.
+          // Note: host placeholders won't be substituted on this fallback path; the
+          // failure case is rare (skill load error) and the unrendered placeholders
+          // are still readable text.
           const raw = await fs.readFile(filePath, "utf-8")
           const text = await renderIncludes(raw, filePath)
           return {
@@ -524,8 +547,13 @@ if (isMain) {
     }
   }
 
+  // Resolve host once: --host flag wins, then FOREMAN_HOST env, then default.
+  const flagHost = parseHostFlag(args)
+  const host = resolveHost({ flag: flagHost, env: process.env.FOREMAN_HOST ?? null })
+
   if (args.includes("--version") || args.includes("-v")) {
     await printVersion()
+    console.log(`  host: ${host} (${getProfile(host).displayName})`)
     process.exit(0)
   } else if (args.includes("--diag")) {
     runDiag().then(() => process.exit(0)).catch((e) => {
@@ -535,14 +563,19 @@ if (isMain) {
   } else if (process.stdin.isTTY) {
     // Interactive terminal with no flags — print version and usage hint
     await printVersion()
+    console.log(`  host: ${host} (${getProfile(host).displayName})`)
     console.log("Usage:")
-    console.log("  foreman-mcp           Start MCP server (stdin/stdout, used by Claude Code)")
-    console.log("  foreman-mcp --version  Print version and exit")
-    console.log("  foreman-mcp --diag     Run diagnostics and exit")
+    console.log("  foreman-mcp                      Start MCP server (stdin/stdout)")
+    console.log("  foreman-mcp --host=<id>          Set host: claude-code (default), cursor, codex")
+    console.log("  foreman-mcp --version            Print version and exit")
+    console.log("  foreman-mcp --diag               Run diagnostics and exit")
+    console.log("Env vars:")
+    console.log("  FOREMAN_HOST                     Same effect as --host=<id> (flag wins)")
     process.exit(0)
   } else {
     // Non-TTY stdin — MCP client is connecting, start the server
-    createServer().then(async (server) => {
+    console.error(`[foreman] starting MCP server (host=${host})`)
+    createServer({ host }).then(async (server) => {
       const transport = new StdioServerTransport()
       await server.connect(transport)
     })

@@ -1,6 +1,6 @@
 {
   "name": "@malindarathnayake/foreman-mcp",
-  "version": "0.0.7.5",
+  "version": "0.0.9",
   "description": "Foreman MCP server — workflow orchestrator for planning and implementation skills",
   "type": "module",
   "main": "dist/server.js",
@@ -15,7 +15,10 @@
     "node": ">=22"
   },
   "license": "AGPL-3.0-only",
-  "private": true,
+  "publishConfig": {
+    "registry": "https://npm.pkg.github.com",
+    "access": "public"
+  },
   "scripts": {
     "build": "tsc",
     "test": "vitest run",

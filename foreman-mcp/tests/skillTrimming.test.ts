@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest"
 import fs from "fs/promises"
 import path from "path"
-import { renderIncludes } from "../src/lib/skillLoader"
+import { renderIncludes, renderHostPlaceholders } from "../src/lib/skillLoader"
 
 const SKILLS_DIR = path.join(__dirname, "..", "src", "skills")
 
@@ -97,10 +97,11 @@ describe("skillTrimming — design-partner", () => {
     }
   })
 
-  it("rendered skill (via renderIncludes) contains the common-protocol bodies", async () => {
+  it("rendered skill (via renderIncludes + claude-code host placeholders) contains the common-protocol bodies", async () => {
     const raw = await readSkill("design-partner.md")
     const skillPath = path.join(SKILLS_DIR, "design-partner.md")
-    const rendered = await renderIncludes(raw, skillPath)
+    const included = await renderIncludes(raw, skillPath)
+    const rendered = renderHostPlaceholders(included, "claude-code")
     expect(rendered).toContain("mcp__foreman__invoke_advisor")
     expect(rendered).toContain("UNKNOWN:")
     expect(rendered).toContain("CRITICAL: Never write")
@@ -258,10 +259,11 @@ describe("skillTrimming — implementor", () => {
     expect(content).toContain("G2 and G4 auto-skip")
   })
 
-  it("rendered skill (via renderIncludes) contains the common-protocol bodies", async () => {
+  it("rendered skill (via renderIncludes + claude-code host placeholders) contains the common-protocol bodies", async () => {
     const raw = await readSkill("implementor.md")
     const skillPath = path.join(SKILLS_DIR, "implementor.md")
-    const rendered = await renderIncludes(raw, skillPath)
+    const included = await renderIncludes(raw, skillPath)
+    const rendered = renderHostPlaceholders(included, "claude-code")
     // ledger-critical body
     expect(rendered).toContain("CRITICAL: Never write")
     // session-start five-questions table
@@ -276,6 +278,10 @@ describe("skillTrimming — implementor", () => {
     expect(rendered).toContain("ctx_used_pct")
     // no-test-attestation body
     expect(rendered).toContain("scope.has_tests === false")
+    // host placeholder resolution — implementor uses {{worker_invoke}} (Step 5)
+    // but does NOT include deliberation-protocol, so {{advisor_a}} is not present.
+    expect(rendered).not.toContain("{{worker_invoke}}")
+    expect(rendered).toContain("Agent tool")
   })
 
   it("include markers sit at section boundaries (blank line before and after)", async () => {
@@ -400,7 +406,11 @@ describe("skillTrimming — _common-protocol", () => {
   it("anchor checks — required strings present in body", async () => {
     const content = await readSkill("_common-protocol.md")
     expect(content).toContain("mcp__foreman__write_ledger")
-    expect(content).toContain("mcp__foreman__invoke_advisor")
+    // In v0.0.8+ the advisor invocation lines are host placeholders ({{advisor_a}} etc.),
+    // resolved by skillLoader.renderHostPlaceholders against the active HostProfile.
+    // The raw common-protocol no longer contains the literal CLI invocation strings.
+    expect(content).toContain("{{advisor_a}}")
+    expect(content).toContain("{{advisor_b}}")
     expect(content).toContain("UNKNOWN:")
     expect(content).toContain("UNVERIFIED:")
     expect(content).toContain("code-searcher")
@@ -519,17 +529,18 @@ describe("skillTrimming — spec-generator", () => {
     expect(content).not.toContain("| Gate | Applicability |")
   })
 
-  it("rendered skill (via renderIncludes) contains common-protocol bodies", async () => {
+  it("rendered skill (via renderIncludes + claude-code host placeholders) contains common-protocol bodies", async () => {
     const raw = await readSkill("spec-generator.md")
     const skillPath = path.join(SKILLS_DIR, "spec-generator.md")
-    const rendered = await renderIncludes(raw, skillPath)
+    const included = await renderIncludes(raw, skillPath)
+    const rendered = renderHostPlaceholders(included, "claude-code")
     // ledger-critical body
     expect(rendered).toContain("CRITICAL: Never write")
     // session-start five-questions table
     expect(rendered).toContain("Where am I?")
     // ambiguity-resolution body
     expect(rendered).toContain("What counts as ambiguous")
-    // deliberation-protocol body
+    // deliberation-protocol body (rendered with claude-code placeholders)
     expect(rendered).toContain("mcp__foreman__invoke_advisor")
     // uncertainty-protocol body
     expect(rendered).toContain("UNKNOWN:")

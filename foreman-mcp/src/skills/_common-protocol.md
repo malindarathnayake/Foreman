@@ -53,11 +53,12 @@ When non-trivial ambiguities need resolution — escalate to multi-model deliber
 | ✗ | ✓ | Gemini CLI | Opus agent | Opus (you) |
 | ✗ | ✗ | Opus agent | Opus agent (adversarial) | Opus (you) |
 
-### CLI Invocation
-Both CLIs are invoked via `invoke_advisor` — no shell commands needed.
-**Codex:** `mcp__foreman__invoke_advisor({ cli: "codex", prompt: "<PROMPT>" })`
-**Gemini:** `mcp__foreman__invoke_advisor({ cli: "gemini", prompt: "<PROMPT>" })`
-**Opus agent fallback:** Use Agent tool with `model: "opus"` and adversarial critic prompt.
+### Advisor Invocation
+Advisor invocation is host-specific. The active host is resolved at server start (default: Claude Code; set `FOREMAN_HOST=cursor` or pass `--host=cursor` for Cursor mode).
+
+{{advisor_a}}
+{{advisor_b}}
+{{advisor_fallback}}
 
 ### Prompt Template (both advisors)
 ```

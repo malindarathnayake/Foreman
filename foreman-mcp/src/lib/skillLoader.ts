@@ -1,6 +1,7 @@
 import fs from "fs/promises"
 import path from "path"
 import os from "os"
+import { type HostId, getProfile } from "./hostProfiles.js"
 
 export interface SkillLoadResult {
   content: string
@@ -138,17 +139,55 @@ export async function renderIncludes(content: string, skillPath: string): Promis
 }
 
 /**
+ * Substitutes host-specific placeholders ({{worker_invoke}}, {{advisor_a}}, etc.)
+ * with text from the active host profile.
+ *
+ * Placeholders that have no mapping in the active profile are left untouched —
+ * this keeps the renderer forward-compatible with new placeholders introduced in
+ * skill files before profile maps are updated. The {{include: ...}} form is
+ * deliberately ignored here so it can keep flowing through renderIncludes.
+ *
+ * Pass host=undefined or host="claude-code" to get default-mode behavior; in
+ * that case the rendered output for existing skill files is byte-identical to
+ * pre-host-mode behavior because the claude-code profile encodes the original
+ * inline strings.
+ */
+export function renderHostPlaceholders(content: string, host: HostId): string {
+  const profile = getProfile(host)
+  let result = content
+
+  // Match {{ name }} (with optional whitespace) but skip {{include: ...}} which
+  // is owned by renderIncludes. Run a single pass; placeholders never produce
+  // new placeholders, so iteration is unnecessary.
+  const pattern = /\{\{\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*\}\}/g
+  result = result.replace(pattern, (match, name: string) => {
+    if (Object.prototype.hasOwnProperty.call(profile.placeholders, name)) {
+      return profile.placeholders[name]
+    }
+    return match
+  })
+
+  return result
+}
+
+/**
  * Loads a skill file with override support.
  * Priority: project-local (.claude/skills/) > user-global (~/.claude/skills/) > bundled
+ *
+ * When `host` is provided, host-specific placeholders are rendered after include
+ * expansion. Default = "claude-code" — preserves byte-identical output for
+ * existing skill files vs. pre-host-mode behavior.
  */
 export async function loadSkill(
   skillName: string,
-  bundledSkillsDir: string
+  bundledSkillsDir: string,
+  host: HostId = "claude-code"
 ): Promise<SkillLoadResult> {
   const projectOverride = path.resolve(".claude", "skills", skillName, "SKILL.md")
   if (await fileExists(projectOverride)) {
     let content = await fs.readFile(projectOverride, "utf-8")
     content = await renderIncludes(content, projectOverride)
+    content = renderHostPlaceholders(content, host)
     return { content, source: "project-override", path: projectOverride }
   }
 
@@ -156,6 +195,7 @@ export async function loadSkill(
   if (await fileExists(userOverride)) {
     let content = await fs.readFile(userOverride, "utf-8")
     content = await renderIncludes(content, userOverride)
+    content = renderHostPlaceholders(content, host)
     return { content, source: "user-override", path: userOverride }
   }
 
@@ -163,6 +203,7 @@ export async function loadSkill(
   if (await fileExists(bundled)) {
     let content = await fs.readFile(bundled, "utf-8")
     content = await renderIncludes(content, bundled)
+    content = renderHostPlaceholders(content, host)
     return { content, source: "bundled", path: bundled }
   }
 

@@ -1,5 +1,6 @@
 import { runExternalCli, resolveInvocation, type SpawnPlan } from "../lib/externalCli.js"
 import { toKeyValue } from "../lib/toon.js"
+import { type HostId, getProfile } from "../lib/hostProfiles.js"
 
 // Module-level cache for resolved SpawnPlans
 const resolvedPlans = new Map<string, SpawnPlan>()
@@ -15,7 +16,41 @@ const HEALTH_COMMANDS: Record<string, { command: string; args: string[] }> = {
   },
 }
 
-export async function capabilityCheck(cli: "codex" | "gemini"): Promise<string> {
+/**
+ * Synthetic capability response for non-CLI hosts. In Cursor mode the LLM has
+ * Task subagent access by definition — there is no binary to probe. Returning
+ * `available: true` with `mechanism: cursor_subagent` lets the deliberation
+ * tier mapping treat both advisors as available without shelling out.
+ *
+ * The `cli` enum stays as `"codex" | "gemini"` for backward compatibility.
+ * Semantic mapping in cursor mode: codex -> Advisor A (GPT-5.5),
+ * gemini -> Advisor B (Gemini-3.1-pro / Composer fallback).
+ */
+function syntheticCursorResponse(cli: "codex" | "gemini"): string {
+  const profile = getProfile("cursor")
+  const advisorPlaceholder = cli === "codex" ? "advisor_a" : "advisor_b"
+  const advisorText = profile.placeholders[advisorPlaceholder] ?? ""
+  // Extract a model hint from the placeholder text for visibility (best-effort).
+  const modelMatch = advisorText.match(/model:\s*"([^"]+)"/)
+  const model = modelMatch ? modelMatch[1] : "unknown"
+  return toKeyValue({
+    cli,
+    available: "true",
+    version: "cursor_subagent",
+    auth_status: "ok",
+    mechanism: "cursor_subagent",
+    model,
+  })
+}
+
+export async function capabilityCheck(
+  cli: "codex" | "gemini",
+  host: HostId = "claude-code"
+): Promise<string> {
+  if (host === "cursor") {
+    return syntheticCursorResponse(cli)
+  }
+
   const config = HEALTH_COMMANDS[cli]
   if (!config) {
     return toKeyValue({ cli, available: "false", version: "null", auth_status: "unknown" })
