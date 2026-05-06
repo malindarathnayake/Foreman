@@ -35,8 +35,8 @@ GitHub Packages requires a personal access token with `read:packages` scope, eve
 ### Install — tarball (no auth required)
 
 ```bash
-curl -LO https://github.com/malindarathnayake/Foreman/releases/download/v0.0.8.1/malindarathnayake-foreman-mcp-0.0.8.1.tgz
-npm install -g malindarathnayake-foreman-mcp-0.0.8.1.tgz
+curl -LO https://github.com/malindarathnayake/Foreman/releases/download/v0.0.9/malindarathnayake-foreman-mcp-0.0.9.tgz
+npm install -g malindarathnayake-foreman-mcp-0.0.9.tgz
 ```
 
 Or grab the latest tarball directly from the [Releases page](https://github.com/malindarathnayake/Foreman/releases/latest). The repo's `artifacts/` folder retains historical tarballs (≤ v0.0.8) for archival reference; new versions live only on Releases + GitHub Packages.

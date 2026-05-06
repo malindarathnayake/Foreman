@@ -7,7 +7,7 @@ interface ChangelogEntry {
 }
 
 const CHANGELOG: ChangelogEntry[] = [
-  { version: "0.0.8.1", date: "2026-05-06", description: "CI hygiene — release workflow packs into release-pkg/ (gitignored) instead of the committed artifacts/ archive, so the GitHub Release attachment ships only the current version's tarball. README install URL switched to the Release download URL. No runtime changes." },
+  { version: "0.0.9", date: "2026-05-06", description: "CI hygiene + semver fix — release workflow packs into release-pkg/ (gitignored) instead of the committed artifacts/ archive, so the GitHub Release attachment ships only the current version's tarball. README install URL switched to the Release download URL. Version bump skips 0.0.8.1 (npm rejects 4-segment versions). No runtime changes." },
   { version: "0.0.8", date: "2026-05-06", description: "Cursor host mode — host-aware skill rendering via placeholders (worker_invoke, advisor_a, advisor_b); --host CLI flag and FOREMAN_HOST env var (claude-code default, cursor, codex); host_status tool; capability_check returns synthetic available in cursor mode (Task subagents). Default behavior unchanged for Claude Code / Codex CLI users." },
   { version: "0.0.7.5", date: "2026-04-17", description: "Workflow hygiene patch: ledger honesty (via field, phase scope), session_orient tool, PROGRESS.md fenced auto-sync, skill trim ~30% via common protocol extraction" },
   { version: "0.0.7", date: "2026-04-11", description: "Pentest triage fixes — remove npx from run_tests allowlist + deny via env (INJ-008), regex filter on FOREMAN_TEST_ALLOWLIST (INJ-007), settled guard on runTests data handlers (EXH-004), ComSpec via SystemRoot (INJ-006), block format for invoke_advisor output (INJ-009)" },
