@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: write
+  packages: write
 
 jobs:
   build:
@@ -20,6 +21,8 @@ jobs:
           node-version: 22
           cache: npm
           cache-dependency-path: foreman-mcp/package-lock.json
+          registry-url: https://npm.pkg.github.com
+          scope: '@malindarathnayake'
 
       - name: Install dependencies
         working-directory: foreman-mcp
@@ -45,6 +48,13 @@ jobs:
           name: foreman-mcp-${{ github.sha }}
           path: artifacts/*.tgz
           retention-days: 30
+
+      - name: Publish to GitHub Packages
+        if: startsWith(github.ref, 'refs/tags/v')
+        working-directory: foreman-mcp
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Create GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')

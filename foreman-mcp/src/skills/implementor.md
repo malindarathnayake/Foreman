@@ -90,7 +90,7 @@ Runs AFTER drafting the brief, BEFORE calling the Agent tool. Five mechanical st
 Anti-pattern: *"I read Unit X's directive section carefully."* The spec is a graph, not a list. Every symbol has a cross-reference footprint across multiple sections (data model, error handling, phase directives, decisions table). Grep first.
 
 ### Step 5: Spawn Sonnet Worker
-Use Agent tool with `model: "sonnet"`. Pass only the worker brief — no spec, no ledger, no progress file.
+{{worker_invoke}}
 - Worker sees ONLY: its brief, the BEFORE/AFTER excerpts you include, and its own tool calls
 - Worker MUST NOT be given the handoff.md path to read directly
 - Worker MUST NOT be given access to the ledger or progress file

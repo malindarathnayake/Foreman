@@ -23,20 +23,21 @@ afterEach(async () => {
   await server?.close()
 })
 
-describe("list tools — verify all 16 present, update_bundle absent", () => {
+describe("list tools — verify all 17 present, update_bundle absent", () => {
   beforeEach(async () => {
     await setupServer()
   })
 
-  it("lists exactly 16 tools", async () => {
+  it("lists exactly 17 tools", async () => {
     const result = await client.listTools()
-    expect(result.tools).toHaveLength(16)
+    expect(result.tools).toHaveLength(17)
   })
 
   it("includes all required tool names", async () => {
     const result = await client.listTools()
     const names = result.tools.map((t) => t.name)
     expect(names).toContain("bundle_status")
+    expect(names).toContain("host_status")
     expect(names).toContain("changelog")
     expect(names).toContain("read_ledger")
     expect(names).toContain("read_progress")
@@ -158,12 +159,12 @@ describe("bundle_status round-trip", () => {
     await setupServer()
   })
 
-  it("returns bundle_version and 0.0.6", async () => {
+  it("returns bundle_version 0.0.8", async () => {
     const result = await client.callTool({ name: "bundle_status", arguments: {} })
     const content = result.content as Array<{ type: string; text: string }>
     expect(content[0].type).toBe("text")
     expect(content[0].text).toContain("bundle_version")
-    expect(content[0].text).toContain("0.0.7")
+    expect(content[0].text).toContain("0.0.8")
   })
 })
 
