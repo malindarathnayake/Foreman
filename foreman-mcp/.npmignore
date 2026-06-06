@@ -3,5 +3,6 @@ tests/
 tsconfig.json
 vitest.config.ts
 node_modules/
+.npm-cache/
 .github/
 _DOJO/

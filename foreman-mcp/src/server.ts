@@ -18,6 +18,9 @@ import { runTests } from "./tools/runTests.js"
 import { activateImplementor } from "./tools/activateImplementor.js"
 import { activateDesignPartner } from "./tools/activateDesignPartner.js"
 import { activateSpecGenerator } from "./tools/activateSpecGenerator.js"
+import { activateLighttask } from "./tools/activateLighttask.js"
+import { activateSpecMan } from "./tools/activateSpecMan.js"
+import { activateDocMan } from "./tools/activateDocMan.js"
 import { NormalizeReviewInputSchema } from "./types.js"
 import { readJournal, initSession, logEvent, endSession } from "./lib/journal.js"
 import { invokeAdvisor, formatAdvisorResult } from "./tools/invokeAdvisor.js"
@@ -50,7 +53,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   const host: HostId = config?.host ?? "claude-code"
 
   const server = new McpServer(
-    { name: "foreman", version: "0.0.9" },
+    { name: "foreman", version: "0.0.10" },
     { capabilities: { resources: {}, tools: {} } }
   )
 
@@ -359,6 +362,68 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const text = await activateSpecGenerator(skillsDir, args.context, host)
+      return { content: [{ type: "text" as const, text }] }
+    }
+  )
+
+  server.registerTool(
+    "lighttask",
+    {
+      description: [
+        "Activates the Foreman lighttask protocol.",
+        "Lightweight surgical-task workflow with workspace classification,",
+        "git context, spec freshness, grounding, mandatory adversarial review,",
+        "bypass waivers, and compact execution tracking.",
+        "The LLM MUST follow the returned instructions to run the lighttask session.",
+        "Pass optional context to describe the task or target repo.",
+      ].join(" "),
+      inputSchema: {
+        context: z.string().max(10000).optional(),
+      },
+    },
+    async (args, _extra) => {
+      const text = await activateLighttask(skillsDir, args.context, host)
+      return { content: [{ type: "text" as const, text }] }
+    }
+  )
+
+  server.registerTool(
+    "spec_man",
+    {
+      description: [
+        "Activates the Foreman spec-man protocol.",
+        "Produces focused intended-behavior specs and machine specs from user intent,",
+        "tickets, existing specs, code evidence, contracts, discovery output, or external docs.",
+        "The LLM MUST follow the returned instructions to generate grounded specs.",
+        "Pass optional context to describe the feature, subsystem, or source material.",
+      ].join(" "),
+      inputSchema: {
+        context: z.string().max(10000).optional(),
+      },
+    },
+    async (args, _extra) => {
+      const text = await activateSpecMan(skillsDir, args.context, host)
+      return { content: [{ type: "text" as const, text }] }
+    }
+  )
+
+  server.registerTool(
+    "doc_man",
+    {
+      description: [
+        "Activates the Foreman doc-man protocol.",
+        "Generates focused technical documentation from spec-man output,",
+        "project atlas or discovery output, source code, existing docs, and command output.",
+        "Supports README, architecture, data-flow, Mermaid, Confluence, and machine-doc modes.",
+        "The LLM MUST follow the returned instructions to generate grounded documentation.",
+        "Pass optional context to describe the document target or style needs.",
+      ].join(" "),
+      inputSchema: {
+        context: z.string().max(10000).optional(),
+      },
+    },
+    async (args, _extra) => {
+      const text = await activateDocMan(skillsDir, args.context, host)
       return { content: [{ type: "text" as const, text }] }
     }
   )

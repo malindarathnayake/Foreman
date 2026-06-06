@@ -10,7 +10,7 @@
 
 **A software development governance layer for AI coding agents.** Foreman enforces a design → spec → implement pipeline, validates every state change through a structured ledger, and uses independent models (Codex, Gemini, GPT-5.5, Gemini-3.1-pro) to review work at phase gates. It doesn't write code — it supervises agents that do.
 
-**17 tools. 3 skill protocols. Multi-host: Claude Code, Cursor, Codex CLI.** v0.0.8 adds host-aware skill rendering — same protocol, host-specific worker/advisor invocation.
+**20 tools. 6 skill protocols. Multi-host: Claude Code, Cursor, Codex CLI.** Foreman includes the full design/spec/implement pipeline plus lightweight surgical-task, specification, and documentation protocols.
 
 ---
 
@@ -35,8 +35,8 @@ GitHub Packages requires a personal access token with `read:packages` scope, eve
 ### Install — tarball (no auth required)
 
 ```bash
-curl -LO https://github.com/malindarathnayake/Foreman/releases/download/v0.0.9/malindarathnayake-foreman-mcp-0.0.9.tgz
-npm install -g malindarathnayake-foreman-mcp-0.0.9.tgz
+curl -LO https://github.com/malindarathnayake/Foreman/releases/download/v0.0.10/malindarathnayake-foreman-mcp-0.0.10.tgz
+npm install -g malindarathnayake-foreman-mcp-0.0.10.tgz
 ```
 
 Or grab the latest tarball directly from the [Releases page](https://github.com/malindarathnayake/Foreman/releases/latest). The repo's `artifacts/` folder retains historical tarballs (≤ v0.0.8) for archival reference; new versions live only on Releases + GitHub Packages.
@@ -133,13 +133,16 @@ flowchart LR
 
 ## Tools Reference
 
-### Skill Activation (3 tools)
+### Skill Activation (6 tools)
 
 | Tool | Protocol injected |
 |------|-------------------|
 | `design_partner` | Collaborative design session with YIELD checkpoints |
 | `spec_generator` | Spec generation + ledger/progress seeding |
 | `pitboss_implementor` | Pitboss/worker orchestration with G1-G5 gates |
+| `lighttask` | Surgical-task workflow with workspace, git, spec freshness, grounding, review, and recovery gates |
+| `spec_man` | Focused intended-behavior and machine spec generation |
+| `doc_man` | Grounded README, architecture, data-flow, Confluence, Mermaid, and machine documentation generation |
 
 ### Data (10 tools)
 
@@ -216,7 +219,7 @@ Foreman is a **stdio-only MCP server**. The trust boundary is the parent process
 
 | Layer | What It Protects | How |
 |-------|-----------------|-----|
-| **Input validation** | All 17 MCP tools | Zod schemas with `.max()` length caps, enum restrictions, regex filters on every input |
+| **Input validation** | All 20 MCP tools | Zod schemas with `.max()` length caps, enum restrictions, regex filters on every input |
 | **Runner allowlist** | `run_tests` tool | Only `npm`, `pytest`, `go`, `cargo`, `dotnet`, `make`. Regex filter (`/^[a-zA-Z0-9_.-]+$/`) on env-supplied entries. `npx` explicitly denied |
 | **Absolute path resolution** | CLI invocation | All external CLIs resolved to absolute paths via `which`/`where`. Relative paths and `.cmd`/`.bat` shims rejected on Windows |
 | **Stdin delivery** | `invoke_advisor` tool | Prompts sent via stdin pipe, not command-line args. Bypasses shell metacharacter injection and OS `ARG_MAX` limits |
@@ -290,7 +293,7 @@ git clone https://github.com/malindarathnayake/foreman.git
 cd foreman/foreman-mcp
 npm install
 npm run build
-npm test          # 343 tests across 17 files
+npm test          # 337 tests across 16 files
 ```
 
 ---
