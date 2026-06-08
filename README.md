@@ -10,6 +10,8 @@
 
 **A software development governance layer for AI coding agents.** Foreman enforces a design → spec → implement pipeline, validates every state change through a structured ledger, and uses independent models (Codex, Gemini, GPT-5.5, Gemini-3.1-pro) to review work at phase gates. It doesn't write code — it supervises agents that do.
 
+Foreman targets the four things that kill large refactors — drift, hallucinated foundations, confident-but-wrong output, and blast-radius blindness — with a durable ledger, file:line grounding + citation checks, and gated pit-boss/worker decomposition.
+
 **21 tools. 6 skill protocols. Multi-host: Claude Code, Cursor, Codex CLI.** Foreman includes the full design/spec/implement pipeline plus lightweight surgical-task, specification, and documentation protocols. `spec_man` can draw from an optional project atlas such as Graphify when one is available.
 
 Current release: **v0.1.1**. See [CHANGELOG.md](CHANGELOG.md) for release history.
@@ -115,6 +117,7 @@ Foreman v0.1.x adds a grounded re-evaluation lane for existing repositories. Whe
 - detect stale or partial plans when code, docs, contracts, config, or tests drift
 - group inconsistencies with the Plan Delta Ladder: `D3 raw`, `D2 grouped`, `D1 candidate`, `D0 current`
 - keep `D1` as a candidate until review or user approval promotes it
+- verify every `[OBSERVED]` citation with `verify_citations` and require each to be CONFIRMED (or explicitly downgraded) before the spec is done
 
 `lighttask` remains the small surgical default. It escalates to `spec_man` when grounding finds missing, stale, or partial specs. For long-running, branching, multi-worker workflows, Foreman metadata now telegraphs when optional LangGraph-style runtime control may be warranted, while Foreman artifacts remain canonical.
 
@@ -144,6 +147,19 @@ flowchart LR
 ```
 
 > **Full walkthrough:** [Usage Guide — Building a CLI Expense Tracker](usage-guide.md)
+
+### Why It's Built This Way
+
+Large refactors rarely fail on coding ability — they fail on four things, and Foreman attacks each:
+
+| Failure mode | What kills the refactor | Foreman's answer |
+|---|---|---|
+| **Drift** | Agent forgets the plan mid-stream and re-derives it wrong | Ledger + journal + handoff keep the plan on disk |
+| **Hallucinated foundation** | Builds on a route/schema/API that doesn't exist; the error compounds | `[OBSERVED]` + file:line grounding, `verify_citations` |
+| **Confident wrongness** | Authoritative-looking output that's wrong, so it passes review | Deterministic gates + independent-model review + citation gate |
+| **Blast-radius blindness** | Breaks an invariant three files away | Spec scoping + Plan Delta Ladder + pit-boss/worker split |
+
+A checklist-and-gate system aimed at the four ways big refactors crash and burn — not a generic agent-workflow wrapper.
 
 ---
 
@@ -237,6 +253,7 @@ Foreman is a **stdio-only MCP server**. The trust boundary is the parent process
 | Layer | What It Protects | How |
 |-------|-----------------|-----|
 | **Input validation** | All 21 MCP tools | Zod schemas with `.max()` length caps, enum restrictions, regex filters on every input |
+| **Path jail** | `verify_citations` file reads | Cited paths and `spec_path` resolved under `repo_root`; `../` traversal and absolute escapes rejected; UTF-16/undecodable specs rejected rather than silently parsed to a false pass |
 | **Runner allowlist** | `run_tests` tool | Only `npm`, `pytest`, `go`, `cargo`, `dotnet`, `make`. Regex filter (`/^[a-zA-Z0-9_.-]+$/`) on env-supplied entries. `npx` explicitly denied |
 | **Absolute path resolution** | CLI invocation | All external CLIs resolved to absolute paths via `which`/`where`. Relative paths and `.cmd`/`.bat` shims rejected on Windows |
 | **Stdin delivery** | `invoke_advisor` tool | Prompts sent via stdin pipe, not command-line args. Bypasses shell metacharacter injection and OS `ARG_MAX` limits |
@@ -263,7 +280,7 @@ Foreman is a **stdio-only MCP server**. The trust boundary is the parent process
 | v0.0.6 | 6 | 5 | 0 | 1 |
 | **Total** | **14** | **10** | **3** | **1** |
 
-v0.0.7.5 was a workflow-hygiene patch - skill trim, ledger honesty, session orient. v0.0.8 adds host-aware skill rendering (Cursor mode) - purely additive; no new attack surface (no new external IO, no new shell invocation paths). v0.1.x adds protocol guidance and metadata only; Graphify and LangGraph remain optional support paths and are not production dependencies.
+v0.0.7.5 was a workflow-hygiene patch - skill trim, ledger honesty, session orient. v0.0.8 adds host-aware skill rendering (Cursor mode) - purely additive; no new attack surface (no new external IO, no new shell invocation paths). v0.1.x adds protocol guidance and metadata; the only new IO surface is `verify_citations`, which performs read-only file access jailed under `repo_root` (traversal and absolute paths rejected, UTF-16/undecodable specs refused). Graphify and LangGraph remain optional support paths and are not production dependencies.
 
 ### Supply Chain Scan
 
@@ -283,6 +300,7 @@ Details: [docs/socket-security-scan-2026-06-08.md](docs/socket-security-scan-202
 
 | Change | Detail |
 |--------|--------|
+| Citation verification | New `verify_citations` tool plus a shared protocol gate: `spec_man` and `doc_man` now expect every `[OBSERVED]`/`[IMPLEMENTED]` `file:line` to carry a verbatim anchor that is deterministically re-read and classified (CONFIRMED / DRIFTED / MISSING / UNANCHORED). Spec/doc completion gates on each claim-bearing citation being confirmed or explicitly downgraded. |
 | Tool metadata routing | `spec_man`, `lighttask`, and `pitboss_implementor` descriptions now advertise stale-plan checks, Atlas/code-surfacing, Plan Delta Ladder, and runtime-control triggers before the model opens the full skill. |
 | Spec-man re-evaluation | Existing repo/spec runs can classify plans as `current`, `needs_patch`, `blocked`, or `superseded` and emit `D3`/`D2`/`D1`/`D0` machine fields. |
 | Project Atlas guidance | Graphify can be used as an optional local navigation map through `graphify update . --no-cluster`; direct evidence remains required. |
@@ -318,7 +336,7 @@ git clone https://github.com/malindarathnayake/foreman.git
 cd foreman/foreman-mcp
 npm install
 npm run build
-npm test          # 342 tests across 16 files
+npm test          # 388 tests across 17 files
 ```
 
 ---
