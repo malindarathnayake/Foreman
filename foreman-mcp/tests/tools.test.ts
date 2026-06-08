@@ -10,6 +10,29 @@ import { capabilityCheck } from "../src/tools/capabilityCheck.js"
 import { writeLedger } from "../src/lib/ledger.js"
 import { writeProgress } from "../src/lib/progress.js"
 
+async function withNoCliOnPath(fn: () => Promise<void>): Promise<void> {
+  const originalEnv: Record<string, string | undefined> = {}
+  const pathKeys = Object.keys(process.env).filter((key) => key.toLowerCase() === "path")
+  const keys = pathKeys.length > 0 ? pathKeys : ["PATH"]
+
+  for (const key of keys) {
+    originalEnv[key] = process.env[key]
+    process.env[key] = ""
+  }
+
+  try {
+    await fn()
+  } finally {
+    for (const key of keys) {
+      if (originalEnv[key] === undefined) {
+        delete process.env[key]
+      } else {
+        process.env[key] = originalEnv[key]
+      }
+    }
+  }
+}
+
 let tmpDir: string
 let ledgerPath: string
 let progressPath: string
@@ -25,9 +48,9 @@ afterEach(async () => {
 })
 
 describe("bundleStatus", () => {
-  it("returns TOON output containing bundle_version: 0.0.9", async () => {
+  it("returns TOON output containing bundle_version: 0.1.1", async () => {
     const result = await bundleStatus()
-    expect(result).toContain("bundle_version: 0.0.9")
+    expect(result).toContain("bundle_version: 0.1.1")
   })
 
   it("returns output containing compatible: true", async () => {
@@ -209,23 +232,24 @@ describe("handleReadProgress", () => {
 
 describe("capabilityCheck", () => {
   it("returns available: false when codex CLI is not installed", async () => {
-    // codex is unlikely to be installed in test environments
-    const result = await capabilityCheck("codex")
-    // The result should always be TOON key/value format
-    expect(result).toContain("cli: codex")
-    expect(result).toMatch(/available: (true|false)/)
-    expect(result).toContain("auth_status:")
-  }, 30000)
+    await withNoCliOnPath(async () => {
+      const result = await capabilityCheck("codex")
+      expect(result).toContain("cli: codex")
+      expect(result).toContain("available: false")
+      expect(result).toContain("auth_status:")
+    })
+  }, 5000)
 
   it("returns available: false for codex on systems without it", async () => {
-    // We can verify the output format is correct TOON regardless of install status
-    const result = await capabilityCheck("codex")
-    const lines = result.split("\n")
-    // Should have at least 4 lines (cli, available, version, auth_status)
-    expect(lines.length).toBeGreaterThanOrEqual(4)
-    // Each line should be key: value format
-    for (const line of lines) {
-      expect(line).toMatch(/^\w+: .+$/)
-    }
-  }, 30000)
+    await withNoCliOnPath(async () => {
+      const result = await capabilityCheck("codex")
+      const lines = result.split("\n")
+      // Should have at least 4 lines (cli, available, version, auth_status)
+      expect(lines.length).toBeGreaterThanOrEqual(4)
+      // Each line should be key: value format
+      for (const line of lines) {
+        expect(line).toMatch(/^\w+: .+$/)
+      }
+    })
+  }, 5000)
 })

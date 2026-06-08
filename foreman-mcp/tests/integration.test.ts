@@ -23,14 +23,14 @@ afterEach(async () => {
   await server?.close()
 })
 
-describe("list tools — verify all 17 present, update_bundle absent", () => {
+describe("list tools — verify all 20 present, update_bundle absent", () => {
   beforeEach(async () => {
     await setupServer()
   })
 
-  it("lists exactly 17 tools", async () => {
+  it("lists exactly 20 tools", async () => {
     const result = await client.listTools()
-    expect(result.tools).toHaveLength(17)
+    expect(result.tools).toHaveLength(20)
   })
 
   it("includes all required tool names", async () => {
@@ -48,11 +48,35 @@ describe("list tools — verify all 17 present, update_bundle absent", () => {
     expect(names).toContain("pitboss_implementor")
     expect(names).toContain("design_partner")
     expect(names).toContain("spec_generator")
+    expect(names).toContain("lighttask")
+    expect(names).toContain("spec_man")
+    expect(names).toContain("doc_man")
     expect(names).toContain("run_tests")
     expect(names).toContain("write_journal")
     expect(names).toContain("read_journal")
     expect(names).toContain("invoke_advisor")
     expect(names).toContain("session_orient")
+  })
+
+  it("tool descriptions telegraph Foreman routing policy", async () => {
+    const result = await client.listTools()
+    const byName = new Map(result.tools.map((tool) => [tool.name, tool.description ?? ""]))
+
+    expect(byName.get("pitboss_implementor")).toContain("worker fan-out")
+    expect(byName.get("pitboss_implementor")).toContain("retries")
+    expect(byName.get("pitboss_implementor")).toContain("multi-session resume")
+    expect(byName.get("pitboss_implementor")).toContain("LangGraph-style runtime control")
+    expect(byName.get("pitboss_implementor")).toContain("Foreman specs, ledger, journal, tests")
+
+    expect(byName.get("lighttask")).toContain("Default for small surgical work")
+    expect(byName.get("lighttask")).toContain("Atlas/code-surfacing")
+    expect(byName.get("lighttask")).toContain("spec_man")
+    expect(byName.get("lighttask")).toContain("Plan Delta Ladder re-evaluation")
+
+    expect(byName.get("spec_man")).toContain("stale-plan detection")
+    expect(byName.get("spec_man")).toContain("Atlas/Graphify")
+    expect(byName.get("spec_man")).toContain("D3 raw")
+    expect(byName.get("spec_man")).toContain("Never auto-promote D1 to D0")
   })
 
   it("session_orient invocation returns a non-empty string", async () => {
@@ -92,9 +116,9 @@ describe("list resources — verify skill URIs", () => {
     await setupServer()
   })
 
-  it("lists exactly 3 skill resources", async () => {
+  it("lists exactly 6 skill resources", async () => {
     const result = await client.listResources()
-    expect(result.resources).toHaveLength(3)
+    expect(result.resources).toHaveLength(6)
     for (const r of result.resources) {
       expect(r.uri).not.toContain("_common-protocol")
       expect(r.uri).not.toMatch(/\/_[^/]+$/)
@@ -117,6 +141,24 @@ describe("list resources — verify skill URIs", () => {
     const result = await client.listResources()
     const uris = result.resources.map((r) => r.uri)
     expect(uris).toContain("skill://foreman/implementor")
+  })
+
+  it("includes skill://foreman/lighttask", async () => {
+    const result = await client.listResources()
+    const uris = result.resources.map((r) => r.uri)
+    expect(uris).toContain("skill://foreman/lighttask")
+  })
+
+  it("includes skill://foreman/spec-man", async () => {
+    const result = await client.listResources()
+    const uris = result.resources.map((r) => r.uri)
+    expect(uris).toContain("skill://foreman/spec-man")
+  })
+
+  it("includes skill://foreman/doc-man", async () => {
+    const result = await client.listResources()
+    const uris = result.resources.map((r) => r.uri)
+    expect(uris).toContain("skill://foreman/doc-man")
   })
 })
 
@@ -152,6 +194,42 @@ describe("read skill resource — verify content", () => {
     expect(text).toContain("mcp__foreman__read_ledger")
     expect(text).toContain("mcp__foreman__write_ledger")
   })
+
+  it("lighttask contains workspace, git, freshness, and grounding gates", async () => {
+    const result = await client.readResource({ uri: "skill://foreman/lighttask" })
+    expect(result.contents).toHaveLength(1)
+    const text = result.contents[0].text as string
+    expect(text).toContain("name: foreman:lighttask")
+    expect(text).toContain("Workspace Classification Gate")
+    expect(text).toContain("Git Context Gate")
+    expect(text).toContain("Spec Freshness Gate")
+    expect(text).toContain("Grounding Report")
+    expect(text).toContain("Atlas Refresh and Plan Re-evaluation")
+    expect(text).toContain("Plan Delta Ladder")
+  })
+
+  it("spec-man contains machine spec marker and repo context", async () => {
+    const result = await client.readResource({ uri: "skill://foreman/spec-man" })
+    expect(result.contents).toHaveLength(1)
+    const text = result.contents[0].text as string
+    expect(text).toContain("name: foreman:spec-man")
+    expect(text).toContain("spec-man.machine.v1")
+    expect(text).toContain("git_tracking")
+    expect(text).toContain("Project Atlas Integration")
+    expect(text).toContain('"atlas"')
+    expect(text).toContain("Plan Delta Ladder")
+    expect(text).toContain('"plan_delta"')
+  })
+
+  it("doc-man contains README, Confluence, and machine documentation modes", async () => {
+    const result = await client.readResource({ uri: "skill://foreman/doc-man" })
+    expect(result.contents).toHaveLength(1)
+    const text = result.contents[0].text as string
+    expect(text).toContain("name: foreman:doc-man")
+    expect(text).toContain("README Mode")
+    expect(text).toContain("Confluence Documentation Mode")
+    expect(text).toContain("doc-man.machine.v1")
+  })
 })
 
 describe("bundle_status round-trip", () => {
@@ -159,12 +237,12 @@ describe("bundle_status round-trip", () => {
     await setupServer()
   })
 
-  it("returns bundle_version 0.0.9", async () => {
+  it("returns bundle_version 0.1.1", async () => {
     const result = await client.callTool({ name: "bundle_status", arguments: {} })
     const content = result.content as Array<{ type: string; text: string }>
     expect(content[0].type).toBe("text")
     expect(content[0].text).toContain("bundle_version")
-    expect(content[0].text).toContain("0.0.9")
+    expect(content[0].text).toContain("0.1.1")
   })
 })
 
@@ -284,6 +362,79 @@ describe("spec_generator round-trip", () => {
     })
     const content = result.content as Array<{ type: string; text: string }>
     expect(content[0].text).toContain("activation_context: Docs/design-summary.md")
+  })
+})
+
+describe("lighttask round-trip", () => {
+  beforeEach(async () => {
+    await setupServer()
+  })
+
+  it("returns skill header and lighttask protocol content", async () => {
+    const result = await client.callTool({ name: "lighttask", arguments: {} })
+    const content = result.content as Array<{ type: string; text: string }>
+    expect(content[0].type).toBe("text")
+    expect(content[0].text).toContain("skill: foreman:lighttask")
+    expect(content[0].text).toMatch(/source: (bundled|user-override|project-override)/)
+    expect(content[0].text).toContain("Workspace Classification Gate")
+    expect(content[0].text).toContain("Spec Freshness Gate")
+  })
+
+  it("includes activation_context when provided", async () => {
+    const result = await client.callTool({
+      name: "lighttask",
+      arguments: { context: "fix stale API docs" },
+    })
+    const content = result.content as Array<{ type: string; text: string }>
+    expect(content[0].text).toContain("activation_context: fix stale API docs")
+  })
+})
+
+describe("spec_man round-trip", () => {
+  beforeEach(async () => {
+    await setupServer()
+  })
+
+  it("returns skill header and spec-man protocol content", async () => {
+    const result = await client.callTool({ name: "spec_man", arguments: {} })
+    const content = result.content as Array<{ type: string; text: string }>
+    expect(content[0].type).toBe("text")
+    expect(content[0].text).toContain("skill: foreman:spec-man")
+    expect(content[0].text).toMatch(/source: (bundled|user-override|project-override)/)
+    expect(content[0].text).toContain("spec-man.machine.v1")
+  })
+
+  it("includes activation_context when provided", async () => {
+    const result = await client.callTool({
+      name: "spec_man",
+      arguments: { context: "reseller API target behavior" },
+    })
+    const content = result.content as Array<{ type: string; text: string }>
+    expect(content[0].text).toContain("activation_context: reseller API target behavior")
+  })
+})
+
+describe("doc_man round-trip", () => {
+  beforeEach(async () => {
+    await setupServer()
+  })
+
+  it("returns skill header and doc-man protocol content", async () => {
+    const result = await client.callTool({ name: "doc_man", arguments: {} })
+    const content = result.content as Array<{ type: string; text: string }>
+    expect(content[0].type).toBe("text")
+    expect(content[0].text).toContain("skill: foreman:doc-man")
+    expect(content[0].text).toMatch(/source: (bundled|user-override|project-override)/)
+    expect(content[0].text).toContain("README Mode")
+  })
+
+  it("includes activation_context when provided", async () => {
+    const result = await client.callTool({
+      name: "doc_man",
+      arguments: { context: "README and Confluence style" },
+    })
+    const content = result.content as Array<{ type: string; text: string }>
+    expect(content[0].text).toContain("activation_context: README and Confluence style")
   })
 })
 

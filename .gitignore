@@ -6,6 +6,20 @@ dist/
 # Foreman working docs (specs, ledgers, pentest artifacts)
 Docs/
 
+# Repository documentation is committed.
+!docs/
+!docs/**
+
+# Local experiment workspace. Keep only the folder marker in git so review
+# tooling does not scan synthetic target applications or generated outputs.
+Test_dojo/**
+!Test_dojo/
+!Test_dojo/.gitkeep
+
+# Local package/install artifacts
+foreman-mcp/.npm-cache/
+foreman-mcp/*.tgz
+
 # Keep assets/ but ignore generation prompts
 assets/prompts.md
 
