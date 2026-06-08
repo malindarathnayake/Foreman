@@ -10,7 +10,9 @@
 
 **A software development governance layer for AI coding agents.** Foreman enforces a design → spec → implement pipeline, validates every state change through a structured ledger, and uses independent models (Codex, Gemini, GPT-5.5, Gemini-3.1-pro) to review work at phase gates. It doesn't write code — it supervises agents that do.
 
-**20 tools. 6 skill protocols. Multi-host: Claude Code, Cursor, Codex CLI.** Foreman includes the full design/spec/implement pipeline plus lightweight surgical-task, specification, and documentation protocols.
+**20 tools. 6 skill protocols. Multi-host: Claude Code, Cursor, Codex CLI.** Foreman includes the full design/spec/implement pipeline plus lightweight surgical-task, specification, and documentation protocols. `spec_man` can draw from an optional project atlas such as Graphify when one is available.
+
+Current release: **v0.1.1**. See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ---
 
@@ -35,8 +37,8 @@ GitHub Packages requires a personal access token with `read:packages` scope, eve
 ### Install — tarball (no auth required)
 
 ```bash
-curl -LO https://github.com/malindarathnayake/Foreman/releases/download/v0.0.10/malindarathnayake-foreman-mcp-0.0.10.tgz
-npm install -g malindarathnayake-foreman-mcp-0.0.10.tgz
+curl -LO https://github.com/malindarathnayake/Foreman/releases/download/v0.1.1/malindarathnayake-foreman-mcp-0.1.1.tgz
+npm install -g malindarathnayake-foreman-mcp-0.1.1.tgz
 ```
 
 Or grab the latest tarball directly from the [Releases page](https://github.com/malindarathnayake/Foreman/releases/latest). The repo's `artifacts/` folder retains historical tarballs (≤ v0.0.8) for archival reference; new versions live only on Releases + GitHub Packages.
@@ -104,6 +106,20 @@ design_partner → spec_generator → pitboss_implementor
 
 **The pitboss never writes code.** Workers write code but never see the full spec, the ledger, or prior units. This separation prevents hallucination accumulation and self-review bias.
 
+### Spec-man, Atlas, And Plan Drift
+
+Foreman v0.1.x adds a grounded re-evaluation lane for existing repositories. When `spec_man` is used against a repo that already has specs, plans, or implementation history, it can:
+
+- record git branch, commit, dirty state, and source evidence in the machine spec
+- use an optional project atlas such as Graphify as navigation evidence
+- detect stale or partial plans when code, docs, contracts, config, or tests drift
+- group inconsistencies with the Plan Delta Ladder: `D3 raw`, `D2 grouped`, `D1 candidate`, `D0 current`
+- keep `D1` as a candidate until review or user approval promotes it
+
+`lighttask` remains the small surgical default. It escalates to `spec_man` when grounding finds missing, stale, or partial specs. For long-running, branching, multi-worker workflows, Foreman metadata now telegraphs when optional LangGraph-style runtime control may be warranted, while Foreman artifacts remain canonical.
+
+See [docs/foreman-atlas-langgraph-runtime-plan.md](docs/foreman-atlas-langgraph-runtime-plan.md) for the design boundary and validation status.
+
 ```mermaid
 flowchart LR
     subgraph Pipeline
@@ -140,8 +156,8 @@ flowchart LR
 | `design_partner` | Collaborative design session with YIELD checkpoints |
 | `spec_generator` | Spec generation + ledger/progress seeding |
 | `pitboss_implementor` | Pitboss/worker orchestration with G1-G5 gates |
-| `lighttask` | Surgical-task workflow with workspace, git, spec freshness, grounding, review, and recovery gates |
-| `spec_man` | Focused intended-behavior and machine spec generation |
+| `lighttask` | Surgical-task workflow with workspace, git, spec freshness, optional atlas re-evaluation, grounding, review, and recovery gates |
+| `spec_man` | Focused intended-behavior and machine spec generation with optional project atlas grounding |
 | `doc_man` | Grounded README, architecture, data-flow, Confluence, Mermaid, and machine documentation generation |
 
 ### Data (10 tools)
@@ -246,7 +262,15 @@ Foreman is a **stdio-only MCP server**. The trust boundary is the parent process
 | v0.0.6 | 6 | 5 | 0 | 1 |
 | **Total** | **14** | **10** | **3** | **1** |
 
-v0.0.7.5 was a workflow-hygiene patch — skill trim, ledger honesty, session orient. v0.0.8 adds host-aware skill rendering (Cursor mode) — purely additive; no new attack surface (no new external IO, no new shell invocation paths). All existing defenses intact.
+v0.0.7.5 was a workflow-hygiene patch - skill trim, ledger honesty, session orient. v0.0.8 adds host-aware skill rendering (Cursor mode) - purely additive; no new attack surface (no new external IO, no new shell invocation paths). v0.1.x adds protocol guidance and metadata only; Graphify and LangGraph remain optional support paths and are not production dependencies.
+
+### Supply Chain Scan
+
+| Status | Scan | Date | Validated | Link |
+|--------|------|------|-----------|------|
+| ✅ | Socket full scan | 2026-06-08 | Scan creation validated; org policy report requires additional Socket permission | [Socket report](https://socket.dev/dashboard/org/fts/sbom/26b91aee-2d2d-4f54-999e-a16730729f5d) |
+
+Details: [docs/socket-security-scan-2026-06-08.md](docs/socket-security-scan-2026-06-08.md)
 
 ### Dependencies
 
@@ -254,16 +278,16 @@ v0.0.7.5 was a workflow-hygiene patch — skill trim, ledger honesty, session or
 
 ---
 
-## What's New in v0.0.8
+## What's New in v0.1.1
 
 | Change | Detail |
 |--------|--------|
-| Cursor host mode | `--host=cursor` (or `FOREMAN_HOST=cursor`) renders skills with Cursor `Task` subagent invocation: `claude-4.6-sonnet-medium-thinking` for workers, `gpt-5.5-medium` + `gemini-3.1-pro` for advisors (`composer-2-fast` fallback) |
-| `host_status` tool | Read-only introspection of active host + model slugs |
-| Host-aware `capability_check` | Synthetic-available in cursor mode (no shelling out for Task subagents) |
-| Single source of truth | Skill protocols use placeholders (`{{worker_invoke}}`, `{{advisor_a}}`, `{{advisor_b}}`); same gates, host-specific invocation |
-| Default unchanged | Claude Code / Codex CLI users see byte-identical skill rendering — zero migration |
-| Distribution | GitHub Packages npm registry (`@malindarathnayake/foreman-mcp`) added alongside existing tarball releases |
+| Tool metadata routing | `spec_man`, `lighttask`, and `pitboss_implementor` descriptions now advertise stale-plan checks, Atlas/code-surfacing, Plan Delta Ladder, and runtime-control triggers before the model opens the full skill. |
+| Spec-man re-evaluation | Existing repo/spec runs can classify plans as `current`, `needs_patch`, `blocked`, or `superseded` and emit `D3`/`D2`/`D1`/`D0` machine fields. |
+| Project Atlas guidance | Graphify can be used as an optional local navigation map through `graphify update . --no-cluster`; direct evidence remains required. |
+| Lighttask escalation | Surgical work stays compact but escalates to `spec_man` when specs are stale, missing, partial, or affected by changed repo context. |
+| Runtime boundary | LangGraph-style control is documented as optional for branching, retry-heavy, multi-session workflows; it does not replace Foreman specs, ledger, journal, tests, or advisor decisions. |
+| Dojo validation | TypeScript and Python legacy pressure tests both scored 100 percent against hidden Plan Delta Ladder contracts. |
 
 ---
 
@@ -293,7 +317,7 @@ git clone https://github.com/malindarathnayake/foreman.git
 cd foreman/foreman-mcp
 npm install
 npm run build
-npm test          # 337 tests across 16 files
+npm test          # 342 tests across 16 files
 ```
 
 ---

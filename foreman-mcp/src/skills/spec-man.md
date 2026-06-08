@@ -44,6 +44,86 @@ User intent defines target behavior. Implementation evidence can constrain the s
 
 If the user asks to spec an existing system as implemented, label the output as an implementation spec. If the user asks to spec planned work, label the output as a target spec.
 
+## Project Atlas Integration
+
+A project atlas is a generated map of the repository, docs, schemas, configs, and dependency seams. Graphify is the preferred atlas provider when it is installed or `graphify-out/` already exists.
+
+Use the atlas to choose quadrants, find likely evidence, discover cross-file relationships, and detect stale coverage. Do not treat the atlas as authoritative truth. Every requirement still needs direct evidence from user context, specs, source files, contracts, tests, logs, or command output.
+
+Atlas provider rules:
+
+- `graphify-out/GRAPH_REPORT.md` is an optional human navigation report when report generation succeeds.
+- `graphify-out/graph.json` is machine-readable atlas evidence.
+- `graphify-out/graph.html` is optional visualization evidence.
+- `.graphifyignore` controls atlas scope when present.
+- `graphify query`, `graphify path`, and `graphify explain` may guide targeted reads.
+- `graphify update <path> --no-cluster` is the preferred local code-graph refresh because it avoids LLM-backed semantic extraction.
+- `graphify <path>` or `graphify extract <path>` may invoke semantic extraction through a configured AI backend and requires explicit approval.
+
+Trigger atlas discovery or refresh when:
+
+- the user asks for a repo map, galaxy map, source investigation, or knowledge base refresh
+- a task starts or resumes after the repo branch, commit, dirty state, or relevant files changed
+- existing `spec-man` output is stale, partial, missing cited evidence, or lacks the requested quadrant
+- the requested work spans multiple subsystems, data contracts, APIs, migrations, queues, auth boundaries, or docs archives
+- direct reading would require broad repo traversal before the relevant files are known
+
+Before generating or updating an atlas:
+
+- check whether `graphify` is available on PATH
+- check whether `graphify-out/graph.json` or `graphify-out/GRAPH_REPORT.md` already exists
+- ask before installing Graphify, creating a new atlas, updating `graphify-out/`, or invoking an AI/API-backed extraction
+- prefer local code/schema extraction when possible
+- record whether docs, PDFs, images, audio, video, or semantic extraction may leave the machine through an AI backend
+
+Store atlas output as evidence references, not copied payloads. If the atlas and direct evidence disagree, direct evidence wins and the mismatch must be recorded.
+
+## Re-evaluation Flow
+
+Use re-evaluation mode when an existing Foreman plan, lighttask plan, implementation spec, or machine spec may no longer match the current repo.
+
+Re-evaluation steps:
+
+1. Read the current repo context, existing spec-man output, plan artifacts, and available atlas refs.
+2. If the atlas is stale or missing for the requested quadrant, offer an atlas refresh. If the user skips it, continue with direct grounding and mark atlas coverage `[UNVERIFIED]`.
+3. Compare the refreshed or existing atlas against direct reads of the files, contracts, tests, and docs that affect the plan.
+4. Classify the existing plan as `current`, `needs_patch`, `blocked`, or `superseded`.
+5. If material inconsistencies exist, run the Plan Delta Ladder before changing the active plan.
+6. If the promoted plan needs material changes, present the delta and ask the user to accept the revised plan before implementation continues.
+
+The atlas can trigger re-evaluation. It cannot approve the revised plan.
+
+## Plan Delta Ladder
+
+Use the Plan Delta Ladder when re-evaluation finds inconsistencies across code, docs, specs, tests, APIs, data, deployment, or runtime behavior.
+
+The ladder reduces context drag by compressing raw findings into successively smaller review artifacts:
+
+| Ring | Name | Purpose | Promotion rule |
+|---|---|---|---|
+| `D3` | Raw deltas | Individual inconsistencies, stale facts, missing evidence, reviewer objections, and surface-level findings. | Promote only after dedupe and evidence tagging. |
+| `D2` | Delta groups | Related inconsistencies grouped by subsystem, contract, behavior, risk, or acceptance criterion. | Promote only when each group has a proposed resolution or explicit blocker. |
+| `D1` | Candidate plan delta | Minimal coherent change set that updates the plan without carrying raw noise forward. | Promote only after advisor or subagent review checks correctness and missing interactions. |
+| `D0` | Current plan | Accepted plan state used for implementation. | Promote only after user acceptance when material behavior, contracts, risk, or scope changes. |
+
+Rules:
+
+- Keep raw `D3` findings sealed by source surface when possible.
+- Merge duplicate or overlapping `D3` findings before creating `D2` groups.
+- Do not promote a `D2` group if it lacks evidence refs or has unresolved contradictions.
+- Prefer `D2` groups that map to implementation action surfaces, not only conceptual root causes.
+- Preserve stale tests as their own `D2` group when tests encode old behavior.
+- Preserve config, feature flags, migrations, contracts, and legacy helpers as separate `D2` groups when they require separate edits or approvals.
+- A `D2` group should be small enough that a worker could own it without rereading all raw `D3` findings.
+- Do not promote `D1` to `D0` if material changes lack user approval.
+- `D1` must name each `D2` group it resolves or explicitly defers.
+- Once `D0` is accepted, archive lower rings as evidence refs and stop carrying their full text in the active context.
+- If later evidence contradicts `D0`, start a new ladder instead of mutating the old rings.
+
+Material changes include acceptance criteria, user-visible behavior, public API contracts, data contracts, security boundaries, migrations, rollout behavior, test strategy, touched subsystem scope, or risk posture.
+
+Non-material evidence refreshes may be logged and promoted without stopping for approval.
+
 ## Output Discovery Markers
 
 Human spec files include this marker near the top:
@@ -132,10 +212,25 @@ Default schema:
     "upstream": "",
     "generated_at": ""
   },
+  "atlas": {
+    "provider": "none|graphify|other",
+    "status": "absent|available|generated|refreshed|stale|skipped|unavailable",
+    "root": "",
+    "generated_at": "",
+    "graph_ref": "",
+    "report_ref": "",
+    "query_refs": [],
+    "coverage": {
+      "state": "current|partial|stale|unknown",
+      "covered_quadrants": [],
+      "uncovered_quadrants": [],
+      "staleness_reasons": []
+    }
+  },
   "sources": [
     {
       "id": "source.001",
-      "type": "user_context|ticket|existing_spec|code|discovery|external_doc|command_output",
+      "type": "user_context|ticket|existing_spec|code|discovery|project_atlas|external_doc|command_output",
       "ref": "",
       "trust": "high|medium|low",
       "notes": ""
@@ -146,6 +241,19 @@ Default schema:
     "out": [],
     "assumptions": [],
     "unresolved": []
+  },
+  "plan_delta": {
+    "status": "none|d3_raw|d2_grouped|d1_candidate|d0_current",
+    "reevaluation_status": "current|needs_patch|blocked|superseded|unknown",
+    "material_delta": false,
+    "approval_required": false,
+    "rings": {
+      "d3_raw": [],
+      "d2_groups": [],
+      "d1_candidate": {},
+      "d0_current_ref": ""
+    },
+    "promotion_log": []
   },
   "requirements": [
     {

@@ -18,6 +18,7 @@ Do not use `lighttask` for one-line edits with no behavioral risk, large multi-p
 |---|---|
 | Ground first | Do not plan from memory when files, specs, git state, or external systems can be checked. |
 | Atlas is not truth | A project atlas may guide navigation, but final claims require direct grounding. |
+| Atlas refresh is gated | Ask before generating or updating atlas files; user may skip and continue with `[UNVERIFIED]` atlas coverage. |
 | Git is optional | Use git context when available; never panic in document folders. |
 | No automatic mutation | Do not run `git init`, switch branches, or alter files unless the user approves. |
 | Bypass is visible | User may bypass freshness or grounding gates, but affected outputs stay marked `[UNVERIFIED]`. |
@@ -43,6 +44,7 @@ The artifact contains:
 - Workspace classification
 - Git context and waiver status
 - Spec freshness result
+- Atlas provider, status, and refresh decision
 - Grounding report
 - Plan checklist
 - Decisions and notes
@@ -167,6 +169,7 @@ Staleness checks:
 - git diff touches files, contracts, tests, or configs referenced by the spec
 - package, config, schema, migration, API, or route files changed after generation
 - atlas quadrant touched by the request has no evidence map
+- Graphify or another atlas provider exists but `graphify-out/` is older than changed source, docs, schema, config, or contract files
 - open questions block the requested task
 
 Bypass behavior:
@@ -178,6 +181,51 @@ Bypass behavior:
 | Bypass | Continue, log waiver, mark affected claims `[UNVERIFIED]`, include stale-spec warning in advisor prompts. |
 
 Do not produce `ready-for-implementation` status after bypass unless the user explicitly accepts the risk.
+
+### Atlas Refresh and Plan Re-evaluation
+
+Treat Graphify as the preferred project atlas when `graphify` is installed or `graphify-out/` exists.
+
+Atlas refresh is optional but should be offered when:
+
+- starting or resuming in a repo whose branch, commit, dirty files, source files, docs, schema, config, or contracts changed after spec generation
+- `spec-man` output is stale, partial, missing cited evidence, or lacks the requested quadrant
+- the task needs broad source investigation before direct file reads can be scoped
+- the existing plan was built from a different checkout, old atlas, or unknown repo context
+
+Read-only discovery:
+
+```text
+where graphify
+dir graphify-out
+```
+
+Potential refresh command after user approval:
+
+```text
+graphify update . --no-cluster
+```
+
+If no atlas exists and the task justifies one, offer to create it. If Graphify is missing, continue with direct grounding unless the user asks to install it. Use `graphify <path>` or semantic extraction modes only after explicit user approval because they may use an AI/API backend.
+
+Re-evaluation flow:
+
+1. Invoke or request `spec_man` in re-evaluation mode with current git context, plan refs, spec refs, atlas refs, and task scope.
+2. Have `spec_man` classify the current plan as `current`, `needs_patch`, `blocked`, or `superseded`.
+3. If the plan is `needs_patch` or `superseded`, run the Plan Delta Ladder: `D3 raw` -> `D2 grouped` -> `D1 candidate` -> `D0 current`.
+4. Show the `D1` candidate delta, not every raw inconsistency, and ask the user to accept material changes before editing.
+5. If the user skips atlas refresh, continue only with direct reads and mark atlas-derived claims `[UNVERIFIED]`.
+6. If atlas output and direct evidence disagree, direct evidence wins and the mismatch goes into `D3 raw`.
+
+Plan Delta Ladder behavior:
+
+- `D3 raw` stores sealed findings from code, docs, tests, APIs, data, runtime, advisors, and Atlas checks.
+- `D2 grouped` dedupes and groups findings by behavior, contract, subsystem, risk, or acceptance criterion.
+- `D1 candidate` is the minimal revised plan delta for review.
+- `D0 current` is the accepted plan state used for implementation.
+- After promotion to `D0`, carry refs to lower rings instead of their full text.
+- Prefer `D2` groups that map to implementation action surfaces. Keep stale tests, config/feature flags, contracts, migrations, and legacy helpers separate when they need separate edits.
+- `D1 candidate` must list which `D2` groups it resolves or defers.
 
 ## Phase 3: Grounding Report
 
@@ -278,6 +326,7 @@ Lighttask is ready to execute when:
 - Workspace classification is recorded.
 - Git context is recorded, skipped, or explicitly unavailable.
 - Spec freshness is `current`, refreshed, grounded against current checkout, or bypassed with waiver.
+- Atlas state is recorded when an atlas exists, was refreshed, was skipped, or was unavailable.
 - Grounding report contains only cited facts and explicit unknowns.
 - Pending decisions are resolved or intentionally deferred.
 - Adversarial review is complete or waived.

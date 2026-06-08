@@ -580,6 +580,26 @@ describe("skillTrimming - lighttask", () => {
     expect(content).toContain("stale-spec warning")
   })
 
+  it("defines atlas refresh and plan re-evaluation for stale resume context", async () => {
+    const content = await readSkill("lighttask.md")
+    expect(content).toContain("Atlas Refresh and Plan Re-evaluation")
+    expect(content).toContain("Graphify")
+    expect(content).toContain("graphify update . --no-cluster")
+    expect(content).toContain("current`, `needs_patch`, `blocked`, or `superseded")
+    expect(content).toContain("Atlas state is recorded")
+  })
+
+  it("defines the Plan Delta Ladder for promoted re-evaluation", async () => {
+    const content = await readSkill("lighttask.md")
+    expect(content).toContain("Plan Delta Ladder")
+    expect(content).toContain("D3 raw")
+    expect(content).toContain("D2 grouped")
+    expect(content).toContain("D1 candidate")
+    expect(content).toContain("D0 current")
+    expect(content).toContain("implementation action surfaces")
+    expect(content).toContain("stale tests")
+  })
+
   it("renders common protocol includes and advisor placeholders", async () => {
     const raw = await readSkill("lighttask.md")
     const skillPath = path.join(SKILLS_DIR, "lighttask.md")
@@ -614,6 +634,33 @@ describe("skillTrimming - spec-man", () => {
     for (const tag of ["[SPECIFIED]", "[OBSERVED]", "[EXTERNAL]", "[ASSUMPTION]", "[UNRESOLVED]"]) {
       expect(content).toContain(tag)
     }
+  })
+
+  it("defines Graphify-backed project atlas fields and boundaries", async () => {
+    const content = await readSkill("spec-man.md")
+    expect(content).toContain("Project Atlas Integration")
+    expect(content).toContain("Graphify is the preferred atlas provider")
+    expect(content).toContain("graphify-out/graph.json")
+    expect(content).toContain('"atlas"')
+    expect(content).toContain('"provider": "none|graphify|other"')
+    expect(content).toContain("project_atlas")
+    expect(content).toContain("The atlas can trigger re-evaluation. It cannot approve the revised plan.")
+  })
+
+  it("defines the Plan Delta Ladder and machine spec fields", async () => {
+    const content = await readSkill("spec-man.md")
+    expect(content).toContain("## Plan Delta Ladder")
+    expect(content).toContain("D3")
+    expect(content).toContain("D2")
+    expect(content).toContain("D1")
+    expect(content).toContain("D0")
+    expect(content).toContain("implementation action surfaces")
+    expect(content).toContain("stale tests")
+    expect(content).toContain('"plan_delta"')
+    expect(content).toContain('"d3_raw"')
+    expect(content).toContain('"d2_groups"')
+    expect(content).toContain('"d1_candidate"')
+    expect(content).toContain('"d0_current_ref"')
   })
 })
 

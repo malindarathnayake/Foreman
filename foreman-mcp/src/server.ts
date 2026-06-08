@@ -53,7 +53,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   const host: HostId = config?.host ?? "claude-code"
 
   const server = new McpServer(
-    { name: "foreman", version: "0.0.10" },
+    { name: "foreman", version: "0.1.1" },
     { capabilities: { resources: {}, tools: {} } }
   )
 
@@ -308,6 +308,10 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     {
       description: [
         "Activates the Foreman pitboss-implementor protocol.",
+        "Use for larger multi-phase implementation from prepared specs, especially",
+        "worker fan-out, gate routing, retries, recovery, blocked work, or multi-session resume.",
+        "Flags when optional LangGraph-style runtime control may be warranted while",
+        "keeping Foreman specs, ledger, journal, tests, and advisor decisions canonical.",
         "Returns the full orchestration skill: pit-boss/worker pattern,",
         "spec-driven validation, gates G1–G5, and Codex/Gemini deliberation",
         "(falls back to Opus agents when external CLIs are unavailable).",
@@ -371,9 +375,13 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     {
       description: [
         "Activates the Foreman lighttask protocol.",
+        "Default for small surgical work where classic Foreman is enough; avoid for",
+        "long-running branching multi-worker workflows unless escalating.",
         "Lightweight surgical-task workflow with workspace classification,",
-        "git context, spec freshness, grounding, mandatory adversarial review,",
+        "git context, spec freshness, Atlas/code-surfacing grounding, mandatory adversarial review,",
         "bypass waivers, and compact execution tracking.",
+        "Escalates to spec_man when specs are missing, stale, partial, or repo changes require",
+        "Plan Delta Ladder re-evaluation before implementation.",
         "The LLM MUST follow the returned instructions to run the lighttask session.",
         "Pass optional context to describe the task or target repo.",
       ].join(" "),
@@ -394,6 +402,9 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "Activates the Foreman spec-man protocol.",
         "Produces focused intended-behavior specs and machine specs from user intent,",
         "tickets, existing specs, code evidence, contracts, discovery output, or external docs.",
+        "Use for existing-repo/spec re-evaluation, stale-plan detection, Atlas/Graphify",
+        "code-surfacing, and Plan Delta Ladder grouping (D3 raw, D2 grouped, D1 candidate,",
+        "D0 current). Never auto-promote D1 to D0 without recorded approval.",
         "The LLM MUST follow the returned instructions to generate grounded specs.",
         "Pass optional context to describe the feature, subsystem, or source material.",
       ].join(" "),

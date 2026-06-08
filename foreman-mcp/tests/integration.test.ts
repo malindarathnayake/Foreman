@@ -58,6 +58,27 @@ describe("list tools — verify all 20 present, update_bundle absent", () => {
     expect(names).toContain("session_orient")
   })
 
+  it("tool descriptions telegraph Foreman routing policy", async () => {
+    const result = await client.listTools()
+    const byName = new Map(result.tools.map((tool) => [tool.name, tool.description ?? ""]))
+
+    expect(byName.get("pitboss_implementor")).toContain("worker fan-out")
+    expect(byName.get("pitboss_implementor")).toContain("retries")
+    expect(byName.get("pitboss_implementor")).toContain("multi-session resume")
+    expect(byName.get("pitboss_implementor")).toContain("LangGraph-style runtime control")
+    expect(byName.get("pitboss_implementor")).toContain("Foreman specs, ledger, journal, tests")
+
+    expect(byName.get("lighttask")).toContain("Default for small surgical work")
+    expect(byName.get("lighttask")).toContain("Atlas/code-surfacing")
+    expect(byName.get("lighttask")).toContain("spec_man")
+    expect(byName.get("lighttask")).toContain("Plan Delta Ladder re-evaluation")
+
+    expect(byName.get("spec_man")).toContain("stale-plan detection")
+    expect(byName.get("spec_man")).toContain("Atlas/Graphify")
+    expect(byName.get("spec_man")).toContain("D3 raw")
+    expect(byName.get("spec_man")).toContain("Never auto-promote D1 to D0")
+  })
+
   it("session_orient invocation returns a non-empty string", async () => {
     const result = await client.callTool({
       name: "session_orient",
@@ -183,6 +204,8 @@ describe("read skill resource — verify content", () => {
     expect(text).toContain("Git Context Gate")
     expect(text).toContain("Spec Freshness Gate")
     expect(text).toContain("Grounding Report")
+    expect(text).toContain("Atlas Refresh and Plan Re-evaluation")
+    expect(text).toContain("Plan Delta Ladder")
   })
 
   it("spec-man contains machine spec marker and repo context", async () => {
@@ -192,6 +215,10 @@ describe("read skill resource — verify content", () => {
     expect(text).toContain("name: foreman:spec-man")
     expect(text).toContain("spec-man.machine.v1")
     expect(text).toContain("git_tracking")
+    expect(text).toContain("Project Atlas Integration")
+    expect(text).toContain('"atlas"')
+    expect(text).toContain("Plan Delta Ladder")
+    expect(text).toContain('"plan_delta"')
   })
 
   it("doc-man contains README, Confluence, and machine documentation modes", async () => {
@@ -210,12 +237,12 @@ describe("bundle_status round-trip", () => {
     await setupServer()
   })
 
-  it("returns bundle_version 0.0.10", async () => {
+  it("returns bundle_version 0.1.1", async () => {
     const result = await client.callTool({ name: "bundle_status", arguments: {} })
     const content = result.content as Array<{ type: string; text: string }>
     expect(content[0].type).toBe("text")
     expect(content[0].text).toContain("bundle_version")
-    expect(content[0].text).toContain("0.0.10")
+    expect(content[0].text).toContain("0.1.1")
   })
 })
 
