@@ -1,6 +1,6 @@
 ---
 name: foreman:spec-man
-version: 0.0.1
+version: 0.0.2
 description: Produces focused intended-behavior specifications and machine specs from user intent, requirements, tickets, existing specs, code evidence, contracts, discovery output, or external documentation.
 ---
 
@@ -174,10 +174,14 @@ For every requirement or claim, classify the source:
 Use evidence references when available:
 
 ```markdown
-Evidence: `<file:line>`, `<command>`, `<ticket/ref>`, `<spec ref>`, `<external doc ref>`
+Evidence: `<file:line>` `<verbatim text on that line>`, `<command>`, `<ticket/ref>`, `<spec ref>`, `<external doc ref>`
 ```
 
+For `[OBSERVED]` refs the trailing backtick-wrapped verbatim anchor is expected: it is the exact text on the cited line, matched literally by `verify_citations`. One backtick span is a ref only (unanchored); a second adjacent span is the anchor. Anchors apply to `file:line` refs only; commands, tickets, spec refs, and external-doc refs take no anchor. See Citation Verification below.
+
 If no evidence exists, mark the item `[UNRESOLVED]`.
+
+{{include: citation-verification}}
 
 ## Requirement Language
 
@@ -470,7 +474,8 @@ Avoid:
 5. Define interfaces, data contracts, state, failure behavior, and acceptance criteria.
 6. Mark unresolved facts.
 7. Remove prose that does not affect implementation, testing, or review.
-8. Output the requested spec file or machine JSON.
+8. Run `verify_citations` over the spec. Correct `DRIFTED` line numbers; re-ground or downgrade `MISSING` and `UNANCHORED` `[OBSERVED]` items with a stated reason.
+9. Output the requested spec file or machine JSON.
 
 ## Done When
 
@@ -481,5 +486,7 @@ The spec gives downstream work enough information to:
 - review compatibility and risk
 - generate user or system documentation through `doc_man`
 - identify unresolved decisions without guessing
+
+A spec is not done until every `[OBSERVED]` evidence ref is `CONFIRMED` by `verify_citations`, or has been explicitly downgraded to `[UNRESOLVED]` with a stated reason.
 
 Stop at specification. Do not implement unless the user explicitly asks.

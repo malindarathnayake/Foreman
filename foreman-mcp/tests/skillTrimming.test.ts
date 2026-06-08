@@ -346,6 +346,7 @@ describe("skillTrimming — _common-protocol", () => {
     "advisor-grounding",
     "context-budget",
     "no-test-attestation",
+    "citation-verification",
   ]
 
   it("file exists and is non-empty (length > 500 chars)", async () => {
@@ -353,7 +354,7 @@ describe("skillTrimming — _common-protocol", () => {
     expect(content.length).toBeGreaterThan(500)
   })
 
-  it("each of the 10 section IDs appears as an opening marker exactly once", async () => {
+  it("each of the 11 section IDs appears as an opening marker exactly once", async () => {
     const content = await readSkill("_common-protocol.md")
     for (const id of SECTION_IDS) {
       const marker = `<!-- section: ${id} -->`
@@ -362,16 +363,16 @@ describe("skillTrimming — _common-protocol", () => {
     }
   })
 
-  it("total count of closing markers equals 10", async () => {
+  it("total count of closing markers equals 11", async () => {
     const content = await readSkill("_common-protocol.md")
     const closingCount = (content.match(/<!-- \/section -->/g) ?? []).length
-    expect(closingCount).toBe(10)
+    expect(closingCount).toBe(11)
   })
 
-  it("total count of opening markers equals 10 (no stray openings)", async () => {
+  it("total count of opening markers equals 11 (no stray openings)", async () => {
     const content = await readSkill("_common-protocol.md")
     const openingCount = (content.match(/<!-- section:/g) ?? []).length
-    expect(openingCount).toBe(10)
+    expect(openingCount).toBe(11)
   })
 
   it("body between each opening and closing marker is non-empty (> 20 chars after trim)", async () => {

@@ -10,7 +10,7 @@
 
 **A software development governance layer for AI coding agents.** Foreman enforces a design → spec → implement pipeline, validates every state change through a structured ledger, and uses independent models (Codex, Gemini, GPT-5.5, Gemini-3.1-pro) to review work at phase gates. It doesn't write code — it supervises agents that do.
 
-**20 tools. 6 skill protocols. Multi-host: Claude Code, Cursor, Codex CLI.** Foreman includes the full design/spec/implement pipeline plus lightweight surgical-task, specification, and documentation protocols. `spec_man` can draw from an optional project atlas such as Graphify when one is available.
+**21 tools. 6 skill protocols. Multi-host: Claude Code, Cursor, Codex CLI.** Foreman includes the full design/spec/implement pipeline plus lightweight surgical-task, specification, and documentation protocols. `spec_man` can draw from an optional project atlas such as Graphify when one is available.
 
 Current release: **v0.1.1**. See [CHANGELOG.md](CHANGELOG.md) for release history.
 
@@ -172,7 +172,7 @@ flowchart LR
 | `host_status` | Active host (claude-code/cursor/codex) + worker/advisor model slugs |
 | `changelog` | Version history |
 
-### Execution (4 tools)
+### Execution (5 tools)
 
 | Tool | Purpose |
 |------|---------|
@@ -180,6 +180,7 @@ flowchart LR
 | `invoke_advisor` | Run Codex or Gemini CLI with stdin prompt delivery (claude-code/codex hosts) |
 | `run_tests` | Bounded test execution with runner allowlist (`npm`, `pytest`, `go`, `cargo`, `dotnet`, `make`) |
 | `normalize_review` | Parse review findings into structured format |
+| `verify_citations` | Deterministically check evidence citations resolve to real files/lines and that verbatim anchors are present (CONFIRMED/DRIFTED/MISSING/UNANCHORED) |
 
 ---
 
@@ -235,7 +236,7 @@ Foreman is a **stdio-only MCP server**. The trust boundary is the parent process
 
 | Layer | What It Protects | How |
 |-------|-----------------|-----|
-| **Input validation** | All 20 MCP tools | Zod schemas with `.max()` length caps, enum restrictions, regex filters on every input |
+| **Input validation** | All 21 MCP tools | Zod schemas with `.max()` length caps, enum restrictions, regex filters on every input |
 | **Runner allowlist** | `run_tests` tool | Only `npm`, `pytest`, `go`, `cargo`, `dotnet`, `make`. Regex filter (`/^[a-zA-Z0-9_.-]+$/`) on env-supplied entries. `npx` explicitly denied |
 | **Absolute path resolution** | CLI invocation | All external CLIs resolved to absolute paths via `which`/`where`. Relative paths and `.cmd`/`.bat` shims rejected on Windows |
 | **Stdin delivery** | `invoke_advisor` tool | Prompts sent via stdin pipe, not command-line args. Bypasses shell metacharacter injection and OS `ARG_MAX` limits |

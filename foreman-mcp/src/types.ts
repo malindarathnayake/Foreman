@@ -115,6 +115,19 @@ export const NormalizeReviewInputSchema = z.object({
 })
 export type NormalizeReviewInput = z.infer<typeof NormalizeReviewInputSchema>
 
+// ─── Verify Citations Types ──────────────────────────────────────────────────
+
+export const VerifyCitationsInputSchema = z.object({
+  spec_text: z.string().max(500000).optional(),
+  spec_path: z.string().max(4096).optional(),
+  source_format: z.enum(["markdown", "machine_json", "auto"]).default("auto"),
+  repo_root: z.string().max(4096).optional(),
+  drift_window: z.number().int().min(0).max(200).default(25),
+  min_anchor_chars: z.number().int().min(0).max(200).default(8),
+  case_insensitive_path: z.boolean().default(true),
+})
+export type VerifyCitationsInput = z.infer<typeof VerifyCitationsInputSchema>
+
 // ─── Progress Types ───────────────────────────────────────────────────────────
 
 export interface ProgressUnit {

@@ -197,3 +197,41 @@ When a phase is declared with `scope.has_tests: false` or `scope.has_build: fals
 
 Rule: if `scope.has_tests === false`, pit-boss MUST pass a `note` string to every `set_verdict` call in that phase.
 <!-- /section -->
+
+<!-- section: citation-verification -->
+## Citation Verification
+
+Every `[OBSERVED]` / `[IMPLEMENTED]` evidence reference should carry a verbatim anchor in addition to its `file:line`. The anchor is a second backtick-wrapped token placed immediately after the `file:line` ref, and it is the exact text present on the cited line.
+
+Anchor grammar:
+
+```text
+Evidence: `<file:line>` `<verbatim text on that line>`
+```
+
+- Two adjacent backtick spans = ref + anchor. One span = ref only (unanchored).
+- The anchor is matched as a literal substring of the cited line, never as a regex.
+- Anchors apply to `file:line` refs only. Commands, tickets, spec refs, discovery refs, and external-doc refs have no line to verify and take no anchor.
+- If the verbatim text itself contains a backtick, wrap the anchor in a double-backtick span per standard Markdown inline-code escaping.
+- Prefer an anchor that is unique within the cited file. Avoid anchors that are pure punctuation, a single common keyword (`return`, `const`, `}`, `import`), or shorter than 8 non-whitespace characters; these are too generic to verify and will not earn a `CONFIRMED`.
+
+Before a spec or doc is complete, run `mcp__foreman__verify_citations` over it. React to each per-ref verdict:
+
+| Verdict | Action |
+|---|---|
+| `CONFIRMED` / `CONFIRMED_NORMALIZED` | Anchor located at the cited line. No change. |
+| `DRIFTED` | Anchor found at a different line. Correct the `file:line` to the reported line. |
+| `MISSING` | File or line gone, or anchor absent in the search window. Re-ground the claim against current code, or downgrade to `[UNRESOLVED]` / `[UNVERIFIED]` with a stated reason. |
+| `UNANCHORED` | File and line exist, content unverified. Add the verbatim anchor, or downgrade with a stated reason. |
+| `NON_FILE` | Out of scope (command, ticket, URL, spec/discovery ref). Not an error; no anchor expected. |
+| `ANCHOR_TOO_GENERIC` | Anchor is not discriminating. Replace it with a longer, file-unique snippet. Does not count as confirmed. |
+| `CASE_MISMATCH` | Anchor or path matched only ignoring case. Fix the casing. Does not count as confirmed. |
+| `MALFORMED` / `AMBIGUOUS` / `UNDECODABLE` | Fix the ref: repair the line number or path, narrow the anchor, or re-ground. None count as confirmed. |
+
+Two gates, and they are not the same:
+
+- The tool's `passed` boolean is a weak "no broken refs" signal. It is `true` only when there are no `MISSING`, `MALFORMED`, `UNDECODABLE`, or `AMBIGUOUS` refs. It does NOT fail on `UNANCHORED`, because the tool cannot tell which refs are claim-bearing.
+- Completion gate (authoritative): a spec or doc is not done until every `[OBSERVED]` / `[IMPLEMENTED]` ref is `CONFIRMED` (or `CONFIRMED_NORMALIZED`), or has been explicitly downgraded to `[UNRESOLVED]` / `[UNVERIFIED]` with a stated reason recorded inline. `UNANCHORED`, `ANCHOR_TOO_GENERIC`, `CASE_MISMATCH`, and `NON_FILE` do not satisfy this gate for a claim that depends on code content. A tool `passed: true` is necessary but not sufficient for completion.
+
+Semantic boundary: verification proves LOCATION and VERBATIM PRESENCE only. It proves the anchor text sits at the cited line. It does NOT prove the line supports the claim. A line can match its anchor exactly while the surrounding logic contradicts the claim (renamed constant, inverted condition, value behind a feature flag). A `CONFIRMED` verdict means the anchor is located at the cited line, never that the claim is true. Route semantic conflicts to the Mismatch machinery, not to this gate.
+<!-- /section -->
