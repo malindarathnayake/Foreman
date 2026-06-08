@@ -30,7 +30,7 @@ describe("capabilityCheck — cursor host", () => {
     expect(out).toContain("cli: codex")
     expect(out).toContain("available: true")
     expect(out).toContain("mechanism: cursor_subagent")
-    expect(out).toContain("model: gpt-5.5-medium")
+    expect(out).toContain("model: gpt-5.5-high")
     expect(out).toContain("auth_status: ok")
   })
 

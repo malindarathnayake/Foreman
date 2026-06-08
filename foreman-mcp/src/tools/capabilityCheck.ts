@@ -7,8 +7,12 @@ const resolvedPlans = new Map<string, SpawnPlan>()
 
 const HEALTH_COMMANDS: Record<string, { command: string; args: string[] }> = {
   codex: {
+    // `codex login status` is a fast, no-API-call auth probe: exit 0 = authenticated,
+    // non-zero = expired/logged out. A full `codex exec` health call is slow, model-
+    // dependent (a stale `-m` id alone makes it fail), and times out under the 15s
+    // budget — all of which surface as a false `auth_status: expired`.
     command: "codex",
-    args: ["exec", "--skip-git-repo-check", "-s", "read-only", "-m", "gpt-5.4", "echo health check"],
+    args: ["login", "status"],
   },
   gemini: {
     command: "gemini",

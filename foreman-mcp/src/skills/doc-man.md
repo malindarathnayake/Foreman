@@ -1,6 +1,6 @@
 ---
 name: foreman:doc-man
-version: 0.0.1
+version: 0.0.2
 description: Generates focused technical documentation from spec-man output, discovery output, source code, repo structure, implementation notes, existing docs, command output, or user context.
 ---
 
@@ -101,6 +101,8 @@ If documentation depends on facts not present in context, use:
 ```
 
 Do not hide uncertainty.
+
+{{include: citation-verification}}
 
 ## Mismatch Rule
 
@@ -376,11 +378,12 @@ Avoid:
 5. Decide the minimum useful structure.
 6. Draft the doc.
 7. Check every claim against available evidence.
-8. Mark gaps as `[UNVERIFIED]`, `[TODO]`, or `[ASSUMPTION]`.
-9. Remove filler.
-10. Remove sections that do not add value.
-11. Validate Mermaid syntax where possible.
-12. Return the final doc or write it to the requested path.
+8. Run `verify_citations` over `file:line` evidence. Correct `DRIFTED`; re-ground or downgrade `MISSING` / `UNANCHORED` `[IMPLEMENTED]` refs with a stated reason.
+9. Mark gaps as `[UNVERIFIED]`, `[TODO]`, or `[ASSUMPTION]`.
+10. Remove filler.
+11. Remove sections that do not add value.
+12. Validate Mermaid syntax where possible.
+13. Return the final doc or write it to the requested path.
 
 ## File Naming Defaults
 
@@ -407,5 +410,7 @@ The doc lets a technical reader or downstream agent understand the relevant syst
 - where to change behavior
 - what can break
 - what remains unknown
+
+The doc is not done until every `[IMPLEMENTED]` `file:line` evidence ref is `CONFIRMED` by `verify_citations`, or has been explicitly downgraded to `[UNVERIFIED]` with a stated reason.
 
 Stop when the requested documentation is useful and grounded. Do not expand scope for polish.

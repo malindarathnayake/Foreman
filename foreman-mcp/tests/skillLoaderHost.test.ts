@@ -41,7 +41,7 @@ describe("renderHostPlaceholders — direct unit", () => {
       "A: {{advisor_a}}\nB: {{advisor_b}}",
       "cursor"
     )
-    expect(out).toContain("gpt-5.5-medium")
+    expect(out).toContain("gpt-5.5-high")
     expect(out).toContain("gemini-3.1-pro")
     expect(out).toContain("composer-2-fast")
   })
@@ -107,7 +107,7 @@ describe("loadSkill — host placeholder integration", () => {
 
     const cursorResult = await loadSkill("test-skill", bundledDir, "cursor")
     expect(cursorResult.content).toContain("INSIDE")
-    expect(cursorResult.content).toContain("gpt-5.5-medium")
+    expect(cursorResult.content).toContain("gpt-5.5-high")
     expect(cursorResult.content).not.toContain("{{advisor_a}}")
   })
 })
@@ -138,7 +138,7 @@ describe("loadSkill — bundled skills render correctly under both hosts", () =>
 
   it("design-partner renders advisor_a / advisor_b via deliberation include — cursor", async () => {
     const result = await loadSkill("design-partner", SKILLS_DIR, "cursor")
-    expect(result.content).toContain("gpt-5.5-medium")
+    expect(result.content).toContain("gpt-5.5-high")
     expect(result.content).toContain("gemini-3.1-pro")
     expect(result.content).not.toContain("{{advisor_a}}")
     expect(result.content).not.toContain("{{advisor_b}}")
@@ -146,7 +146,7 @@ describe("loadSkill — bundled skills render correctly under both hosts", () =>
 
   it("spec-generator renders advisor placeholders under cursor", async () => {
     const result = await loadSkill("spec-generator", SKILLS_DIR, "cursor")
-    expect(result.content).toContain("gpt-5.5-medium")
+    expect(result.content).toContain("gpt-5.5-high")
     expect(result.content).toContain("gemini-3.1-pro")
     expect(result.content).not.toContain("{{advisor_a}}")
   })

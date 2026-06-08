@@ -88,7 +88,7 @@ describe("hostProfiles — getProfile", () => {
     expect(profile.displayName).toBe("Cursor")
     expect(profile.placeholders.worker_invoke).toContain("Task")
     expect(profile.placeholders.worker_invoke).toContain("claude-4.6-sonnet-medium-thinking")
-    expect(profile.placeholders.advisor_a).toContain("gpt-5.5-medium")
+    expect(profile.placeholders.advisor_a).toContain("gpt-5.5-high")
     expect(profile.placeholders.advisor_b).toContain("gemini-3.1-pro")
     expect(profile.placeholders.advisor_b).toContain("composer-2-fast")
   })

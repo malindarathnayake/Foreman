@@ -20,7 +20,7 @@ describe("hostStatus — direct unit", () => {
     const out = hostStatus("cursor")
     expect(out).toContain("host: cursor")
     expect(out).toContain("worker_model: claude-4.6-sonnet-medium-thinking")
-    expect(out).toContain("advisor_a_model: gpt-5.5-medium")
+    expect(out).toContain("advisor_a_model: gpt-5.5-high")
     expect(out).toContain("advisor_b_model: gemini-3.1-pro")
     expect(out).toContain("advisor_b_fallback: composer-2-fast")
   })
@@ -58,7 +58,7 @@ describe("host_status — MCP round-trip", () => {
     const content = result.content as Array<{ type: string; text: string }>
     expect(content[0].text).toContain("host: cursor")
     expect(content[0].text).toContain("worker_model: claude-4.6-sonnet-medium-thinking")
-    expect(content[0].text).toContain("advisor_a_model: gpt-5.5-medium")
+    expect(content[0].text).toContain("advisor_a_model: gpt-5.5-high")
     expect(content[0].text).toContain("advisor_b_model: gemini-3.1-pro")
   })
 
@@ -95,6 +95,6 @@ describe("host_status — MCP round-trip", () => {
     })
     const content = result.content as Array<{ type: string; text: string }>
     expect(content[0].text).toContain("mechanism: cursor_subagent")
-    expect(content[0].text).toContain("model: gpt-5.5-medium")
+    expect(content[0].text).toContain("model: gpt-5.5-high")
   })
 })

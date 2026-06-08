@@ -23,14 +23,14 @@ afterEach(async () => {
   await server?.close()
 })
 
-describe("list tools — verify all 20 present, update_bundle absent", () => {
+describe("list tools — verify all 21 present, update_bundle absent", () => {
   beforeEach(async () => {
     await setupServer()
   })
 
-  it("lists exactly 20 tools", async () => {
+  it("lists exactly 21 tools", async () => {
     const result = await client.listTools()
-    expect(result.tools).toHaveLength(20)
+    expect(result.tools).toHaveLength(21)
   })
 
   it("includes all required tool names", async () => {
@@ -45,6 +45,7 @@ describe("list tools — verify all 20 present, update_bundle absent", () => {
     expect(names).toContain("write_ledger")
     expect(names).toContain("write_progress")
     expect(names).toContain("normalize_review")
+    expect(names).toContain("verify_citations")
     expect(names).toContain("pitboss_implementor")
     expect(names).toContain("design_partner")
     expect(names).toContain("spec_generator")

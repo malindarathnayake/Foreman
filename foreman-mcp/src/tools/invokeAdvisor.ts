@@ -8,6 +8,8 @@ const ADVISOR_CONFIGS: Record<string, { buildArgs: () => string[] }> = {
   codex: {
     buildArgs: () => [
       "exec", "--skip-git-repo-check", "-s", "read-only",
+      "-m", "gpt-5.5",
+      "-c", "model_reasoning_effort=high",
       "-c", "hide_agent_reasoning=true", "-"
     ],
   },

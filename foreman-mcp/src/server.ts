@@ -14,6 +14,7 @@ import { capabilityCheck } from "./tools/capabilityCheck.js"
 import { handleWriteLedger } from "./tools/writeLedger.js"
 import { handleWriteProgress } from "./tools/writeProgress.js"
 import { normalizeReview } from "./tools/normalizeReview.js"
+import { verifyCitations } from "./tools/verifyCitations.js"
 import { runTests } from "./tools/runTests.js"
 import { activateImplementor } from "./tools/activateImplementor.js"
 import { activateDesignPartner } from "./tools/activateDesignPartner.js"
@@ -21,7 +22,7 @@ import { activateSpecGenerator } from "./tools/activateSpecGenerator.js"
 import { activateLighttask } from "./tools/activateLighttask.js"
 import { activateSpecMan } from "./tools/activateSpecMan.js"
 import { activateDocMan } from "./tools/activateDocMan.js"
-import { NormalizeReviewInputSchema } from "./types.js"
+import { NormalizeReviewInputSchema, VerifyCitationsInputSchema } from "./types.js"
 import { readJournal, initSession, logEvent, endSession } from "./lib/journal.js"
 import { invokeAdvisor, formatAdvisorResult } from "./tools/invokeAdvisor.js"
 import { sessionOrient } from "./tools/sessionOrient.js"
@@ -257,6 +258,19 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const { text } = normalizeReview(args.reviewer, args.raw_text)
+      return { content: [{ type: "text" as const, text }] }
+    }
+  )
+
+  server.registerTool(
+    "verify_citations",
+    {
+      description:
+        "Verifies that evidence citations reference real files and that any verbatim anchor appears at or near the cited line. Reports location and presence only (CONFIRMED/DRIFTED/MISSING/UNANCHORED/...); does not judge whether the line supports the claim. Reads files under repo_root; deterministic and read-only.",
+      inputSchema: VerifyCitationsInputSchema.shape,
+    },
+    async (args, _extra) => {
+      const { text } = await verifyCitations(args)
       return { content: [{ type: "text" as const, text }] }
     }
   )
