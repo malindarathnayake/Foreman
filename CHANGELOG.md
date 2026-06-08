@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.1.2 - 2026-06-08
+
+- Added `verify_citations`: a deterministic tool that re-reads `[OBSERVED]`/`[IMPLEMENTED]` `file:line` evidence and reports CONFIRMED/DRIFTED/MISSING/UNANCHORED.
+- Added a shared `citation-verification` protocol section (included by `spec_man` and `doc_man`); spec/doc completion now requires every claim-bearing citation to be CONFIRMED or explicitly downgraded.
+- Fixed `capability_check` reporting an authenticated codex as `auth_status: expired` — codex health now uses `codex login status` instead of a full `codex exec` with a stale model under a 15s timeout.
+- Codex advisor now runs `gpt-5.5` at `high` reasoning effort; Cursor advisor slug is `gpt-5.5-high`.
+- Bumped package, server, and tests to `0.1.2`.
+
 ## 0.1.1 - 2026-06-08
 
 - Updated MCP activation metadata so tool choice advertises the Foreman routing policy before a model opens the full skill body.

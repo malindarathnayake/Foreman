@@ -14,7 +14,7 @@ Foreman targets the four things that kill large refactors — drift, hallucinate
 
 **21 tools. 6 skill protocols. Multi-host: Claude Code, Cursor, Codex CLI.** Foreman includes the full design/spec/implement pipeline plus lightweight surgical-task, specification, and documentation protocols. `spec_man` can draw from an optional project atlas such as Graphify when one is available.
 
-Current release: **v0.1.1**. See [CHANGELOG.md](CHANGELOG.md) for release history.
+Current release: **v0.1.2**. See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ---
 
@@ -39,8 +39,8 @@ GitHub Packages requires a personal access token with `read:packages` scope, eve
 ### Install — tarball (no auth required)
 
 ```bash
-curl -LO https://github.com/malindarathnayake/Foreman/releases/download/v0.1.1/malindarathnayake-foreman-mcp-0.1.1.tgz
-npm install -g malindarathnayake-foreman-mcp-0.1.1.tgz
+curl -LO https://github.com/malindarathnayake/Foreman/releases/download/v0.1.2/malindarathnayake-foreman-mcp-0.1.2.tgz
+npm install -g malindarathnayake-foreman-mcp-0.1.2.tgz
 ```
 
 Or grab the latest tarball directly from the [Releases page](https://github.com/malindarathnayake/Foreman/releases/latest). The repo's `artifacts/` folder retains historical tarballs (≤ v0.0.8) for archival reference; new versions live only on Releases + GitHub Packages.
@@ -296,17 +296,15 @@ Details: [docs/socket-security-scan-2026-06-08.md](docs/socket-security-scan-202
 
 ---
 
-## What's New in v0.1.1
+## What's New in v0.1.2
 
 | Change | Detail |
 |--------|--------|
 | Citation verification | New `verify_citations` tool plus a shared protocol gate: `spec_man` and `doc_man` now expect every `[OBSERVED]`/`[IMPLEMENTED]` `file:line` to carry a verbatim anchor that is deterministically re-read and classified (CONFIRMED / DRIFTED / MISSING / UNANCHORED). Spec/doc completion gates on each claim-bearing citation being confirmed or explicitly downgraded. |
-| Tool metadata routing | `spec_man`, `lighttask`, and `pitboss_implementor` descriptions now advertise stale-plan checks, Atlas/code-surfacing, Plan Delta Ladder, and runtime-control triggers before the model opens the full skill. |
-| Spec-man re-evaluation | Existing repo/spec runs can classify plans as `current`, `needs_patch`, `blocked`, or `superseded` and emit `D3`/`D2`/`D1`/`D0` machine fields. |
-| Project Atlas guidance | Graphify can be used as an optional local navigation map through `graphify update . --no-cluster`; direct evidence remains required. |
-| Lighttask escalation | Surgical work stays compact but escalates to `spec_man` when specs are stale, missing, partial, or affected by changed repo context. |
-| Runtime boundary | LangGraph-style control is documented as optional for branching, retry-heavy, multi-session workflows; it does not replace Foreman specs, ledger, journal, tests, or advisor decisions. |
-| Dojo validation | TypeScript and Python legacy pressure tests both scored 100 percent against hidden Plan Delta Ladder contracts. |
+| Codex capability fix | `capability_check` no longer reports an authenticated codex as `auth_status: expired` — codex health now uses `codex login status` (fast, no API call) instead of a full `codex exec` with a stale model under a 15s timeout. |
+| Latest GPT advisors | The codex advisor runs `gpt-5.5` at `high` reasoning effort; the Cursor advisor slug is `gpt-5.5-high`. |
+
+Earlier `v0.1.x` protocol-metadata, Spec-man re-evaluation, Project Atlas, and Plan Delta Ladder changes are in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
