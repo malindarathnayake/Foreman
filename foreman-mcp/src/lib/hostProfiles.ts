@@ -47,7 +47,7 @@ const CURSOR_PROFILE: HostProfile = {
     worker_invoke:
       'Use the Cursor `Task` tool with `subagent_type: "generalPurpose"` and `model: "claude-4.6-sonnet-medium-thinking"`. Pass only the worker brief in the prompt — no spec, no ledger, no progress file.',
     advisor_a:
-      '**Advisor A (GPT-5.5):** Use the Cursor `Task` tool with `subagent_type: "explore"`, `readonly: true`, `model: "gpt-5.5-medium"`. Pass the deliberation prompt as the task description.',
+      '**Advisor A (GPT-5.5):** Use the Cursor `Task` tool with `subagent_type: "explore"`, `readonly: true`, `model: "gpt-5.5-high"`. Pass the deliberation prompt as the task description.',
     advisor_b:
       '**Advisor B (Gemini 3.1 Pro):** Use the Cursor `Task` tool with `subagent_type: "explore"`, `readonly: true`, `model: "gemini-3.1-pro"`. If `gemini-3.1-pro` is unavailable in the user\'s Cursor environment, fall back to `model: "composer-2-fast"`.',
     advisor_fallback:
