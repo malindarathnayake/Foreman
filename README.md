@@ -14,7 +14,7 @@ Foreman targets the four things that kill large refactors — drift, hallucinate
 
 **21 tools. 6 skill protocols. Multi-host: Claude Code, Cursor, Codex CLI.** Foreman includes the full design/spec/implement pipeline plus lightweight surgical-task, specification, and documentation protocols. `spec_man` can draw from an optional project atlas such as Graphify when one is available.
 
-Current release: **v0.1.2**. See [CHANGELOG.md](CHANGELOG.md) for release history.
+Current release: **v0.1.3**. See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ---
 
@@ -39,8 +39,8 @@ GitHub Packages requires a personal access token with `read:packages` scope, eve
 ### Install — tarball (no auth required)
 
 ```bash
-curl -LO https://github.com/malindarathnayake/Foreman/releases/download/v0.1.2/malindarathnayake-foreman-mcp-0.1.2.tgz
-npm install -g malindarathnayake-foreman-mcp-0.1.2.tgz
+curl -LO https://github.com/malindarathnayake/Foreman/releases/download/v0.1.3/malindarathnayake-foreman-mcp-0.1.3.tgz
+npm install -g malindarathnayake-foreman-mcp-0.1.3.tgz
 ```
 
 Or grab the latest tarball directly from the [Releases page](https://github.com/malindarathnayake/Foreman/releases/latest). The repo's `artifacts/` folder retains historical tarballs (≤ v0.0.8) for archival reference; new versions live only on Releases + GitHub Packages.
@@ -296,15 +296,18 @@ Details: [docs/socket-security-scan-2026-06-08.md](docs/socket-security-scan-202
 
 ---
 
-## What's New in v0.1.2
+## What's New in v0.1.3
 
 | Change | Detail |
 |--------|--------|
-| Citation verification | New `verify_citations` tool plus a shared protocol gate: `spec_man` and `doc_man` now expect every `[OBSERVED]`/`[IMPLEMENTED]` `file:line` to carry a verbatim anchor that is deterministically re-read and classified (CONFIRMED / DRIFTED / MISSING / UNANCHORED). Spec/doc completion gates on each claim-bearing citation being confirmed or explicitly downgraded. |
-| Codex capability fix | `capability_check` no longer reports an authenticated codex as `auth_status: expired` — codex health now uses `codex login status` (fast, no API call) instead of a full `codex exec` with a stale model under a 15s timeout. |
-| Latest GPT advisors | The codex advisor runs `gpt-5.5` at `high` reasoning effort; the Cursor advisor slug is `gpt-5.5-high`. |
+| Delegated sequence documented | The ledger has always enforced `ip -> delegated -> pass`, but the `delegated` step lived only in the enforcement code. The implementor protocol and `write_ledger` tool description now teach it, so pass verdicts no longer hit `VERDICT BLOCKED` on first attempt. |
+| Phase gates enforced | `update_phase_gate` with `g:'pass'` is rejected unless every unit in the phase carries a pass verdict; empty phases cannot pass a gate. |
+| Attestation enforced | Pass verdicts on phases scoped `has_tests:false` or `has_build:false` mechanically require a non-empty attestation `note` describing how the unit was validated. |
+| Warnings visible | `set_phase_scope`'s test-file mismatch warning surfaces in the tool result, not just stderr. |
+| Corrupt-ledger honesty | Read paths report `ledger_corrupt` instead of masquerading as a fresh project, and never rename the corrupt file; writes recovering from corruption warn with the backup path. |
+| Verdict metadata visible | `read_ledger` single-unit and verdicts views now include `via` and `note`. |
 
-Earlier `v0.1.x` protocol-metadata, Spec-man re-evaluation, Project Atlas, and Plan Delta Ladder changes are in [CHANGELOG.md](CHANGELOG.md).
+Earlier `v0.1.x` citation-verification, protocol-metadata, Spec-man re-evaluation, Project Atlas, and Plan Delta Ladder changes are in [CHANGELOG.md](CHANGELOG.md).
 
 ---
 
