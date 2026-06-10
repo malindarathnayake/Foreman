@@ -1,4 +1,4 @@
-import { readLedger } from "../lib/ledger.js"
+import { readLedgerWithStatus } from "../lib/ledger.js"
 import { readProgress } from "../lib/progress.js"
 import { toKeyValue } from "../lib/toon.js"
 import type { Phase, Unit } from "../types.js"
@@ -23,8 +23,19 @@ export async function sessionOrient(
   ledgerPath: string,
   progressPath: string
 ): Promise<string> {
-  const ledger = await readLedger(ledgerPath, { readOnly: true })
+  const { ledger, corrupt } = await readLedgerWithStatus(ledgerPath, { readOnly: true })
   await readProgress(progressPath, { readOnly: true }) // read for spec compliance; unused in output this version
+
+  // Corrupt ledger must not masquerade as a fresh project
+  if (corrupt) {
+    return toKeyValue({
+      status: "ledger_corrupt",
+      ledger_path: ledgerPath,
+      hint:
+        "Ledger JSON failed to parse. File left untouched. Prior project state is NOT gone — " +
+        "inspect/restore the file before any write_ledger call (writes rename it to .corrupt.<ts> and start fresh).",
+    })
+  }
 
   const phaseKeys = Object.keys(ledger.phases).sort()
   const phases_total = phaseKeys.length

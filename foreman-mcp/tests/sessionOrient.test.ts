@@ -206,18 +206,18 @@ describe("sessionOrient", () => {
     expect(result).toContain("status: complete")
   })
 
-  // ─── Test 7: corrupt ledger → empty-ledger shape, no .corrupt.* sibling ────
+  // ─── Test 7: corrupt ledger → explicit corrupt status, no .corrupt.* sibling ────
 
-  it("corrupt ledger → returns empty-ledger shape AND does NOT rename the corrupt file", async () => {
+  it("corrupt ledger → returns ledger_corrupt status AND does NOT rename the corrupt file", async () => {
     // Write invalid JSON to the ledger path
     await fs.writeFile(ledgerPath, "{ this is not valid json !!!", "utf-8")
     await seedProgress()
 
     const result = await sessionOrient(ledgerPath, progressPath)
 
-    // Returns the empty-ledger TOON output
-    expect(result).toContain("status: no_phases_yet")
-    expect(result).toContain("phases_total: 0")
+    // Corruption is surfaced explicitly — must NOT masquerade as a fresh project
+    expect(result).toContain("status: ledger_corrupt")
+    expect(result).not.toContain("no_phases_yet")
 
     // The corrupt file must still exist un-renamed
     const stillExists = await fs.access(ledgerPath).then(() => true).catch(() => false)

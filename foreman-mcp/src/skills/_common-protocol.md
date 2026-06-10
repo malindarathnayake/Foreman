@@ -196,6 +196,8 @@ Rule: at every phase-end, honestly estimate `ctx_used_pct` in the `end_session` 
 When a phase is declared with `scope.has_tests: false` or `scope.has_build: false`, the phase verdict must carry an explicit attestation in the `note` field of each unit's `set_verdict` call, describing how the unit was validated in place of automated tests (e.g. manual smoke, downloaded artifact hash, console inspection). Silent verdicts on scopeless phases are forbidden — they hide lazy delegation.
 
 Rule: if `scope.has_tests === false`, pit-boss MUST pass a `note` string to every `set_verdict` call in that phase.
+
+This is mechanically enforced: when phase scope declares `has_tests: false` or `has_build: false`, `set_verdict(v:'pass')` without a non-empty `note` is rejected by the ledger.
 <!-- /section -->
 
 <!-- section: citation-verification -->

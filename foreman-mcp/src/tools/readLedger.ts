@@ -1,9 +1,19 @@
-import { readLedger } from "../lib/ledger.js"
+import { readLedgerWithStatus } from "../lib/ledger.js"
 import { toKeyValue, toTable } from "../lib/toon.js"
 import type { ReadLedgerInput } from "../types.js"
 
 export async function handleReadLedger(filePath: string, input: ReadLedgerInput): Promise<string> {
-  const ledger = await readLedger(filePath)
+  // Read-only: never rename a corrupt ledger from a read path
+  const { ledger, corrupt } = await readLedgerWithStatus(filePath, { readOnly: true })
+  if (corrupt) {
+    return toKeyValue({
+      error: "ledger_corrupt",
+      path: filePath,
+      hint:
+        "Ledger JSON failed to parse. File left untouched. Inspect/restore it manually before writing — " +
+        "the next write_ledger call will rename it to .corrupt.<ts> and start a fresh ledger.",
+    })
+  }
   const query = input.query ?? "full"
 
   // If input has phase and unit_id → return single unit as key/value
@@ -15,6 +25,8 @@ export async function handleReadLedger(filePath: string, input: ReadLedgerInput)
       phase: input.phase,
       status: unit.s,
       verdict: unit.v,
+      via: unit.via ?? "n/a",
+      note: unit.note ?? "n/a",
       worker: unit.w ?? "none",
       rejections: String(unit.rej.length),
     })
@@ -26,10 +38,10 @@ export async function handleReadLedger(filePath: string, input: ReadLedgerInput)
       const rows: string[][] = []
       for (const [phaseId, phase] of Object.entries(ledger.phases)) {
         for (const [unitId, unit] of Object.entries(phase.units)) {
-          rows.push([phaseId, unitId, unit.v])
+          rows.push([phaseId, unitId, unit.v, unit.via ?? "", unit.note ?? ""])
         }
       }
-      return toTable(["phase", "unit", "verdict"], rows)
+      return toTable(["phase", "unit", "verdict", "via", "note"], rows)
     }
     case "rejections": {
       const rows: string[][] = []

@@ -139,13 +139,64 @@ describe("handleReadLedger", () => {
     })
 
     const result = await handleReadLedger(ledgerPath, { query: "verdicts" })
-    expect(result).toContain("phase | unit | verdict")
+    expect(result).toContain("phase | unit | verdict | via | note")
     expect(result).toContain("p1")
     expect(result).toContain("u1")
     expect(result).toContain("pass")
   })
 
+  it("verdicts table includes via and note values when present", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "Worker brief: implement unit u1 types and constants per spec" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass", via: "worker", note: "manual smoke: ran CLI against fixture" },
+    })
+
+    const result = await handleReadLedger(ledgerPath, { query: "verdicts" })
+    expect(result).toContain("worker")
+    expect(result).toContain("manual smoke: ran CLI against fixture")
+  })
+
+  it("single-unit view includes via and note", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "Worker brief: implement unit u1 types and constants per spec" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass", via: "pitboss-direct", note: "artifact hash verified" },
+    })
+
+    const result = await handleReadLedger(ledgerPath, { phase: "p1", unit_id: "u1" })
+    expect(result).toContain("via: pitboss-direct")
+    expect(result).toContain("note: artifact hash verified")
+  })
+
   it("returns phase_gates table for query: phase_gates", async () => {
+    // Gate pass requires all units passing — seed one passed unit first
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "Worker brief: implement unit u1 types and constants per spec" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass" },
+    })
     await writeLedger(ledgerPath, {
       operation: "update_phase_gate",
       phase: "p1",
@@ -156,6 +207,19 @@ describe("handleReadLedger", () => {
     expect(result).toContain("phase | status | gate")
     expect(result).toContain("p1")
     expect(result).toContain("pass")
+  })
+
+  it("corrupt ledger → returns ledger_corrupt error WITHOUT renaming the file", async () => {
+    await fs.writeFile(ledgerPath, "{ this is not valid json !!!", "utf-8")
+
+    const result = await handleReadLedger(ledgerPath, { query: "full" })
+    expect(result).toContain("error: ledger_corrupt")
+
+    // File left untouched — no rename, no .corrupt.* sibling
+    const stillExists = await fs.access(ledgerPath).then(() => true).catch(() => false)
+    expect(stillExists).toBe(true)
+    const siblings = await fs.readdir(path.dirname(ledgerPath))
+    expect(siblings.filter((f) => f.includes(".corrupt."))).toHaveLength(0)
   })
 })
 

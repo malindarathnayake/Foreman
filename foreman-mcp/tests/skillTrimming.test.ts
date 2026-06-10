@@ -314,7 +314,7 @@ describe("skillTrimming — implementor", () => {
   it("no-test-attestation marker is NOT between ACCEPT and REJECT blocks (raw file)", async () => {
     const content = await readSkill("implementor.md")
     // In the raw file, the include marker must appear AFTER the REJECT block, not between ACCEPT and REJECT.
-    const acceptIdx = content.indexOf("**ACCEPT:**")
+    const acceptIdx = content.indexOf("**ACCEPT**")
     const rejectIdx = content.indexOf("**REJECT — enter fix protocol:**")
     const noTestIdx = content.indexOf("{{include: no-test-attestation}}")
     expect(acceptIdx).toBeGreaterThan(-1)
