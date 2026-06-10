@@ -238,12 +238,12 @@ describe("bundle_status round-trip", () => {
     await setupServer()
   })
 
-  it("returns bundle_version 0.1.2", async () => {
+  it("returns bundle_version 0.1.3", async () => {
     const result = await client.callTool({ name: "bundle_status", arguments: {} })
     const content = result.content as Array<{ type: string; text: string }>
     expect(content[0].type).toBe("text")
     expect(content[0].text).toContain("bundle_version")
-    expect(content[0].text).toContain("0.1.2")
+    expect(content[0].text).toContain("0.1.3")
   })
 })
 
