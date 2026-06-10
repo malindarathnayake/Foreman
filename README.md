@@ -18,6 +18,24 @@ Current release: **v0.1.3**. See [CHANGELOG.md](CHANGELOG.md) for release histor
 
 ---
 
+## What Foreman Actually Does
+
+Foreman is built around one observation: with frontier orchestrator models (Claude Opus / Fable class), the context window is both the cost center and the failure point. Long coding sessions fill it with diffs, test output, and dead ends — judgment degrades, tokens burn, and the model starts re-deriving decisions it already made. Foreman structures development so the expensive model never carries that weight.
+
+**Phase-gated development.** Work is decomposed into phases, each phase into units of 1–3 files with one test command each. A phase ends at a gate: every unit validated against the spec, the full test suite re-run, independent models reviewing the changes, and the gate recorded in a durable ledger. Gates are enforced in code, not prompts — the ledger refuses a `pass` verdict for a unit that was never delegated to a worker, and refuses to close a phase while any unit isn't passing.
+
+**The pitboss model — context isolation by construction.** One frontier model (the pitboss) orchestrates and validates; it never writes code. Each unit is implemented by a disposable subagent (Sonnet-class worker) that receives a minimal brief — the exact code excerpts, interface contracts, and test command it needs — and nothing else: no full spec, no ledger, no conversation history. The worker is discarded after the unit. This buys three things at once:
+
+- **Clean orchestrator context.** The pitboss's window holds the plan, the briefs, and the verdicts — not the thousands of lines of code and test output the workers churn through. Validation quality stays flat across a long project instead of degrading as the session grows.
+- **Token economics.** Bulk token spend — reading source, writing code, fixing compile errors — lands on the cheaper worker model. The frontier model's expensive context is reserved for orchestration, validation, and gate decisions.
+- **No error accumulation.** Every worker starts with zero accumulated hallucinations. A rejected unit gets a *fresh* worker with the rejection history in its brief — never the same worker defending its own output.
+
+**State lives on disk, not in the chat.** The ledger, progress tracker, and session journal are JSON files that survive context resets. Sessions are *expected* to end at phase boundaries — a fresh session per phase is mandatory in the protocol. The next session re-orients with one `session_orient` call and resumes exactly where the ledger says it should.
+
+**Nothing is trusted without evidence.** The pitboss re-runs tests itself rather than trusting worker self-reports. Specs and docs must cite `file:line` evidence with verbatim anchors that `verify_citations` re-reads deterministically. Independent models review every phase. Spec-vs-code conflicts are recorded as explicit mismatches, never silently resolved.
+
+---
+
 ## Quick Start
 
 ### Install — GitHub Packages (recommended)
@@ -165,16 +183,21 @@ A checklist-and-gate system aimed at the four ways big refactors crash and burn 
 
 ## Tools Reference
 
-### Skill Activation (6 tools)
+### Skill Activation (6 protocols)
 
-| Tool | Protocol injected |
-|------|-------------------|
-| `design_partner` | Collaborative design session with YIELD checkpoints |
-| `spec_generator` | Spec generation + ledger/progress seeding |
-| `pitboss_implementor` | Pitboss/worker orchestration with G1-G5 gates |
-| `lighttask` | Surgical-task workflow with workspace, git, spec freshness, optional atlas re-evaluation, grounding, review, and recovery gates |
-| `spec_man` | Focused intended-behavior and machine spec generation with optional project atlas grounding |
-| `doc_man` | Grounded README, architecture, data-flow, Confluence, Mermaid, and machine documentation generation |
+These tools don't do the work themselves — each injects a protocol the calling LLM must follow, turning a general-purpose agent into a specific role with rules, gates, and output contracts.
+
+**`design_partner` — interrogate before designing.** Runs a structured design session that refuses to proceed on vague requirements. It asks pointed scoping questions, stops and waits for your answers (YIELD checkpoints), surfaces contradictions the moment they appear, blocks entirely when a central integration lacks credentials or schemas, and escalates genuine tradeoffs to a two-model council with you as arbiter. Output: `Docs/design-summary.md` with every decision and its rationale recorded. It will not accept "handle errors appropriately" as a requirement.
+
+**`spec_generator` — translate decisions into executable documents.** Deliberately zero-creativity: takes the design summary and produces the four documents the pipeline runs on — `spec.md` (the contract the pitboss enforces), `handoff.md` (per-unit instructions), `PROGRESS.md`, `testing-harness.md` — breaks the work into phases and units, runs eight grounding checks against live files (versions, paths, insertion points, test-suite impact), and seeds the ledger. If the design summary has gaps, it stops and lists what's missing rather than filling them with assumptions.
+
+**`pitboss_implementor` — orchestrate disposable workers.** The implementation protocol from the operating model above. Per unit: read the actual source, build a minimal worker brief, record the delegation in the ledger, spawn the worker, then validate independently — re-read every modified file, re-run tests, check the spec sentence by sentence, run gates G1–G5. Rejected work goes to a fresh worker with the rejection history (max 3 attempts, then escalate to you). Phase ends trigger the full suite, two-model review, and a mandatory new session.
+
+**`lighttask` — surgical work without the ceremony.** For tasks of one to a few PRs that deserve rigor but not four documents. Classifies the workspace, captures git context, checks whether existing specs are stale against the current checkout, produces a facts-only grounding report (every claim cited or marked `[UNVERIFIED]`), drafts the smallest plan that satisfies the grounded facts, requires an adversarial advisor review before executing, and tracks everything in a single `Docs/lighttask.md`. Escalates to `spec_man` or the full pipeline when the work outgrows it.
+
+**`spec_man` — write what the system is *supposed* to do.** Produces intended-behavior specifications — not documentation of whatever the code currently does. Sources are ranked (your intent > tickets > contracts > code), every requirement is tagged by provenance (`[SPECIFIED]` / `[OBSERVED]` / `[ASSUMPTION]` / `[UNRESOLVED]`), and every `[OBSERVED]` claim carries a `file:line` citation with a verbatim anchor that `verify_citations` re-checks deterministically — the spec isn't done until each citation is confirmed or explicitly downgraded. Where spec and code disagree, it records a mismatch instead of picking a side. Emits a human spec plus a machine spec (`spec.machine.json`) with git provenance, so a later session can detect that the plan went stale. Re-evaluation mode classifies an existing plan as `current` / `needs_patch` / `blocked` / `superseded` via the Plan Delta Ladder.
+
+**`doc_man` — document from evidence, not memory.** Generates engineering documentation (README, architecture, data-flow, Confluence pages, Mermaid diagrams, machine-readable context packs) from grounded sources only: spec-man output for intended behavior, code and discovery output for actual behavior. Every claim needs a source or gets `[UNVERIFIED]`; no marketing prose; spec-vs-implementation disagreements become explicit mismatch entries. Use it after `spec_man` when the docs need to be authoritative.
 
 ### Data (10 tools)
 
@@ -337,7 +360,7 @@ git clone https://github.com/malindarathnayake/foreman.git
 cd foreman/foreman-mcp
 npm install
 npm run build
-npm test          # 388 tests across 17 files
+npm test          # 399 tests across 17 files
 ```
 
 ---
