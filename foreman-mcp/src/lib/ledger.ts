@@ -24,31 +24,47 @@ function freshLedger(): LedgerFile {
 }
 
 // ─── Read ─────────────────────────────────────────────────────────────────────
-export async function readLedger(
+export interface LedgerReadResult {
+  ledger: LedgerFile
+  /** True when the on-disk file existed but failed to parse. */
+  corrupt: boolean
+  /** Set when corrupt recovery renamed the file (write path only). */
+  backupPath?: string
+}
+
+export async function readLedgerWithStatus(
   filePath: string,
   opts?: { readOnly?: boolean }
-): Promise<LedgerFile> {
+): Promise<LedgerReadResult> {
   let raw: string
   try {
     raw = await fs.readFile(filePath, "utf-8")
   } catch (err) {
     const nodeErr = err as NodeJS.ErrnoException
     if (nodeErr.code === "ENOENT") {
-      return freshLedger()
+      return { ledger: freshLedger(), corrupt: false }
     }
     throw err
   }
 
   try {
-    return JSON.parse(raw) as LedgerFile
+    return { ledger: JSON.parse(raw) as LedgerFile, corrupt: false }
   } catch {
     // Corrupt JSON — back it up and return a fresh ledger (unless read-only)
     if (!opts?.readOnly) {
       const backupPath = `${filePath}.corrupt.${Date.now()}`
       await fs.rename(filePath, backupPath)
+      return { ledger: freshLedger(), corrupt: true, backupPath }
     }
-    return freshLedger()
+    return { ledger: freshLedger(), corrupt: true }
   }
+}
+
+export async function readLedger(
+  filePath: string,
+  opts?: { readOnly?: boolean }
+): Promise<LedgerFile> {
+  return (await readLedgerWithStatus(filePath, opts)).ledger
 }
 
 // ─── Ensure phase/unit exist ──────────────────────────────────────────────────
@@ -81,7 +97,8 @@ function ensurePhase(ledger: LedgerFile, phase: string): void {
 }
 
 // ─── Apply mutation ───────────────────────────────────────────────────────────
-async function applyOperation(ledger: LedgerFile, operation: WriteLedgerInput): Promise<void> {
+// Returns an optional warning string to surface in the tool result.
+async function applyOperation(ledger: LedgerFile, operation: WriteLedgerInput): Promise<string | undefined> {
   switch (operation.operation) {
     case "set_unit_status": {
       const { phase, unit_id, data } = operation
@@ -114,6 +131,22 @@ async function applyOperation(ledger: LedgerFile, operation: WriteLedgerInput): 
             "Call mcp__foreman__pitboss_implementor to load the full protocol."
           )
         }
+        // No-test/no-build phases require an attestation note on every pass verdict
+        const scope = ledger.phases[phase].scope
+        if (scope && (scope.has_tests === false || scope.has_build === false)) {
+          if (!data.note || data.note.trim().length === 0) {
+            const missing = [
+              scope.has_tests === false ? "has_tests:false" : null,
+              scope.has_build === false ? "has_build:false" : null,
+            ].filter(Boolean).join(", ")
+            throw new Error(
+              `ATTESTATION REQUIRED: phase '${phase}' declares scope ${missing}. ` +
+              "set_verdict(v:'pass') must include a non-empty 'note' describing how the unit was " +
+              "validated in place of automated tests/build (e.g. manual smoke, artifact hash, console inspection). " +
+              "Silent verdicts on scopeless phases are forbidden — see No-Test Phase Attestation in the protocol."
+            )
+          }
+        }
       }
       const unit = ledger.phases[phase].units[unit_id]
       unit.v = data.v
@@ -144,6 +177,26 @@ async function applyOperation(ledger: LedgerFile, operation: WriteLedgerInput): 
     case "update_phase_gate": {
       const { phase, data } = operation
       ensurePhase(ledger, phase)
+      // Gate pass requires every unit in the phase to carry a pass verdict
+      if (data.g === "pass") {
+        const units = ledger.phases[phase].units
+        const unitIds = Object.keys(units)
+        if (unitIds.length === 0) {
+          throw new Error(
+            `PHASE GATE BLOCKED: phase '${phase}' has no units recorded. ` +
+            "A gate cannot pass for an empty phase — seed units via set_unit_status first, " +
+            "or verify the phase id is correct."
+          )
+        }
+        const notPassing = unitIds.filter((id) => units[id].v !== "pass")
+        if (notPassing.length > 0) {
+          throw new Error(
+            `PHASE GATE BLOCKED: phase '${phase}' has units without a pass verdict: ` +
+            `${notPassing.sort().join(", ")}. ` +
+            "Every unit must reach set_verdict(v:'pass') before the phase gate can pass."
+          )
+        }
+      }
       ledger.phases[phase].g = data.g
       break
     }
@@ -157,29 +210,46 @@ async function applyOperation(ledger: LedgerFile, operation: WriteLedgerInput): 
           `Clear manually if re-declaration is intended (out of scope for v0.0.7.5).`
         )
       }
+      let warning: string | undefined
       if (!data.has_tests) {
         const found = await detectTestFiles(process.cwd())
         if (found.length > 0) {
-          console.error(
-            `[foreman write_ledger] has_tests: false declared but ${found.length} test files detected`
-          )
+          warning =
+            `has_tests: false declared but ${found.length} test files detected ` +
+            `(e.g. ${found.slice(0, 3).join(", ")}). If these tests cover this phase, declare has_tests: true ` +
+            "— otherwise pass verdicts will require manual attestation notes."
+          console.error(`[foreman write_ledger] ${warning}`)
         }
       }
       ledger.phases[phase].scope = { ...data }
-      break
+      return warning
     }
   }
+  return undefined
 }
 
 // ─── Write ────────────────────────────────────────────────────────────────────
+export interface LedgerWriteResult {
+  ledger: LedgerFile
+  /** Non-fatal warning to surface in the tool result (e.g. scope/test-file mismatch). */
+  warning?: string
+}
+
 export async function writeLedger(
   filePath: string,
   operation: WriteLedgerInput
-): Promise<LedgerFile> {
+): Promise<LedgerWriteResult> {
   return withLedgerLock(filePath, async () => {
-    const ledger = await readLedger(filePath)
+    const read = await readLedgerWithStatus(filePath)
+    const ledger = read.ledger
 
-    await applyOperation(ledger, operation)
+    let warning = await applyOperation(ledger, operation)
+    if (read.corrupt) {
+      const corruptNote =
+        `previous ledger was corrupt JSON and was backed up to '${read.backupPath}'; ` +
+        "this write started from a fresh ledger. Restore from the backup if prior state matters."
+      warning = warning ? `${warning} | ${corruptNote}` : corruptNote
+    }
     ledger.ts = new Date().toISOString()
 
     // Atomic write: write to .tmp then rename
@@ -187,6 +257,6 @@ export async function writeLedger(
     await fs.writeFile(tmpPath, JSON.stringify(ledger), "utf-8")
     await fs.rename(tmpPath, filePath)
 
-    return ledger
+    return { ledger, warning }
   })
 }

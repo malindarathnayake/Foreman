@@ -90,6 +90,12 @@ Runs AFTER drafting the brief, BEFORE calling the Agent tool. Five mechanical st
 Anti-pattern: *"I read Unit X's directive section carefully."* The spec is a graph, not a list. Every symbol has a cross-reference footprint across multiple sections (data model, error handling, phase directives, decisions table). Grep first.
 
 ### Step 5: Spawn Sonnet Worker
+
+Record the delegation in the ledger BEFORE spawning. This is mechanically enforced — a `pass` verdict is rejected unless the unit was first set to `delegated` with a brief:
+```
+mcp__foreman__write_ledger({ operation: "set_unit_status", phase, unit_id, data: { s: "delegated", brief: "<1-3 line summary of the worker brief>" } })
+```
+
 {{worker_invoke}}
 - Worker sees ONLY: its brief, the BEFORE/AFTER excerpts you include, and its own tool calls
 - Worker MUST NOT be given the handoff.md path to read directly
@@ -106,10 +112,11 @@ After worker returns, pit-boss validates independently — do not trust worker's
 
 ### Step 7: Verdict
 
-**ACCEPT:**
+**ACCEPT** — required ledger sequence per unit is `ip` → `delegated` (Step 5) → `pass`; the ledger rejects a pass verdict without prior delegation:
 ```
-mcp__foreman__write_ledger({ operation: "set_unit_status", phase, unit_id, data: { s: "ip" } })   // when starting
-mcp__foreman__write_ledger({ operation: "set_verdict", phase, unit_id, data: { v: "pass", note: "<attestation — required when scope.has_tests===false>" } })  // when accepted
+mcp__foreman__write_ledger({ operation: "set_unit_status", phase, unit_id, data: { s: "ip" } })   // when starting (Step 1)
+// s:'delegated' with brief was recorded in Step 5, before spawning the worker
+mcp__foreman__write_ledger({ operation: "set_verdict", phase, unit_id, data: { v: "pass", note: "<attestation — mechanically required when scope.has_tests===false or scope.has_build===false>" } })  // when accepted
 mcp__foreman__write_progress({ operation: "complete_unit", data: { unit_id, phase, completed_at, notes } })
 ```
 
@@ -202,6 +209,7 @@ At phase end, after all five gates pass:
 mcp__foreman__write_ledger({ operation: "update_phase_gate", phase, data: { g: "pass" } })
 mcp__foreman__write_progress({ operation: "complete_unit", data: { ... } })
 ```
+Gate `pass` is mechanically enforced: it is rejected unless every unit in the phase has verdict `pass`. If blocked, resolve the listed units — do not work around the gate.
 Include: unit verdicts, gate results, review findings with classifications, deferred concerns.
 
 **4. Deliberation Summary:** Present to user: what was built, worker stats, gate results, review findings, test results.

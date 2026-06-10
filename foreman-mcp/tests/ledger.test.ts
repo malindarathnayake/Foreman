@@ -184,7 +184,20 @@ describe("ledger", () => {
     expect(ledger.phases.p1.units.u1.v).toBe("fail")
   })
 
-  it("update_phase_gate sets the gate value correctly", async () => {
+  it("update_phase_gate sets the gate value correctly when all units pass", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass" },
+    })
+
     await writeLedger(ledgerPath, {
       operation: "update_phase_gate",
       phase: "p1",
@@ -193,6 +206,141 @@ describe("ledger", () => {
 
     const ledger = await readLedger(ledgerPath)
     expect(ledger.phases.p1.g).toBe("pass")
+  })
+
+  it("update_phase_gate pass is BLOCKED when a unit lacks a pass verdict", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass" },
+    })
+    // u2 is pending — gate must not pass
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u2",
+      data: { s: "pending" },
+    })
+
+    await expect(
+      writeLedger(ledgerPath, {
+        operation: "update_phase_gate",
+        phase: "p1",
+        data: { g: "pass" },
+      })
+    ).rejects.toThrow(/PHASE GATE BLOCKED.*u2/s)
+  })
+
+  it("update_phase_gate pass is BLOCKED on an empty phase", async () => {
+    await expect(
+      writeLedger(ledgerPath, {
+        operation: "update_phase_gate",
+        phase: "p1",
+        data: { g: "pass" },
+      })
+    ).rejects.toThrow(/PHASE GATE BLOCKED.*no units/s)
+  })
+
+  it("update_phase_gate fail/pending are allowed regardless of unit verdicts", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "update_phase_gate",
+      phase: "p1",
+      data: { g: "fail" },
+    })
+    let ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.g).toBe("fail")
+
+    await writeLedger(ledgerPath, {
+      operation: "update_phase_gate",
+      phase: "p1",
+      data: { g: "pending" },
+    })
+    ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.g).toBe("pending")
+  })
+
+  // ─── No-test/no-build attestation enforcement ─────────────────────────────
+
+  it("set_verdict pass is BLOCKED without note when scope has_tests:false", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_phase_scope",
+      phase: "p1",
+      data: { has_tests: false, has_api: false, has_build: true },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+    })
+
+    await expect(
+      writeLedger(ledgerPath, {
+        operation: "set_verdict",
+        phase: "p1",
+        unit_id: "u1",
+        data: { v: "pass" },
+      })
+    ).rejects.toThrow(/ATTESTATION REQUIRED.*has_tests:false/s)
+
+    // Whitespace-only note is also rejected
+    await expect(
+      writeLedger(ledgerPath, {
+        operation: "set_verdict",
+        phase: "p1",
+        unit_id: "u1",
+        data: { v: "pass", note: "   " },
+      })
+    ).rejects.toThrow(/ATTESTATION REQUIRED/)
+  })
+
+  it("set_verdict pass succeeds with attestation note when scope has_build:false", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_phase_scope",
+      phase: "p1",
+      data: { has_tests: true, has_api: false, has_build: false },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+    })
+
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass", note: "validated via manual smoke: ran CLI against fixture dir" },
+    })
+
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.units.u1.v).toBe("pass")
+    expect(ledger.phases.p1.units.u1.note).toContain("manual smoke")
+  })
+
+  it("set_verdict fail does not require attestation note on scopeless phases", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_phase_scope",
+      phase: "p1",
+      data: { has_tests: false, has_api: false, has_build: false },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "fail" },
+    })
+
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.units.u1.v).toBe("fail")
   })
 })
 

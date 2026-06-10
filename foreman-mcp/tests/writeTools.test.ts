@@ -81,6 +81,19 @@ describe("handleWriteLedger", () => {
   })
 
   it("update_phase_gate has unit_id: n/a in output", async () => {
+    // Gate pass requires all units passing — seed one passed unit first
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+    })
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass" },
+    })
     const result = await handleWriteLedger(ledgerPath, {
       operation: "update_phase_gate",
       phase: "p1",
@@ -89,6 +102,25 @@ describe("handleWriteLedger", () => {
 
     expect(result).toContain("status: ok")
     expect(result).toContain("unit_id: n/a")
+  })
+
+  it("write on corrupt ledger surfaces a warning naming the backup file", async () => {
+    await fs.writeFile(ledgerPath, "{ this is not valid json !!!", "utf-8")
+
+    const result = await handleWriteLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "ip" },
+    })
+
+    expect(result).toContain("status: ok")
+    expect(result).toContain("warning:")
+    expect(result).toContain(".corrupt.")
+
+    // Backup sibling exists
+    const siblings = await fs.readdir(path.dirname(ledgerPath))
+    expect(siblings.filter((f) => f.includes(".corrupt.")).length).toBe(1)
   })
 })
 
@@ -729,8 +761,9 @@ describe("handleWriteLedger — set_phase_scope operation", () => {
     const origError = console.error
     console.error = (msg: string) => { warnings.push(String(msg)) }
 
+    let result: string
     try {
-      await handleWriteLedger(ledgerPath, {
+      result = await handleWriteLedger(ledgerPath, {
         operation: "set_phase_scope",
         phase: "v75-p1",
         data: { has_tests: false, has_api: false, has_build: true },
@@ -741,9 +774,22 @@ describe("handleWriteLedger — set_phase_scope operation", () => {
 
     expect(warnings.some(w => w.includes("has_tests: false declared but") && w.includes("1 test files detected"))).toBe(true)
 
+    // Warning is also surfaced in the tool result text — not stderr-only
+    expect(result).toContain("warning:")
+    expect(result).toContain("1 test files detected")
+
     // Scope is still stored despite the warning
     const ledger = await readLedger(ledgerPath)
     expect(ledger.phases["v75-p1"].scope?.has_tests).toBe(false)
+  })
+
+  it("does NOT include warning key in result when has_tests:false and no test files", async () => {
+    const result = await handleWriteLedger(ledgerPath, {
+      operation: "set_phase_scope",
+      phase: "v75-p1",
+      data: { has_tests: false, has_api: false, has_build: true },
+    })
+    expect(result).not.toContain("warning:")
   })
 
   it("does NOT log warning when has_tests:false and no test files present", async () => {

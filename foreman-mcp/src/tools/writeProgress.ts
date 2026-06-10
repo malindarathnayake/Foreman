@@ -60,8 +60,9 @@ export async function handleWriteProgress(
       throw err
     }
 
-    // Read ledger (safe — readLedger returns empty ledger if file missing)
-    const ledger = await readLedger(ledgerPath ?? "Docs/.foreman-ledger.json")
+    // Read ledger (safe — readLedger returns empty ledger if file missing).
+    // readOnly: a progress write must never rename a corrupt ledger file.
+    const ledger = await readLedger(ledgerPath ?? "Docs/.foreman-ledger.json", { readOnly: true })
     const checklist = renderChecklist(ledger)
 
     const block = parseFencedBlock(existing)

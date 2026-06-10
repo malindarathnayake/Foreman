@@ -184,10 +184,10 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "Writes an operation to the Foreman ledger file.",
         "",
         "Operations:",
-        "  set_unit_status — Set a unit's status. data: { s: 'pending'|'ip'|'done'|'fail' }. Requires: phase, unit_id.",
-        "  set_verdict     — Record pass/fail verdict. data: { v: 'pass'|'fail'|'pending' }. Requires: phase, unit_id.",
+        "  set_unit_status — Set a unit's status. data: { s: 'pending'|'ip'|'delegated'|'done'|'fail', brief?: string }. Requires: phase, unit_id. s:'delegated' requires a 'brief' (min 20 chars) summarizing the worker brief.",
+        "  set_verdict     — Record pass/fail verdict. data: { v: 'pass'|'fail'|'pending', via?, note? }. Requires: phase, unit_id. v:'pass' is blocked unless the unit was first set to s:'delegated' with a brief; if phase scope declares has_tests:false or has_build:false, a non-empty attestation 'note' is also required.",
         "  add_rejection   — Log a rejection. data: { r: string, msg: string, ts: string }. Requires: phase, unit_id.",
-        "  update_phase_gate — Set phase gate result. data: { g: 'pass'|'fail'|'pending' }. Requires: phase.",
+        "  update_phase_gate — Set phase gate result. data: { g: 'pass'|'fail'|'pending' }. Requires: phase. g:'pass' is blocked unless every unit in the phase has verdict 'pass'.",
         "  set_phase_scope — Declare phase scope for gate applicability. data: { has_tests, has_api, has_build: boolean }. Requires: phase.",
       ].join("\n"),
       inputSchema: {
