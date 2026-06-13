@@ -52,7 +52,7 @@ The model still reasons. Foreman makes the work auditable.
 - **Citation verification** that re-reads cited files and detects drift.
 - **Bounded test execution** through an allowlisted runner tool.
 - **Advisor hooks** for Codex and Gemini CLI review when available.
-- **Reversible output compression** (pilot) for large `run_tests` and advisor output — content-aware, with a `retrieve_original` tool to recover the full text on demand. On by default; kill switch `FOREMAN_COMPRESSION=0`.
+- **Reversible output compression** (pilot) for large `run_tests` and advisor output — content-aware, with a `retrieve_original` tool to recover the full text on demand. On by default; kill switch `FOREMAN_COMPRESSION=0`. Measured 70–93% reduction, lossless — see [Compression Benchmarks](docs/compression-benchmarks.md).
 - **Multi-host support** for Claude Code and Cursor. The `codex` host is accepted and currently aliases Claude Code behavior.
 
 Foreman is not a general workflow canvas. It is a harness for codebase work where correctness, handoff, and resume matter.
@@ -343,8 +343,6 @@ Main controls:
 - Atomic writes for ledger, progress, and journal files.
 - Absolute CLI resolution for external advisor commands.
 
-See `docs/socket-security-scan-2026-06-08.md` for the Socket scan note.
-
 ---
 
 ## Development
@@ -381,8 +379,7 @@ foreman-mcp/tests/               # Vitest tests
 
 - [Usage Guide](usage-guide.md)
 - [Changelog](CHANGELOG.md)
-- [Atlas / LangGraph Runtime Plan](docs/foreman-atlas-langgraph-runtime-plan.md)
-- [Socket Security Scan](docs/socket-security-scan-2026-06-08.md)
+- [Compression Benchmarks](docs/compression-benchmarks.md)
 
 ---
 
