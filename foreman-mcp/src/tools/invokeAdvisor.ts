@@ -43,12 +43,23 @@ export async function invokeAdvisor(
 }
 
 export function formatAdvisorResult(cli: string, result: ExternalCliResult): string {
-  const meta = [
+  // Codex prints "tokens used\n<N>" to stderr; capture it as meta before any trim so the
+  // telemetry survives even when we drop the (redundant) stderr on success.
+  const tokensMatch = /tokens used\s*\n?\s*([\d,]+)/.exec(result.stderr)
+  const metaLines = [
     `cli: ${cli}`,
     `exit_code: ${result.exitCode}`,
     `timed_out: ${result.timedOut}`,
     `truncated: ${result.truncated}`,
-  ].join('\n')
+  ]
+  if (tokensMatch) metaLines.push(`tokens_used: ${tokensMatch[1].replace(/,/g, '')}`)
+  const meta = metaLines.join('\n')
 
+  // On clean success the CLI's stderr is pure scaffolding — banner + the echoed prompt +
+  // a verbatim DUPLICATE of stdout + the tokens line (already captured above). Drop it.
+  // On failure OR truncation, stderr may hold the only diagnostic signal — keep it.
+  if (result.exitCode === 0 && result.truncated === false) {
+    return `${meta}\n\nSTDOUT\n${result.stdout}`
+  }
   return `${meta}\n\nSTDOUT\n${result.stdout}\n\nSTDERR\n${result.stderr}`
 }

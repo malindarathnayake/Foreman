@@ -1,0 +1,13 @@
+context-crush
+Copyright 2026 Malinda Rathnayake
+
+This product includes software derived from the Headroom project
+(Copyright 2025 Headroom Contributors), licensed under the Apache
+License, Version 2.0.
+
+Derived components and their Headroom source revisions:
+  - log compressor:   headroom/transforms/log_compressor.py  @ 45720301^
+  - diff compressor:  headroom/transforms/diff_compressor.py @ f5f46541^
+  - smart crusher:    headroom/transforms/smart_crusher.py   @ c765c53b^
+  - CCR marker format (<<ccr:HASH>>) per crates/headroom-core/src/ccr/mod.rs
+  - parity test fixtures recorded by the Headroom project (tests/parity/fixtures/)
