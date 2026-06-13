@@ -272,8 +272,9 @@ mcp__foreman__read_progress
 - `run_tests`
 - `normalize_review`
 - `verify_citations`
+- `retrieve_original`
 
-Total: **21 MCP tools**.
+Total: **22 MCP tools**.
 
 ---
 
@@ -295,19 +296,28 @@ These checks are intentionally mechanical. The model can be wrong; the ledger sh
 
 ```mermaid
 flowchart LR
-    Agent[AI coding agent] <-->|MCP stdio| Foreman[Foreman MCP server]
+    subgraph Host["AI coding host (Claude Code / Cursor)"]
+        Pitboss["Pitboss · main agent"]
+        Workers["Disposable workers · host-native subagents"]
+        Pitboss -->|"scoped briefs"| Workers
+    end
 
-    Foreman --> Protocols[Protocol activation tools]
-    Foreman --> State[Ledger / Progress / Journal tools]
-    Foreman --> Review[Test / citation / advisor tools]
+    Pitboss <-->|"MCP stdio"| Foreman["Foreman MCP server"]
 
-    State --> Ledger[(Docs/.foreman-ledger.json)]
-    State --> Progress[(Docs/.foreman-progress.json)]
-    State --> Journal[(Docs/.foreman-journal.json)]
+    Foreman --> Protocols["Protocol activation tools"]
+    Foreman --> State["Ledger / Progress / Journal tools"]
+    Foreman --> Review["Test / citation / advisor tools"]
 
-    Protocols --> Skills[Bundled or overridden skills]
-    Review --> CLIs[Codex / Gemini CLI when available]
-    Review --> Tests[Project test runner]
+    State --> Files[("Docs/.foreman-*.json<br/>ledger · progress · journal")]
+    Protocols --> Skills["Bundled or overridden skills"]
+
+    Review --> Tests["Project test runner"]
+    Review --> CLIs["Codex / Gemini advisor CLIs"]
+
+    Review -->|"large output"| CCR["context-crush compression"]
+    CCR --> Store[("CCR store · TTL")]
+    CCR -->|"digest + ccr:HASH"| Pitboss
+    Pitboss -.->|"retrieve_original"| Store
 ```
 
 Stack:
