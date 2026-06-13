@@ -48,9 +48,9 @@ afterEach(async () => {
 })
 
 describe("bundleStatus", () => {
-  it("returns TOON output containing bundle_version: 0.1.3", async () => {
+  it("returns TOON output containing bundle_version: 0.2.2", async () => {
     const result = await bundleStatus()
-    expect(result).toContain("bundle_version: 0.1.3")
+    expect(result).toContain("bundle_version: 0.2.2")
   })
 
   it("returns output containing compatible: true", async () => {
