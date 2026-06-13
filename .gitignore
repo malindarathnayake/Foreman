@@ -6,9 +6,11 @@ dist/
 # Foreman working docs (specs, ledgers, pentest artifacts)
 Docs/
 
-# Repository documentation is committed.
+# docs/ holds internal working notes; only the allowlisted file is published.
+# Everything else under docs/ stays local (it may carry internal references).
 !docs/
-!docs/**
+docs/*
+!docs/compression-benchmarks.md
 
 # Local experiment workspace. Keep only the folder marker in git so review
 # tooling does not scan synthetic target applications or generated outputs.

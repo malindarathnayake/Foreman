@@ -343,8 +343,6 @@ Main controls:
 - Atomic writes for ledger, progress, and journal files.
 - Absolute CLI resolution for external advisor commands.
 
-See `docs/socket-security-scan-2026-06-08.md` for the Socket scan note.
-
 ---
 
 ## Development
@@ -382,8 +380,6 @@ foreman-mcp/tests/               # Vitest tests
 - [Usage Guide](usage-guide.md)
 - [Changelog](CHANGELOG.md)
 - [Compression Benchmarks](docs/compression-benchmarks.md)
-- [Atlas / LangGraph Runtime Plan](docs/foreman-atlas-langgraph-runtime-plan.md)
-- [Socket Security Scan](docs/socket-security-scan-2026-06-08.md)
 
 ---
 
