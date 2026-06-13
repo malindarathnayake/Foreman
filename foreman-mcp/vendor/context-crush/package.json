@@ -1,0 +1,20 @@
+{
+  "name": "context-crush",
+  "version": "0.1.0",
+  "description": "Reversible, content-aware compression for LLM-bound tool outputs (CCR). Ported from Headroom.",
+  "type": "module",
+  "license": "Apache-2.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": ["dist", "LICENSE", "NOTICE"],
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest run"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "typescript": "^5.8.0",
+    "vitest": "^3.2.0"
+  }
+}

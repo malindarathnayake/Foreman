@@ -29,6 +29,7 @@ import { sessionOrient } from "./tools/sessionOrient.js"
 import { renderIncludes, loadSkill } from "./lib/skillLoader.js"
 import { hostStatus } from "./tools/hostStatus.js"
 import { type HostId, resolveHost, parseHostFlag, getProfile } from "./lib/hostProfiles.js"
+import { maybeCompress, compressionEnabled, getRetrieveOriginalTool } from "./lib/compression.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -54,7 +55,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   const host: HostId = config?.host ?? "claude-code"
 
   const server = new McpServer(
-    { name: "foreman", version: "0.1.3" },
+    { name: "foreman", version: "0.2.2" },
     { capabilities: { resources: {}, tools: {} } }
   )
 
@@ -163,7 +164,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   server.registerTool(
     "invoke_advisor",
     {
-      description: "Invoke codex|gemini CLI via stdin. Resolves binary cross-platform, wraps .cmd shims on win32.",
+      description: "Invoke codex|gemini CLI via stdin. Resolves binary cross-platform, wraps .cmd shims on win32. Failed calls may be compressed; if a failed call's summary is insufficient, call retrieve_original with the <<ccr:HASH>> marker for the full diagnostic.",
       inputSchema: {
         cli: z.enum(["codex", "gemini"]),
         prompt: z.string().max(100000),
@@ -172,7 +173,11 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const result = await invokeAdvisor(args.cli, args.prompt, args.timeout_ms)
-      const text = formatAdvisorResult(args.cli, result)
+      const formatted = formatAdvisorResult(args.cli, result)
+      // Successful advisor output is PROSE — never lossy-compress it (silent loss of the
+      // recommendations). A FAILED call is an unpredictable diagnostic dump: let the normal
+      // compression path handle it; the agent sees exit_code != 0 and can retrieve_original.
+      const text = result.exitCode === 0 ? formatted : maybeCompress("invoke_advisor", formatted)
       return { content: [{ type: "text" as const, text }] }
     }
   )
@@ -287,7 +292,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
     },
     async (args, _extra) => {
-      const text = await runTests(args.runner, args.args, args.timeout_ms, args.max_output_chars)
+      const text = maybeCompress("run_tests", await runTests(args.runner, args.args, args.timeout_ms, args.max_output_chars))
       return { content: [{ type: "text" as const, text }] }
     }
   )
@@ -302,6 +307,29 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       return { content: [{ type: "text" as const, text }] }
     }
   )
+
+  // retrieve_original ships with compression, which is DEFAULT ON for the 0.2.0 pilot
+  // (kill switch FOREMAN_COMPRESSION=0 — markers can't exist when compression is off,
+  // so the tool unregisters with it).
+  if (compressionEnabled()) {
+    const tool = getRetrieveOriginalTool()
+    server.registerTool(
+      tool.name,
+      {
+        description: tool.description + " Use this whenever a compressed result (it carries a <<ccr:HASH>> marker) may be missing detail you need — e.g. a failed advisor or test call whose summary looks insufficient.",
+        inputSchema: {
+          hash: z.string().regex(/^[0-9a-f]{24}$/).describe("The 24 lowercase hex characters from a <<ccr:HASH>> marker."),
+        },
+      },
+      async (args, _extra) => {
+        const result = tool.handler({ hash: args.hash })
+        if ("original" in result) {
+          return { content: [{ type: "text" as const, text: result.original }] }
+        }
+        return { content: [{ type: "text" as const, text: JSON.stringify(result) }], isError: true }
+      }
+    )
+  }
 
   // ── Skill Resources ────────────────────────────────────────────────────────
 

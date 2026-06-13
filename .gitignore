@@ -27,3 +27,9 @@ assets/prompts.md
 # archival history; release-pkg/ is the per-build staging dir used by the
 # build workflow so the Release upload only ships the current version.
 release-pkg/
+
+# Vendored context-crush build is committed: it is the in-repo dependency so
+# CI `npm ci` resolves it (no external path / registry), and bundleDependencies
+# packs it into the tarball. Override the global dist/ ignore for this path only.
+!foreman-mcp/vendor/context-crush/dist/
+!foreman-mcp/vendor/context-crush/dist/**
