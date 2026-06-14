@@ -6,3 +6,7 @@ node_modules/
 .npm-cache/
 .github/
 _DOJO/
+
+# Heavy vendored asset ships once from dist/preview (runtime resolves there);
+# drop the src/ duplicate from the tarball.
+src/preview/mermaid.min.js

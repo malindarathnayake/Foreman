@@ -98,6 +98,8 @@ Produce a design summary using this structure (terse format — no filler, no ex
 
 Save to `Docs/design-summary.md`.
 
+**Visualize it for the user.** When the architecture, data flow, lifecycle, or integration path is non-trivial, call `preview_diagram({ id, source })` with the Mermaid source so the user can SEE it live in the browser while you refine it — re-call with the same `id` (or edit `Docs/diagrams/<id>.mmd`) to update the preview in place. Reference the resulting `Docs/diagrams/<id>.mmd` from the summary; don't paste raw Mermaid as the primary user-facing diagram when a live preview is available. (Note: `architecture-beta` and `mindmap` diagram types are not supported by the renderer.)
+
 ### YIELD: User Approval Required
 
 **STOP GENERATING. End your turn here.**

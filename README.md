@@ -273,8 +273,9 @@ mcp__foreman__read_progress
 - `normalize_review`
 - `verify_citations`
 - `retrieve_original`
+- `preview_diagram`
 
-Total: **22 MCP tools**.
+Total: **23 MCP tools**.
 
 ---
 
@@ -340,7 +341,7 @@ bundled skills                           # package default
 
 ## Security Model
 
-Foreman is a stdio-only MCP server. It does not expose an HTTP listener.
+Foreman's control plane is a stdio-only MCP server. The one exception is the `preview_diagram` tool, which starts a loopback-only diagram preview server (see "Network surface" below). No other HTTP listener is exposed.
 
 Main controls:
 
@@ -352,6 +353,17 @@ Main controls:
 - FIFO caps for internal rejection, journal, session, and error arrays.
 - Atomic writes for ledger, progress, and journal files.
 - Absolute CLI resolution for external advisor commands.
+
+### Network surface (`preview_diagram`)
+
+`preview_diagram` is Foreman's only network listener, hardened as follows:
+
+- Binds `127.0.0.1` only (ports 3939–3949) — never `0.0.0.0`; unreachable off-box.
+- Every private route is gated by a per-session 128-bit token (`/t/<token>/…`), regenerated each time the server starts.
+- Every request is Host-validated (rejects anything but `127.0.0.1`/`localhost`/`[::1]` on the bound port) — the standard DNS-rebinding defense — plus an `Origin` allowlist when an `Origin` header is present.
+- No CORS headers are ever emitted; responses carry `Cross-Origin-Resource-Policy: same-origin`, `X-Content-Type-Options: nosniff`, and a strict CSP (`script-src 'self'`, no `unsafe-eval`).
+- The server renders nothing server-side: it serves the `.mmd` source plus a static page that runs a vendored Mermaid bundle client-side in the user's browser. No Chromium, no outbound network, fully offline.
+- Kill switches: `FOREMAN_PREVIEW=0` writes the `.mmd` artifact and starts no listener; `FOREMAN_NO_OPEN=1` suppresses auto-opening the browser.
 
 ---
 

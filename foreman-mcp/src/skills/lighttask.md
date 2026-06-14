@@ -248,6 +248,8 @@ If the task depends on DB, API, queue, cloud, or external runtime behavior, prob
 
 Draft the smallest execution plan that satisfies the grounded facts.
 
+**Optional — visualize the change.** When the change crosses components or alters data/control flow, call `preview_diagram({ id, source })` to show the affected flow live for the user. Do NOT render for one-file edits, copy changes, dependency bumps, or purely local fixes. **For refactors, render a before/after pair** (ids like `<name>-before` and `<name>-after`) so the user can compare the current structure against the target before you start — this is the highest-value moment to align on the plan.
+
 Format:
 
 ```markdown

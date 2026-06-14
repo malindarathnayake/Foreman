@@ -23,14 +23,14 @@ afterEach(async () => {
   await server?.close()
 })
 
-describe("list tools — verify all 22 present, update_bundle absent", () => {
+describe("list tools — verify all 23 present, update_bundle absent", () => {
   beforeEach(async () => {
     await setupServer()
   })
 
-  it("lists exactly 22 tools", async () => {
+  it("lists exactly 23 tools", async () => {
     const result = await client.listTools()
-    expect(result.tools).toHaveLength(22)
+    expect(result.tools).toHaveLength(23)
   })
 
   it("includes all required tool names", async () => {
@@ -58,6 +58,7 @@ describe("list tools — verify all 22 present, update_bundle absent", () => {
     expect(names).toContain("invoke_advisor")
     expect(names).toContain("session_orient")
     expect(names).toContain("retrieve_original")
+    expect(names).toContain("preview_diagram")
   })
 
   it("tool descriptions telegraph Foreman routing policy", async () => {
@@ -239,12 +240,12 @@ describe("bundle_status round-trip", () => {
     await setupServer()
   })
 
-  it("returns bundle_version 0.2.2", async () => {
+  it("returns bundle_version 0.3.0", async () => {
     const result = await client.callTool({ name: "bundle_status", arguments: {} })
     const content = result.content as Array<{ type: string; text: string }>
     expect(content[0].type).toBe("text")
     expect(content[0].text).toContain("bundle_version")
-    expect(content[0].text).toContain("0.2.2")
+    expect(content[0].text).toContain("0.3.0")
   })
 })
 
