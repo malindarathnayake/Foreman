@@ -446,7 +446,7 @@ Use:
 - concrete names
 - stable IDs
 - tables for requirements and contracts
-- Mermaid only when it clarifies state, sequence, or architecture
+- Mermaid only when it clarifies state, sequence, or architecture — when you do, render it with `preview_diagram` so the user can review it live (source saved under `Docs/diagrams/`); use as needed, not for every spec
 - examples only when they remove ambiguity
 - direct requirements
 - short sections

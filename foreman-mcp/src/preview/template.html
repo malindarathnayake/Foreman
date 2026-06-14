@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{{TITLE}}</title>
+    <link rel="icon" href="data:," />
+    <link rel="stylesheet" href="/assets/style.css" />
+  </head>
+  <body data-id="{{ID}}" data-token="{{TOKEN}}" data-theme="{{THEME}}">
+    <header>
+      <span class="title">{{TITLE}}</span>
+      <span class="meta" id="meta">connecting…</span>
+    </header>
+    <main id="diagram" class="diagram"></main>
+    <pre id="error" class="error" hidden></pre>
+    <!-- No inline script (CSP script-src 'self'). Both scripts are same-origin assets. -->
+    <script src="/assets/mermaid.min.js"></script>
+    <script src="/assets/app.js"></script>
+  </body>
+</html>

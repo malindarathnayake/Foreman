@@ -22,6 +22,8 @@ import { activateSpecGenerator } from "./tools/activateSpecGenerator.js"
 import { activateLighttask } from "./tools/activateLighttask.js"
 import { activateSpecMan } from "./tools/activateSpecMan.js"
 import { activateDocMan } from "./tools/activateDocMan.js"
+import { previewDiagram } from "./tools/previewDiagram.js"
+import { closeDiagramServer } from "./lib/diagramServer.js"
 import { NormalizeReviewInputSchema, VerifyCitationsInputSchema } from "./types.js"
 import { readJournal, initSession, logEvent, endSession } from "./lib/journal.js"
 import { invokeAdvisor, formatAdvisorResult } from "./tools/invokeAdvisor.js"
@@ -55,7 +57,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   const host: HostId = config?.host ?? "claude-code"
 
   const server = new McpServer(
-    { name: "foreman", version: "0.2.2" },
+    { name: "foreman", version: "0.3.0" },
     { capabilities: { resources: {}, tools: {} } }
   )
 
@@ -481,6 +483,40 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     }
   )
 
+  server.registerTool(
+    "preview_diagram",
+    {
+      description: [
+        "Render a Mermaid diagram into a LIVE, auto-refreshing browser preview the user can watch.",
+        "Writes the source to Docs/diagrams/<id>.mmd (the versioned artifact) and serves it on a",
+        "loopback-only (127.0.0.1), token-gated, Host-validated HTTP server; mermaid renders",
+        "client-side (no Chromium) and the tab live-reloads whenever the diagram changes.",
+        "Fully offline — no data leaves the machine. Use this to SHOW the user a data flow,",
+        "architecture, sequence, state, class, or ER diagram instead of dumping raw Mermaid text.",
+        "Call again with the same id (or edit the .mmd directly) to update the preview in place.",
+        "Pass source to create/replace the diagram; omit source to re-open an existing one.",
+        "Note: architecture-beta and mindmap are not supported under the strict render policy.",
+      ].join(" "),
+      inputSchema: {
+        source: z.string().min(1).max(50000).optional(),
+        id: z
+          .string()
+          .regex(/^[a-z0-9][a-z0-9_-]{0,63}$/, "lowercase slug, no slashes")
+          .optional(),
+        title: z.string().max(120).optional(),
+        theme: z.enum(["default", "neutral", "dark", "forest", "base"]).optional(),
+        open: z.boolean().optional(),
+      },
+    },
+    async (args, _extra) => {
+      const result = await previewDiagram(args, docsDir)
+      return {
+        content: [{ type: "text" as const, text: result.text }],
+        ...(result.isError ? { isError: true } : {}),
+      }
+    }
+  )
+
   // ── Skill Resource Registration ─────────────────────────────────────────────
 
   let skillFiles: string[] = []
@@ -695,6 +731,32 @@ if (isMain) {
     console.error(`[foreman] starting MCP server (host=${host})`)
     createServer({ host }).then(async (server) => {
       const transport = new StdioServerTransport()
+
+      // Graceful shutdown. The preview_diagram tool may start a loopback HTTP
+      // listener (a ref'd handle) that would otherwise keep this process alive
+      // after the MCP client disconnects. Tear it down on stdin EOF / signals so
+      // the process exits and the port is released. No-op if no preview started.
+      let shuttingDown = false
+      const shutdown = async (): Promise<void> => {
+        if (shuttingDown) return
+        shuttingDown = true
+        try {
+          await closeDiagramServer()
+        } catch {
+          /* ignore */
+        }
+        try {
+          await server.close()
+        } catch {
+          /* ignore */
+        }
+        process.exit(0)
+      }
+      process.stdin.on("end", shutdown)
+      process.stdin.on("close", shutdown)
+      process.on("SIGINT", shutdown)
+      process.on("SIGTERM", shutdown)
+
       await server.connect(transport)
     })
   }
