@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/malindarathnayake/foreman/actions/workflows/build.yml"><img src="https://github.com/malindarathnayake/foreman/actions/workflows/build.yml/badge.svg" alt="Build & Publish" /></a>
+  <a href="https://github.com/malindarathnayake/Foreman/actions/workflows/build.yml"><img src="https://github.com/malindarathnayake/Foreman/actions/workflows/build.yml/badge.svg" alt="Build & Publish" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue.svg" alt="License: AGPL-3.0" /></a>
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg" alt="Node.js >= 22" /></a>
 </p>
@@ -14,7 +14,7 @@ Foreman is an MCP governance layer for AI coding agents. It turns engineering pr
 
 It does not replace Claude Code, Cursor, Codex, Gemini, or your test suite. It gives them a control plane so long-running coding work has durable state, evidence, and explicit stop points.
 
-**Current release:** `v0.2.2`  
+**Current release:** `v0.3.0`  
 **Package:** `@malindarathnayake/foreman-mcp`  
 **Runtime:** Node.js `>=22`  
 **License:** AGPL-3.0-only
@@ -53,6 +53,7 @@ The model still reasons. Foreman makes the work auditable.
 - **Bounded test execution** through an allowlisted runner tool.
 - **Advisor hooks** for Codex and Gemini CLI review when available.
 - **Reversible output compression** (pilot) for large `run_tests` and advisor output — content-aware, with a `retrieve_original` tool to recover the full text on demand. On by default; kill switch `FOREMAN_COMPRESSION=0`. Measured 70–93% reduction, lossless — see [Compression Benchmarks](docs/compression-benchmarks.md).
+- **Live diagram preview** — `preview_diagram` renders Mermaid into a local, auto-refreshing browser view (loopback-only, client-side render, no Chromium) for architecture, data-flow, and refactor diagrams during design and planning. See [Security Model](#security-model) for the network surface.
 - **Multi-host support** for Claude Code and Cursor. The `codex` host is accepted and currently aliases Claude Code behavior.
 
 Foreman is not a general workflow canvas. It is a harness for codebase work where correctness, handoff, and resume matter.
@@ -147,8 +148,8 @@ npm login --registry=https://npm.pkg.github.com
 No GitHub Packages auth is required for the release tarball.
 
 ```bash
-curl -LO https://github.com/malindarathnayake/Foreman/releases/download/v0.2.2/malindarathnayake-foreman-mcp-0.2.2.tgz
-npm install -g malindarathnayake-foreman-mcp-0.2.2.tgz
+curl -LO https://github.com/malindarathnayake/Foreman/releases/download/v0.3.0/malindarathnayake-foreman-mcp-0.3.0.tgz
+npm install -g malindarathnayake-foreman-mcp-0.3.0.tgz
 ```
 
 Latest release: <https://github.com/malindarathnayake/Foreman/releases/latest>
@@ -370,8 +371,8 @@ Main controls:
 ## Development
 
 ```bash
-git clone https://github.com/malindarathnayake/foreman.git
-cd foreman/foreman-mcp
+git clone https://github.com/malindarathnayake/Foreman.git
+cd Foreman/foreman-mcp
 npm install
 npm run build
 npm test
