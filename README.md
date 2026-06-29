@@ -4,7 +4,7 @@
 
 <p align="center">
   <a href="https://github.com/malindarathnayake/Foreman/actions/workflows/build.yml"><img src="https://github.com/malindarathnayake/Foreman/actions/workflows/build.yml/badge.svg" alt="Build & Publish" /></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-AGPL--3.0-blue.svg" alt="License: AGPL-3.0" /></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License: Apache-2.0" /></a>
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg" alt="Node.js >= 22" /></a>
 </p>
 
@@ -17,7 +17,7 @@ It does not replace Claude Code, Cursor, Codex, Gemini, or your test suite. It g
 **Current release:** `v0.3.0`  
 **Package:** `@malindarathnayake/foreman-mcp`  
 **Runtime:** Node.js `>=22`  
-**License:** AGPL-3.0-only
+**License:** Apache-2.0
 
 ---
 
@@ -432,4 +432,4 @@ CI proves builds and tests. It does not prove that the implementation matches th
 
 ## License
 
-[AGPL-3.0-only](LICENSE) © 2026 Malinda Rathnayake
+[Apache-2.0](LICENSE) © 2026 Malinda Rathnayake

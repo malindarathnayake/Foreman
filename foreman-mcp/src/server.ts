@@ -687,7 +687,7 @@ if (isMain) {
   \x1b[38;2;88;166;255m│\x1b[0m
   \x1b[38;2;88;166;255m○\x1b[0m  \x1b[1mForeman\x1b[0m v${version}
      \x1b[2mWorkflow Orchestrator for AI Coding Agents\x1b[0m
-     \x1b[2mCopyright (c) 2026 Malinda Rathnayake — AGPL-3.0\x1b[0m
+     \x1b[2mCopyright (c) 2026 Malinda Rathnayake — Apache-2.0\x1b[0m
 `)
   }
 
