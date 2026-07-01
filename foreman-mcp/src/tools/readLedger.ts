@@ -25,9 +25,12 @@ export async function handleReadLedger(filePath: string, input: ReadLedgerInput)
       phase: input.phase,
       status: unit.s,
       verdict: unit.v,
+      tier: unit.tier ?? "n/a",
+      route_reason: unit.route_reason ?? "n/a",
       via: unit.via ?? "n/a",
       note: unit.note ?? "n/a",
       worker: unit.w ?? "none",
+      delegations: String(unit.delegations?.length ?? 0),
       rejections: String(unit.rej.length),
     })
   }
@@ -38,10 +41,10 @@ export async function handleReadLedger(filePath: string, input: ReadLedgerInput)
       const rows: string[][] = []
       for (const [phaseId, phase] of Object.entries(ledger.phases)) {
         for (const [unitId, unit] of Object.entries(phase.units)) {
-          rows.push([phaseId, unitId, unit.v, unit.via ?? "", unit.note ?? ""])
+          rows.push([phaseId, unitId, unit.tier ?? "", unit.v, unit.via ?? "", unit.note ?? ""])
         }
       }
-      return toTable(["phase", "unit", "verdict", "via", "note"], rows)
+      return toTable(["phase", "unit", "tier", "verdict", "via", "note"], rows)
     }
     case "rejections": {
       const rows: string[][] = []
@@ -60,6 +63,21 @@ export async function handleReadLedger(filePath: string, input: ReadLedgerInput)
         rows.push([phaseId, phase.s, phase.g])
       }
       return toTable(["phase", "status", "gate"], rows)
+    }
+    case "reviews": {
+      const rows: string[][] = []
+      for (const [phaseId, phase] of Object.entries(ledger.phases)) {
+        for (const review of phase.reviews ?? []) {
+          if (review.findings.length === 0) {
+            rows.push([phaseId, review.advisor, "", "", "(no findings)"])
+            continue
+          }
+          for (const f of review.findings) {
+            rows.push([phaseId, review.advisor, f.severity, f.classification ?? "", f.description])
+          }
+        }
+      }
+      return toTable(["phase", "advisor", "severity", "class", "finding"], rows)
     }
     case "full":
     default:

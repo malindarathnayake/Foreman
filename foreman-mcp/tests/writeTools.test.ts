@@ -26,6 +26,57 @@ afterEach(async () => {
 
 // ─── handleWriteLedger ────────────────────────────────────────────────────────
 
+describe("handleWriteLedger — v0.3.1 tier telemetry + record_review (Zod path)", () => {
+  it("accepts and persists tier + route_reason on delegation", async () => {
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "Worker brief for u1 — implement per spec", tier: "premium", route_reason: "high-risk unit" },
+    })
+    const unit = (await readLedger(ledgerPath)).phases.p1.units.u1
+    expect(unit.tier).toBe("premium")
+    expect(unit.route_reason).toBe("high-risk unit")
+    expect(unit.delegations).toHaveLength(1)
+  })
+
+  it("rejects an invalid tier value at the Zod boundary", async () => {
+    await expect(
+      handleWriteLedger(ledgerPath, {
+        operation: "set_unit_status",
+        phase: "p1",
+        unit_id: "u1",
+        data: { s: "delegated", brief: "Worker brief for u1 — implement per spec", tier: "turbo" },
+      })
+    ).rejects.toThrow()
+  })
+
+  it("record_review round-trips findings through the Zod schema and handler", async () => {
+    const result = await handleWriteLedger(ledgerPath, {
+      operation: "record_review",
+      phase: "p1",
+      data: {
+        advisor: "codex",
+        findings: [{ severity: "high", file: "ledger.ts", line: "115", description: "overwrite", classification: "confirmed" }],
+      },
+    })
+    expect(result).toContain("status: ok")
+    expect(result).toContain("operation: record_review")
+    const reviews = (await readLedger(ledgerPath)).phases.p1.reviews!
+    expect(reviews).toHaveLength(1)
+    expect(reviews[0].findings[0].classification).toBe("confirmed")
+  })
+
+  it("WriteLedgerInputSchema parses a record_review operation", () => {
+    const parsed = WriteLedgerInputSchema.parse({
+      operation: "record_review",
+      phase: "p1",
+      data: { advisor: "gemini", findings: [] },
+    })
+    expect(parsed.operation).toBe("record_review")
+  })
+})
+
 describe("handleWriteLedger", () => {
   it("valid input → returns TOON confirmation with 'status: ok'", async () => {
     const result = await handleWriteLedger(ledgerPath, {

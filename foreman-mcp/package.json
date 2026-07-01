@@ -1,6 +1,6 @@
 {
   "name": "@malindarathnayake/foreman-mcp",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Foreman MCP server — workflow orchestrator for planning and implementation skills",
   "type": "module",
   "main": "dist/server.js",
@@ -30,7 +30,9 @@
     "context-crush": "file:vendor/context-crush",
     "zod": "^3.24.0"
   },
-  "bundleDependencies": ["context-crush"],
+  "bundleDependencies": [
+    "context-crush"
+  ],
   "devDependencies": {
     "@types/node": "^22.0.0",
     "typescript": "^5.8.0",

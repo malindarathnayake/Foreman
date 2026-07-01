@@ -8,6 +8,17 @@ export interface Rejection {
   ts: string
 }
 
+export type Tier = "cheap" | "standard" | "premium"
+
+/** One delegation attempt. Appended per (re-)delegation so retry history survives the `w` overwrite. */
+export interface Delegation {
+  brief: string
+  tier?: Tier
+  route_reason?: string
+  ts: string
+  attempt: number
+}
+
 export interface Unit {
   s: "pending" | "ip" | "delegated" | "done" | "fail"
   v: "pass" | "fail" | "pending"
@@ -15,6 +26,29 @@ export interface Unit {
   note?: string
   w: string | null
   rej: Rejection[]
+  /** Capability tier the delegated worker ran at. Audit evidence, not a mechanical gate. */
+  tier?: Tier
+  route_reason?: string
+  /** Append-only delegation history. Optional: ledgers written before v0.3.1 lack it. */
+  delegations?: Delegation[]
+}
+
+/** A single classified review finding. Shared with normalize_review output. */
+export interface ReviewFinding {
+  severity: "critical" | "high" | "medium" | "low"
+  file: string
+  line: string
+  description: string
+  classification?: "confirmed" | "rejected" | "unverified"
+}
+
+/** A durable record of an advisor review at a phase checkpoint. */
+export interface PhaseReview {
+  advisor: string
+  ts: string
+  findings: ReviewFinding[]
+  packet_hash?: string
+  tokens?: number
 }
 
 export interface Phase {
@@ -22,6 +56,8 @@ export interface Phase {
   g: "pass" | "fail" | "pending"
   scope?: PhaseScope
   units: Record<string, Unit>
+  /** Durable advisor reviews recorded at checkpoints. Optional: absent on pre-v0.3.1 ledgers. */
+  reviews?: PhaseReview[]
 }
 
 export interface PhaseScope {
@@ -45,6 +81,8 @@ const SetUnitStatusInput = z.object({
   data: z.object({
     s: z.enum(["pending", "ip", "delegated", "done", "fail"]),
     brief: z.string().max(50000).optional(),
+    tier: z.enum(["cheap", "standard", "premium"]).optional(),
+    route_reason: z.string().max(2000).optional(),
   }),
 })
 
@@ -91,12 +129,32 @@ const SetPhaseScopeInput = z.object({
   data: PhaseScopeSchema,
 })
 
+const ReviewFindingSchema = z.object({
+  severity: z.enum(["critical", "high", "medium", "low"]),
+  file: z.string().max(4096),
+  line: z.string().max(20),
+  description: z.string().max(10000),
+  classification: z.enum(["confirmed", "rejected", "unverified"]).optional(),
+})
+
+const RecordReviewInput = z.object({
+  operation: z.literal("record_review"),
+  phase: z.string().max(10000),
+  data: z.object({
+    advisor: z.string().max(200),
+    findings: z.array(ReviewFindingSchema).max(100),
+    packet_hash: z.string().max(200).optional(),
+    tokens: z.number().min(0).optional(),
+  }),
+})
+
 export const WriteLedgerInputSchema = z.discriminatedUnion("operation", [
   SetUnitStatusInput,
   SetVerdictInput,
   AddRejectionInput,
   UpdatePhaseGateInput,
   SetPhaseScopeInput,
+  RecordReviewInput,
 ])
 
 export type WriteLedgerInput = z.infer<typeof WriteLedgerInputSchema>
@@ -104,7 +162,7 @@ export type WriteLedgerInput = z.infer<typeof WriteLedgerInputSchema>
 export const ReadLedgerInputSchema = z.object({
   unit_id: z.string().max(10000).optional(),
   phase: z.string().max(10000).optional(),
-  query: z.enum(["verdicts", "rejections", "phase_gates", "full"]).optional(),
+  query: z.enum(["verdicts", "rejections", "phase_gates", "reviews", "full"]).optional(),
 })
 
 export type ReadLedgerInput = z.infer<typeof ReadLedgerInputSchema>

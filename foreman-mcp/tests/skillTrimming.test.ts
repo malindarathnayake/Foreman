@@ -113,7 +113,10 @@ describe("skillTrimming — implementor", () => {
     const content = await readSkill("implementor.md")
     const lines = lineCount(content)
     expect(lines).toBeGreaterThanOrEqual(180)
-    expect(lines).toBeLessThanOrEqual(240)
+    // ceiling raised 240 -> 248 in v0.3.1: the implementor protocol gained cost-tier
+    // delegation (tier + route_reason), the guarded tier-escalation rule, and the
+    // record_review checkpoint step. Still a lean-skill guardrail against bloat.
+    expect(lines).toBeLessThanOrEqual(248)
   })
 
   it("self-referential boilerplate and disableSlashCommand are removed", async () => {

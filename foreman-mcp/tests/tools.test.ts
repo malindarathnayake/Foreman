@@ -48,9 +48,9 @@ afterEach(async () => {
 })
 
 describe("bundleStatus", () => {
-  it("returns TOON output containing bundle_version: 0.3.0", async () => {
+  it("returns TOON output containing bundle_version: 0.4.0", async () => {
     const result = await bundleStatus()
-    expect(result).toContain("bundle_version: 0.3.0")
+    expect(result).toContain("bundle_version: 0.4.0")
   })
 
   it("returns output containing compatible: true", async () => {
@@ -129,7 +129,7 @@ describe("handleReadLedger", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "Worker brief: implement unit u1 types and constants per spec" },
+      data: { s: "delegated", brief: "Worker brief: implement unit u1 types and constants per spec", tier: "standard", route_reason: "default sonnet worker" },
     })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",
@@ -139,10 +139,11 @@ describe("handleReadLedger", () => {
     })
 
     const result = await handleReadLedger(ledgerPath, { query: "verdicts" })
-    expect(result).toContain("phase | unit | verdict | via | note")
+    expect(result).toContain("phase | unit | tier | verdict | via | note")
     expect(result).toContain("p1")
     expect(result).toContain("u1")
     expect(result).toContain("pass")
+    expect(result).toContain("standard")
   })
 
   it("verdicts table includes via and note values when present", async () => {
@@ -162,6 +163,32 @@ describe("handleReadLedger", () => {
     const result = await handleReadLedger(ledgerPath, { query: "verdicts" })
     expect(result).toContain("worker")
     expect(result).toContain("manual smoke: ran CLI against fixture")
+  })
+
+  it("single-unit view includes tier, route_reason, and delegation count", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "Worker brief for unit u1 implementation work", tier: "cheap", route_reason: "mechanical rename" },
+    })
+    const result = await handleReadLedger(ledgerPath, { phase: "p1", unit_id: "u1" })
+    expect(result).toContain("tier: cheap")
+    expect(result).toContain("route_reason: mechanical rename")
+    expect(result).toContain("delegations: 1")
+  })
+
+  it("returns reviews table for query: reviews", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "record_review",
+      phase: "p1",
+      data: { advisor: "gemini", findings: [{ severity: "high", file: "a.ts", line: "10", description: "boom", classification: "confirmed" }] },
+    })
+    const result = await handleReadLedger(ledgerPath, { query: "reviews" })
+    expect(result).toContain("phase | advisor | severity | class | finding")
+    expect(result).toContain("gemini")
+    expect(result).toContain("confirmed")
+    expect(result).toContain("boom")
   })
 
   it("single-unit view includes via and note", async () => {

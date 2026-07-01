@@ -57,7 +57,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   const host: HostId = config?.host ?? "claude-code"
 
   const server = new McpServer(
-    { name: "foreman", version: "0.3.0" },
+    { name: "foreman", version: "0.4.0" },
     { capabilities: { resources: {}, tools: {} } }
   )
 
@@ -104,7 +104,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       inputSchema: {
         unit_id: z.string().max(10000).optional(),
         phase: z.string().max(10000).optional(),
-        query: z.enum(["verdicts", "rejections", "phase_gates", "full"]).optional(),
+        query: z.enum(["verdicts", "rejections", "phase_gates", "reviews", "full"]).optional(),
       },
     },
     async (args, _extra) => {
@@ -191,14 +191,15 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "Writes an operation to the Foreman ledger file.",
         "",
         "Operations:",
-        "  set_unit_status — Set a unit's status. data: { s: 'pending'|'ip'|'delegated'|'done'|'fail', brief?: string }. Requires: phase, unit_id. s:'delegated' requires a 'brief' (min 20 chars) summarizing the worker brief.",
+        "  set_unit_status — Set a unit's status. data: { s: 'pending'|'ip'|'delegated'|'done'|'fail', brief?: string, tier?: 'cheap'|'standard'|'premium', route_reason?: string }. Requires: phase, unit_id. s:'delegated' requires a 'brief' (min 20 chars); tier + route_reason are optional cost-tier audit evidence recorded on the delegation (and appended to the unit's delegation history).",
         "  set_verdict     — Record pass/fail verdict. data: { v: 'pass'|'fail'|'pending', via?, note? }. Requires: phase, unit_id. v:'pass' is blocked unless the unit was first set to s:'delegated' with a brief; if phase scope declares has_tests:false or has_build:false, a non-empty attestation 'note' is also required.",
         "  add_rejection   — Log a rejection. data: { r: string, msg: string, ts: string }. Requires: phase, unit_id.",
         "  update_phase_gate — Set phase gate result. data: { g: 'pass'|'fail'|'pending' }. Requires: phase. g:'pass' is blocked unless every unit in the phase has verdict 'pass'.",
         "  set_phase_scope — Declare phase scope for gate applicability. data: { has_tests, has_api, has_build: boolean }. Requires: phase.",
+        "  record_review   — Record a durable advisor review at a checkpoint. data: { advisor: string, findings: Array<{ severity, file, line, description, classification? }>, packet_hash?, tokens? }. Requires: phase.",
       ].join("\n"),
       inputSchema: {
-        operation: z.enum(["set_unit_status", "set_verdict", "add_rejection", "update_phase_gate", "set_phase_scope"]),
+        operation: z.enum(["set_unit_status", "set_verdict", "add_rejection", "update_phase_gate", "set_phase_scope", "record_review"]),
         unit_id: z.string().max(10000).optional(),
         phase: z.string().max(10000).optional(),
         data: z.record(z.unknown()),

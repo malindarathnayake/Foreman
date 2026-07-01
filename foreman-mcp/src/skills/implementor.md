@@ -91,10 +91,11 @@ Anti-pattern: *"I read Unit X's directive section carefully."* The spec is a gra
 
 ### Step 5: Spawn Sonnet Worker
 
-Record the delegation in the ledger BEFORE spawning. This is mechanically enforced — a `pass` verdict is rejected unless the unit was first set to `delegated` with a brief:
+Record the delegation in the ledger BEFORE spawning. This is mechanically enforced — a `pass` verdict is rejected unless the unit was first set to `delegated` with a brief. Also record the cost `tier` the worker runs at and a short `route_reason` — audit evidence, not a gate:
 ```
-mcp__foreman__write_ledger({ operation: "set_unit_status", phase, unit_id, data: { s: "delegated", brief: "<1-3 line summary of the worker brief>" } })
+mcp__foreman__write_ledger({ operation: "set_unit_status", phase, unit_id, data: { s: "delegated", brief: "<1-3 line summary of the worker brief>", tier: "standard", route_reason: "<why this tier fits this unit>" } })
 ```
+Tiers: `cheap` (mechanical, fully-specified change), `standard` (default Sonnet worker), `premium` (subtle or high-risk unit escalated to a stronger model). Each (re-)delegation is appended to the unit's `delegations[]` history, so the tier choice and reason survive the brief overwrite on fix attempts.
 
 {{worker_invoke}}
 - Worker sees ONLY: its brief, the BEFORE/AFTER excerpts you include, and its own tool calls
@@ -140,9 +141,12 @@ mcp__foreman__write_progress({ operation: "log_error", data: { date, unit, what_
 ## Files to Fix — path + specific change required
 ## Files to Leave Alone — explicit list
 ## Previous Attempts — pulled from ledger rejection history
+## Tier + Route Reason — tier for this attempt + why (see escalation rule below)
 ## Test Command — exact command
 ## Inner Loop Rules — compile fixes OK (max 2), spec issues return immediately
 ```
+
+**Guarded tier escalation:** A repeated failure signals spec/brief ambiguity, not insufficient model horsepower. Do NOT bump a fix worker to a higher `tier` on an unchanged brief. Escalate the tier (e.g. `standard` → `premium`) ONLY when the re-delegation's `route_reason` cites a concrete brief refinement (missing context now added) or an advisor diagnosis of the failure. Record tier + route_reason on the `delegated` write so the escalation is auditable in `delegations[]`.
 
 After 3 outer-loop failures: STOP. Escalate to user with full rejection history from ledger.
 
@@ -202,7 +206,8 @@ At phase end, after all five gates pass:
 
 4. `mcp__foreman__normalize_review` — parse review output into structured findings
 5. Classify each finding: CONFIRMED / REJECTED / UNVERIFIED
-6. If no CLIs available: ask user "Independent review unavailable. Proceed with pit-boss gates only? [y/N]"
+6. Persist the review durably — `mcp__foreman__write_ledger({ operation: "record_review", phase, data: { advisor, findings: [{ severity, file, line, description, classification }] } })`. Use lowercase classification (`confirmed` / `rejected` / `unverified`). Survives the session; retrievable via `read_ledger({ query: "reviews" })`.
+7. If no CLIs available: ask user "Independent review unavailable. Proceed with pit-boss gates only? [y/N]"
 
 **3. Persist State:**
 ```

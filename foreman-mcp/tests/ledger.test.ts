@@ -344,6 +344,112 @@ describe("ledger", () => {
   })
 })
 
+describe("ledger v0.3.1 tier telemetry + reviews", () => {
+  const brief = "Worker brief: implement unit per spec (>= 20 chars)"
+
+  it("records tier + route_reason on delegation and appends a delegation entry", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief, tier: "premium", route_reason: "subtle concurrency unit" },
+    })
+    const unit = (await readLedger(ledgerPath)).phases.p1.units.u1
+    expect(unit.tier).toBe("premium")
+    expect(unit.route_reason).toBe("subtle concurrency unit")
+    expect(unit.delegations).toHaveLength(1)
+    expect(unit.delegations![0].attempt).toBe(1)
+    expect(unit.delegations![0].tier).toBe("premium")
+    expect(unit.delegations![0].brief).toBe(brief)
+    expect(typeof unit.delegations![0].ts).toBe("string")
+  })
+
+  it("re-delegation appends history, monotonic attempt, latest tier + brief win", async () => {
+    for (let i = 0; i < 3; i++) {
+      await writeLedger(ledgerPath, {
+        operation: "set_unit_status",
+        phase: "p1",
+        unit_id: "u1",
+        data: { s: "delegated", brief: `${brief} attempt ${i}`, tier: i < 2 ? "standard" : "premium" },
+      })
+    }
+    const unit = (await readLedger(ledgerPath)).phases.p1.units.u1
+    expect(unit.delegations!.map((d) => d.attempt)).toEqual([1, 2, 3])
+    expect(unit.tier).toBe("premium")
+    expect(unit.w).toContain("attempt 2")
+  })
+
+  it("caps delegations at 20 but keeps attempt monotonic across the slice", async () => {
+    for (let i = 0; i < 25; i++) {
+      await writeLedger(ledgerPath, {
+        operation: "set_unit_status",
+        phase: "p1",
+        unit_id: "u1",
+        data: { s: "delegated", brief: `${brief} #${i}`, tier: "cheap" },
+      })
+    }
+    const dels = (await readLedger(ledgerPath)).phases.p1.units.u1.delegations!
+    expect(dels).toHaveLength(20)
+    expect(dels[dels.length - 1].attempt).toBe(25) // not reset to 20 after cap
+    expect(dels[0].attempt).toBe(6)
+  })
+
+  it("re-delegating an old on-disk unit with no delegations field does not throw", async () => {
+    const legacy = {
+      v: 1,
+      ts: "2026-01-01T00:00:00.000Z",
+      phases: { p1: { s: "ip", g: "pending", units: { u1: { s: "done", v: "pass", w: "old brief", rej: [] } } } },
+    }
+    await fs.writeFile(ledgerPath, JSON.stringify(legacy), "utf-8")
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief, tier: "standard" },
+    })
+    const unit = (await readLedger(ledgerPath)).phases.p1.units.u1
+    expect(unit.delegations).toHaveLength(1)
+    expect(unit.delegations![0].attempt).toBe(1)
+  })
+
+  it("record_review persists findings under phase.reviews with a server timestamp", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "record_review",
+      phase: "p1",
+      data: {
+        advisor: "codex",
+        findings: [
+          { severity: "high", file: "ledger.ts", line: "115", description: "overwrite bug", classification: "confirmed" },
+          { severity: "low", file: "x.ts", line: "1", description: "nit", classification: "rejected" },
+        ],
+      },
+    })
+    const reviews = (await readLedger(ledgerPath)).phases.p1.reviews!
+    expect(reviews).toHaveLength(1)
+    expect(reviews[0].advisor).toBe("codex")
+    expect(reviews[0].findings).toHaveLength(2)
+    expect(reviews[0].findings[0].classification).toBe("confirmed")
+    expect(typeof reviews[0].ts).toBe("string")
+  })
+
+  it("caps reviews at 20", async () => {
+    for (let i = 0; i < 25; i++) {
+      await writeLedger(ledgerPath, {
+        operation: "record_review",
+        phase: "p1",
+        data: { advisor: `a${i}`, findings: [] },
+      })
+    }
+    expect((await readLedger(ledgerPath)).phases.p1.reviews).toHaveLength(20)
+  })
+
+  it("rejects an unknown ledger operation at the applyOperation exhaustiveness guard", async () => {
+    await expect(
+      writeLedger(ledgerPath, { operation: "bogus_op", phase: "p1", data: {} } as any)
+    ).rejects.toThrow(/unknown ledger operation/)
+  })
+})
+
 describe("ledger v0.0.7.5 backward compat", () => {
   it("reads an existing ledger without via/scope and returns fields as undefined", async () => {
     const legacy = {
@@ -365,6 +471,10 @@ describe("ledger v0.0.7.5 backward compat", () => {
     expect(ledger.phases.p1.scope).toBeUndefined()
     expect(ledger.phases.p1.units.u1.via).toBeUndefined()
     expect(ledger.phases.p1.units.u1.note).toBeUndefined()
+    // v0.3.1 fields are absent on ledgers written before they existed
+    expect(ledger.phases.p1.units.u1.tier).toBeUndefined()
+    expect(ledger.phases.p1.units.u1.delegations).toBeUndefined()
+    expect(ledger.phases.p1.reviews).toBeUndefined()
   })
 
   it("reads an existing ledger with scope on phase — returns scope populated", async () => {

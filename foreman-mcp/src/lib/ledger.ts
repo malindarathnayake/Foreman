@@ -112,7 +112,26 @@ async function applyOperation(ledger: LedgerFile, operation: WriteLedgerInput): 
             "do NOT write implementation code directly. Call mcp__foreman__pitboss_implementor to load the full protocol."
           )
         }
-        ledger.phases[phase].units[unit_id].w = data.brief
+        const unit = ledger.phases[phase].units[unit_id]
+        // `w` is the latest brief (the pass-gate reads it). tier/route_reason are audit evidence.
+        unit.w = data.brief
+        if (data.tier !== undefined) unit.tier = data.tier
+        if (data.route_reason !== undefined) unit.route_reason = data.route_reason
+        // Append-only history — survives the `w` overwrite when a fix worker re-delegates.
+        // Optional field: lazily created so units that never delegate stay lean, and old
+        // on-disk units (which bypass the new-unit initializer) are handled here.
+        unit.delegations ??= []
+        const lastAttempt = unit.delegations.length
+          ? unit.delegations[unit.delegations.length - 1].attempt
+          : 0
+        unit.delegations.push({
+          brief: data.brief,
+          tier: data.tier,
+          route_reason: data.route_reason,
+          ts: new Date().toISOString(),
+          attempt: lastAttempt + 1,   // monotonic even after the cap slice below
+        })
+        if (unit.delegations.length > 20) unit.delegations = unit.delegations.slice(-20)
       }
       ledger.phases[phase].units[unit_id].s = data.s
       break
@@ -223,6 +242,29 @@ async function applyOperation(ledger: LedgerFile, operation: WriteLedgerInput): 
       }
       ledger.phases[phase].scope = { ...data }
       return warning
+    }
+    case "record_review": {
+      const { phase, data } = operation
+      ensurePhase(ledger, phase)
+      const p = ledger.phases[phase]
+      // Optional field: lazily created (absent on pre-v0.3.1 phases loaded from disk).
+      p.reviews ??= []
+      p.reviews.push({
+        advisor: data.advisor,
+        ts: new Date().toISOString(),   // per-review timestamp, distinct from the file ts
+        findings: data.findings,
+        packet_hash: data.packet_hash,
+        tokens: data.tokens,
+      })
+      if (p.reviews.length > 20) p.reviews = p.reviews.slice(-20)
+      break
+    }
+    default: {
+      // Exhaustiveness guard: the switch has no implicit fallthrough safety, so a new
+      // WriteLedgerInput variant without a case would otherwise silently no-op. This makes
+      // TypeScript fail the build (never-assignment) and throws at runtime as a backstop.
+      const _exhaustive: never = operation
+      throw new Error(`unknown ledger operation: ${JSON.stringify(_exhaustive)}`)
     }
   }
   return undefined
