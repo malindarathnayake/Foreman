@@ -1,0 +1,103 @@
+name: Security
+
+on:
+  push:
+  pull_request:
+  schedule:
+    # Off the top of the hour — exact-hour crons (":00") are the most
+    # common schedule GitHub runners request, so they queue behind everyone
+    # else's and get load-shed more often. ":17" avoids that pile-up.
+    - cron: "17 5 * * 1"
+
+permissions:
+  # Default GITHUB_TOKEN permissions are broader than most jobs here need.
+  # Read-only is sufficient for audit and gitleaks; the codeql job below
+  # overrides this with the elevated permissions it specifically requires.
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Tags are mutable — a compromised action repo can re-point `v7` at a
+      # malicious commit, so a tag reference like `@v7` (the cheaper
+      # alternative) doesn't protect the supply chain. Immutable SHA pins
+      # do. The `# vX.Y.Z` suffix keeps each pin human-readable, and the
+      # dependabot `github-actions` ecosystem (added alongside this pin)
+      # keeps the SHAs current.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # No cache needed — `npm audit` only reads package-lock.json, it
+      # never installs anything, so there is no npm cache to warm.
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+
+      # prod-only scope avoids unfixable-dev-CVE fatigue — a full audit
+      # (the cheaper-to-write alternative) goes permanently red on
+      # dev-chain advisories with no upstream fix, training everyone to
+      # ignore the job; runtime supply chain is what ships.
+      - name: Audit production dependencies
+        working-directory: foreman-mcp
+        run: npm audit --omit=dev --audit-level=high
+
+  codeql:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      # Uploading SARIF results to the code scanning dashboard requires
+      # this write permission on the security-events API.
+      security-events: write
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # `security-extended` over the default suite — the default query
+      # pack misses lower-severity/precision queries that matter for a
+      # security-tooling product; we'd rather triage more findings than
+      # silently skip a class of them.
+      - uses: github/codeql-action/init@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
+        with:
+          languages: javascript-typescript
+          queries: security-extended
+
+      # NO paths-ignore anywhere in this job: the vendored
+      # foreman-mcp/vendor/ tree MUST stay covered (threat model:
+      # poisoned/silently-diverged vendored compressor). Excluding vendor
+      # directories is the common "cheaper" move for cutting scan noise,
+      # and exactly the wrong one here.
+      - uses: github/codeql-action/analyze@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
+
+  gitleaks:
+    runs-on: ubuntu-latest
+
+    steps:
+      # fetch-depth: 0 — full history. The weekly cron run scans all
+      # history; a shallow clone (the default) would silently reduce the
+      # scan surface to the last commit only.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      # The gitleaks-action requires a paid org license key and is
+      # tag-mutable; the MIT binary with an immutable sha256 pin is both
+      # free and supply-chain-safe. Version bumps are manual: update the
+      # URL and checksum together.
+      - name: Download gitleaks (pinned binary)
+        run: |
+          curl -sSL -o gitleaks.tar.gz https://github.com/gitleaks/gitleaks/releases/download/v8.30.1/gitleaks_8.30.1_linux_x64.tar.gz
+          echo "551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb  gitleaks.tar.gz" | sha256sum -c -
+          tar -xzf gitleaks.tar.gz gitleaks
+
+      # PR runs scan only the PR's commit range (fast, actionable blame);
+      # push/cron runs scan the full history so a secret that slipped
+      # through can't hide behind later commits.
+      - name: "Scan (PR: diff-scoped, otherwise: full history)"
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            ./gitleaks detect --source . --config .gitleaks.toml --log-opts "${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+          else
+            ./gitleaks detect --source . --config .gitleaks.toml
+          fi

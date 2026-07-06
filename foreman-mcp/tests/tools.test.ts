@@ -48,9 +48,11 @@ afterEach(async () => {
 })
 
 describe("bundleStatus", () => {
-  it("returns TOON output containing bundle_version: 0.4.0", async () => {
+  it("returns TOON output containing bundle_version matching package.json", async () => {
+    const pkgRaw = await fs.readFile(new URL("../package.json", import.meta.url), "utf-8")
+    const pkg = JSON.parse(pkgRaw) as { version: string }
     const result = await bundleStatus()
-    expect(result).toContain("bundle_version: 0.4.0")
+    expect(result).toContain(`bundle_version: ${pkg.version}`)
   })
 
   it("returns output containing compatible: true", async () => {

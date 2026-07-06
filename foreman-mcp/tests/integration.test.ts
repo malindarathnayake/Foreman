@@ -240,12 +240,14 @@ describe("bundle_status round-trip", () => {
     await setupServer()
   })
 
-  it("returns bundle_version 0.4.0", async () => {
+  it("returns bundle_version matching package.json", async () => {
+    const pkgRaw = await fs.readFile(new URL("../package.json", import.meta.url), "utf-8")
+    const pkg = JSON.parse(pkgRaw) as { version: string }
     const result = await client.callTool({ name: "bundle_status", arguments: {} })
     const content = result.content as Array<{ type: string; text: string }>
     expect(content[0].type).toBe("text")
     expect(content[0].text).toContain("bundle_version")
-    expect(content[0].text).toContain("0.4.0")
+    expect(content[0].text).toContain(pkg.version)
   })
 })
 

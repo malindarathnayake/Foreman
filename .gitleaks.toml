@@ -1,0 +1,16 @@
+# Gitleaks config — Foreman. Extends the default ruleset; the allowlist below is
+# the ONLY sanctioned place to suppress a finding.
+#
+# Allowlist policy (Foreman v0.5.0 unit 1e): entries are EXACT TOKENS from test
+# fixtures only — never patterns broad enough to mask a real credential, never
+# production values. Every entry MUST carry a provenance comment naming the
+# fixture file and why the string is token-shaped. There are currently no
+# entries: the repo was swept for token-shaped fixture strings on 2026-07-06
+# (gh/AWS/OpenAI/Slack/Google key shapes + PEM headers) and none exist.
+
+[extend]
+useDefault = true
+
+# [allowlist]
+# description = "exact test-fixture tokens only — see policy header"
+# regexes = []

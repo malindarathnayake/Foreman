@@ -11,7 +11,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { createServer } from "../src/server.js"
 import { runTests } from "../src/tools/runTests.js"
 import { invokeAdvisor } from "../src/tools/invokeAdvisor.js"
-import { dedupeMetaHead } from "../src/lib/compression.js"
+import { dedupeMetaHead, lossyGuardsReject, getStore, ccrTtlSeconds } from "../src/lib/compression.js"
 
 // Real run_tests compression of the multi-thousand-line SYNTHETIC_LOG takes a few seconds;
 // give this suite ample headroom over vitest's 5s default so it never flakes under CI/host load.
@@ -72,6 +72,55 @@ function buildSyntheticLog(): string {
 }
 
 const SYNTHETIC_LOG = buildSyntheticLog()
+
+// ---------------------------------------------------------------------------
+// Deterministic failure-output fixture for the S8 failure-output exemption
+// suite. Builds a synthetic exit_code/passed/timed_out/truncated meta head
+// followed by a repeated traceback block padded to at least minBodyChars.
+// ---------------------------------------------------------------------------
+function buildFailureOutput(exitCode: number, minBodyChars: number): string {
+  const block = [
+    "ERROR: TestSuite.test_connect failed with RuntimeError",
+    "FAILED: connection refused on 127.0.0.1:5432 after 3 retries",
+    "Traceback (most recent call last):",
+    '  File "/workspace/tests/test_db.py", line 88, in test_connect',
+    "    conn = db.connect(dsn, timeout=5)",
+    '  File "/workspace/src/db.py", line 44, in connect',
+    "    raise RuntimeError('connection refused')",
+    "RuntimeError: connection refused: postgresql://localhost:5432/mydb",
+  ].join("\n")
+  let body = ""
+  while (body.length < minBodyChars) body += block + "\n"
+  return `exit_code: ${exitCode}\npassed: false\ntimed_out: false\ntruncated: false\n\nSTDOUT\n${body}\n\nSTDERR\n`
+}
+
+// ---------------------------------------------------------------------------
+// Deterministic must-keep fixture (1c) — a compressible pytest-style log whose
+// five embedded irreplaceable tokens (hex id, path, CLI flag, CamelCase,
+// ALLCAPS constant) must survive log compression's line selection.
+// ---------------------------------------------------------------------------
+function buildMustKeepFixture(): string {
+  const lines: string[] = []
+  lines.push("============================= test session starts ==============================")
+  lines.push("collected 200 items")
+  lines.push("")
+  for (let i = 0; i < 160; i++) {
+    if (i === 30) lines.push("request trace deadbeef01 retried once and then settled quietly")
+    else if (i === 60) lines.push("slow module load observed importing src/lib/foo.ts during collection")
+    else if (i === 90) lines.push("deprecated invocation detected passing --flag to the harness binary")
+    else if (i === 120) lines.push("serializer emitted CamelCaseId during fixture setup without incident")
+    else if (i === 150) lines.push("upstream gateway answered HTTP_500 once and then recovered on retry")
+    else lines.push(`step ${i} of warmup completed without incident in module alpha`)
+  }
+  lines.push("FAILED tests/test_gateway.py::test_retry - AssertionError: retry budget exceeded")
+  lines.push("Traceback (most recent call last):")
+  lines.push('  File "/workspace/tests/test_gateway.py", line 12, in test_retry')
+  lines.push("    assert budget.remaining > 0")
+  lines.push("AssertionError: retry budget exceeded")
+  lines.push("")
+  lines.push("=== 1 failed, 199 passed in 3.21s ===")
+  return lines.join("\n")
+}
 
 // Sanity: the log must be ≥5000 lines and exceed 2048 bytes
 // (these are compile-time-ish invariants we can verify with a single assertion
@@ -345,6 +394,196 @@ describe("meta head preservation", () => {
 })
 
 // ---------------------------------------------------------------------------
+// Suite 5b — failure-output exemption (S8) — server-driven via mocked runTests
+// ---------------------------------------------------------------------------
+describe("failure-output exemption (S8)", () => {
+  beforeEach(async () => {
+    process.env.FOREMAN_COMPRESSION = "1"
+    await setupServer()
+  })
+
+  it("failed 4k-class output passes through verbatim", async () => {
+    const fixture = buildFailureOutput(1, 6500)
+    expect(fixture.length).toBeLessThanOrEqual(8192)
+    expect(fixture.length).toBeGreaterThanOrEqual(5000)
+
+    vi.mocked(runTests).mockResolvedValue(fixture)
+
+    const result = await client.callTool({
+      name: "run_tests",
+      arguments: { runner: "npm", args: [] },
+    })
+    const text = (result.content as any)[0].text as string
+
+    expect(text).toBe(fixture)
+    expect(text).not.toContain("<<ccr:")
+  })
+
+  it("same-size exit_code 0 output still compresses (proves exemption, not size, drove passthrough)", async () => {
+    const fixture = buildFailureOutput(0, 6500)
+    vi.mocked(runTests).mockResolvedValue(fixture)
+
+    const result = await client.callTool({
+      name: "run_tests",
+      arguments: { runner: "npm", args: [] },
+    })
+    const text = (result.content as any)[0].text as string
+
+    expect(text).toContain("<<ccr:")
+  })
+
+  it("failed 20k output still compresses", async () => {
+    const fixture = buildFailureOutput(1, 20000)
+    expect(fixture.length).toBeGreaterThan(8192)
+    vi.mocked(runTests).mockResolvedValue(fixture)
+
+    const result = await client.callTool({
+      name: "run_tests",
+      arguments: { runner: "npm", args: [] },
+    })
+    const text = (result.content as any)[0].text as string
+
+    expect(text).toContain("<<ccr:")
+    expect(text.startsWith("exit_code: 1")).toBe(true)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// CCR miss recovery (1b) — expired-hash retrieval names the originating tool
+// ---------------------------------------------------------------------------
+describe("CCR miss recovery (1b)", () => {
+  beforeEach(async () => {
+    process.env.FOREMAN_COMPRESSION = "1"
+    vi.mocked(runTests).mockResolvedValue(SYNTHETIC_LOG)
+    await setupServer()
+  })
+
+  it("expired-hash retrieval names the originating tool", async () => {
+    const result = await client.callTool({
+      name: "run_tests",
+      arguments: { runner: "npm", args: [] },
+    })
+    const text = (result.content as any)[0].text as string
+    const match = /<<ccr:([0-9a-f]{24})>>/.exec(text)
+    expect(match).not.toBeNull()
+    const hash = match![1]
+
+    // Simulate expiry via the vendor store's public API — reproduces exactly what the
+    // expiry sweep does (entry + stashed toolName gone) without any timing dependence.
+    getStore().clear()
+
+    const res = await client.callTool({
+      name: "retrieve_original",
+      arguments: { hash },
+    })
+    expect(res.isError).toBe(true)
+    const parsed = JSON.parse((res.content as any)[0].text)
+    expect(parsed).toEqual({ error: "ccr_missing_or_expired", hint: "expired — re-run run_tests to regenerate the output" })
+  })
+
+  it("unknown hash keeps the bare error", async () => {
+    const result = await client.callTool({
+      name: "run_tests",
+      arguments: { runner: "npm", args: [] },
+    })
+    const text = (result.content as any)[0].text as string
+    const match = /<<ccr:([0-9a-f]{24})>>/.exec(text)
+    expect(match).not.toBeNull()
+
+    getStore().clear()
+
+    const unknownHash = "f".repeat(24)
+    const res = await client.callTool({
+      name: "retrieve_original",
+      arguments: { hash: unknownHash },
+    })
+    expect(res.isError).toBe(true)
+    const parsed = JSON.parse((res.content as any)[0].text)
+    expect(parsed).toEqual({ error: "ccr_missing_or_expired", hash: unknownHash })
+  })
+
+  describe("ccrTtlSeconds", () => {
+    let savedTtl: string | undefined
+
+    beforeEach(() => {
+      savedTtl = process.env.CONTEXT_CRUSH_CCR_TTL_SECONDS
+    })
+
+    afterEach(() => {
+      if (savedTtl === undefined) {
+        delete process.env.CONTEXT_CRUSH_CCR_TTL_SECONDS
+      } else {
+        process.env.CONTEXT_CRUSH_CCR_TTL_SECONDS = savedTtl
+      }
+    })
+
+    it("env unset → 1800", () => {
+      delete process.env.CONTEXT_CRUSH_CCR_TTL_SECONDS
+      expect(ccrTtlSeconds()).toBe(1800)
+    })
+
+    it("env \"600\" → 600", () => {
+      process.env.CONTEXT_CRUSH_CCR_TTL_SECONDS = "600"
+      expect(ccrTtlSeconds()).toBe(600)
+    })
+
+    it("env \"0\" → 1800 (invalid: must be integer > 0)", () => {
+      process.env.CONTEXT_CRUSH_CCR_TTL_SECONDS = "0"
+      expect(ccrTtlSeconds()).toBe(1800)
+    })
+
+    it("env \"abc\" → 1800 (invalid: not a number)", () => {
+      process.env.CONTEXT_CRUSH_CCR_TTL_SECONDS = "abc"
+      expect(ccrTtlSeconds()).toBe(1800)
+    })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// S8 must-keep guard (1c) — irreplaceable tokens survive log compression
+// ---------------------------------------------------------------------------
+describe("S8 must-keep guard (1c) — irreplaceable tokens survive log compression", () => {
+  beforeEach(async () => {
+    process.env.FOREMAN_COMPRESSION = "1"
+    vi.mocked(runTests).mockResolvedValue(buildMustKeepFixture())
+    await setupServer()
+  })
+
+  it("compressible log keeps hex id, path, flag, CamelCase, and ALLCAPS tokens", async () => {
+    const result = await client.callTool({
+      name: "run_tests",
+      arguments: { runner: "npm", args: [] },
+    })
+    const text = (result.content as any)[0].text as string
+
+    expect(text).toContain("<<ccr:")
+    expect(text).toContain("deadbeef01")
+    expect(text).toContain("src/lib/foo.ts")
+    expect(text).toContain("--flag")
+    expect(text).toContain("CamelCaseId")
+    expect(text).toContain("HTTP_500")
+  })
+
+  it("must-keep digest still round-trips to the exact original", async () => {
+    const fixture = buildMustKeepFixture()
+    const result = await client.callTool({
+      name: "run_tests",
+      arguments: { runner: "npm", args: [] },
+    })
+    const text = (result.content as any)[0].text as string
+    const match = /<<ccr:([0-9a-f]{24})>>/.exec(text)
+    expect(match).not.toBeNull()
+    const hash = match![1]
+
+    const res = await client.callTool({
+      name: "retrieve_original",
+      arguments: { hash },
+    })
+    expect((res.content as any)[0].text).toBe(fixture)
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Suite 6 — advisor compression (0.2.2) — server-driven via mocked invokeAdvisor
 // ---------------------------------------------------------------------------
 describe("advisor compression (0.2.2)", () => {
@@ -496,7 +735,10 @@ describe("advisor compression (0.2.2)", () => {
 
     // Repeat the block enough times to exceed 3000 bytes and be highly compressible
     let dumpLines = ""
-    while (Buffer.byteLength(dumpLines, "utf8") < 5000) {
+    // ≥12000 so the formatted output exceeds FAILURE_OUTPUT_COMPRESS_MIN (8192) —
+    // the 1a failure exemption passes small failure dumps through verbatim;
+    // the ≤8192 verbatim path is covered by the failure-exemption suite.
+    while (Buffer.byteLength(dumpLines, "utf8") < 12000) {
       dumpLines += stackBlock + "\n"
     }
     const distinctiveLine = "ERROR: cleanup hook raised DatabaseError: relation 'sessions' does not exist"
@@ -589,5 +831,28 @@ describe("dedupeMetaHead", () => {
     expect(result).toBe(HEAD + "\n\n" + body)
     // exit_code: 0 appears twice: once in head, once in body
     expect((result.match(/exit_code: 0/g) || []).length).toBe(2)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Suite 8 — lossyGuardsReject (S8 guards) pure-function unit tests
+// ---------------------------------------------------------------------------
+describe("lossyGuardsReject (S8 guards)", () => {
+  it("compressed text with no marker → reject (synthetic lossy-no-marker result returns original)", () => {
+    expect(lossyGuardsReject("original body", "digest without any marker")).toBe(true)
+  })
+
+  it("empty compressed text from non-empty original → reject", () => {
+    expect(lossyGuardsReject("original body", "")).toBe(true)
+  })
+
+  it("whitespace-only compressed text from non-empty original → reject", () => {
+    expect(lossyGuardsReject("original body", "   \n\t  ")).toBe(true)
+  })
+
+  it("compressed text with a valid marker → accept (not rejected)", () => {
+    expect(
+      lossyGuardsReject("original body", "digest <<ccr:0123456789abcdef01234567>> tail")
+    ).toBe(false)
   })
 })

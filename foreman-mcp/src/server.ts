@@ -31,7 +31,7 @@ import { sessionOrient } from "./tools/sessionOrient.js"
 import { renderIncludes, loadSkill } from "./lib/skillLoader.js"
 import { hostStatus } from "./tools/hostStatus.js"
 import { type HostId, resolveHost, parseHostFlag, getProfile } from "./lib/hostProfiles.js"
-import { maybeCompress, compressionEnabled, getRetrieveOriginalTool } from "./lib/compression.js"
+import { maybeCompress, compressionEnabled, getRetrieveOriginalTool, toolNameForHash } from "./lib/compression.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -56,8 +56,13 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   const journalPath = config?.journalPath ?? "Docs/.foreman-journal.json"
   const host: HostId = config?.host ?? "claude-code"
 
+  // Version comes from package.json — the single source; releaseInvariants.test.ts
+  // pins package.json === server-reported === CHANGELOG (1g).
+  const pkgPath = path.resolve(__dirname, "..", "package.json")
+  const pkg = JSON.parse(await fs.readFile(pkgPath, "utf-8")) as { version: string }
+
   const server = new McpServer(
-    { name: "foreman", version: "0.4.0" },
+    { name: "foreman", version: pkg.version },
     { capabilities: { resources: {}, tools: {} } }
   )
 
@@ -328,6 +333,15 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         const result = tool.handler({ hash: args.hash })
         if ("original" in result) {
           return { content: [{ type: "text" as const, text: result.original }] }
+        }
+        // Expired-but-known marker: the store dropped the entry (and its stashed toolName),
+        // but the Foreman-side map still knows which tool produced it — name the recovery.
+        const originTool = toolNameForHash(args.hash)
+        if (originTool !== undefined) {
+          return {
+            content: [{ type: "text" as const, text: JSON.stringify({ error: "ccr_missing_or_expired", hint: `expired — re-run ${originTool} to regenerate the output` }) }],
+            isError: true,
+          }
         }
         return { content: [{ type: "text" as const, text: JSON.stringify(result) }], isError: true }
       }
@@ -666,13 +680,19 @@ async function runDiag(): Promise<void> {
 
 async function checkIsMain(): Promise<boolean> {
   if (process.argv[1] === undefined) return false
-  let resolved: string
-  try {
-    resolved = path.resolve(await fs.realpath(process.argv[1]))
-  } catch {
-    resolved = path.resolve(process.argv[1])
+  // Normalize BOTH sides identically: realpath expands symlinks (npm .bin shims)
+  // AND Windows 8.3 short names (e.g. MALIND~1). Realpath-ing only argv[1] (the
+  // old behavior) made the two sides diverge on short-name profiles/temp dirs —
+  // the server then exited 0 without serving, exactly the DOA class the publish
+  // smoke exists to catch.
+  const normalize = async (p: string): Promise<string> => {
+    try {
+      return path.resolve(await fs.realpath(p))
+    } catch {
+      return path.resolve(p)
+    }
   }
-  return resolved === path.resolve(fileURLToPath(import.meta.url))
+  return (await normalize(process.argv[1])) === (await normalize(fileURLToPath(import.meta.url)))
 }
 
 const isMain = await checkIsMain()

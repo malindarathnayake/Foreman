@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.0 - 2026-07-01
+
+- Cost-tier telemetry and durable review records: delegations record `tier` + `route_reason` (appended to per-unit `delegations[]` history); `record_review` persists advisor findings to the ledger, retrievable via `read_ledger({ query: "reviews" })`.
+- Relicensed from AGPL-3.0 to Apache-2.0 (2026-06-29).
+
+## 0.3.0 - 2026-06-14
+
+- New `preview_diagram` tool — live in-project Mermaid diagram workshop (23rd tool).
+
 ## 0.2.2 - 2026-06-13
 
 - Successful `invoke_advisor` output (prose) is no longer eligible for lossy log compression — previously a review quoting >=3 error lines was misrouted to the log compressor and silently lost its recommendations. Success now passes through; only **failed** advisor diagnostics are compressed (and recoverable via `retrieve_original`).

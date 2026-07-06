@@ -53,6 +53,13 @@ jobs:
           path: release-pkg/*.tgz
           retention-days: 30
 
+      # Same gate as ci.yml's publish-smoke job — duplicated deliberately: this
+      # workflow fires on tags and must not assume push/PR CI ran on the exact
+      # ref being published. Gate the publish itself.
+      - name: Publish smoke gate
+        working-directory: foreman-mcp
+        run: node scripts/publish-smoke.mjs
+
       - name: Publish to GitHub Packages
         if: startsWith(github.ref, 'refs/tags/v')
         working-directory: foreman-mcp
