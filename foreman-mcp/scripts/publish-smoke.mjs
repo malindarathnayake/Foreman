@@ -18,10 +18,12 @@
  * built is the one this release is supposed to ship. So this script does
  * the real thing: `npm pack` the package as it would actually be published,
  * `npm install` the resulting tarball into a scratch directory (a real
- * install — registry fetches and all), spawn the installed `dist/server.js`
- * with a scrubbed HOME/config environment (first-run conditions), and speak
- * real MCP JSON-RPC to it over stdio to confirm `tools/list` returns
- * exactly the tools this release is supposed to ship.
+ * install — registry fetches and all), spawn the installed `foreman-mcp`
+ * bin shim (the consumer entry path — this is what validates the
+ * `package.json#bin` mapping end-to-end, not just that `dist/server.js`
+ * happens to exist) with a scrubbed HOME/config environment (first-run
+ * conditions), and speak real MCP JSON-RPC to it over stdio to confirm
+ * `tools/list` returns exactly the tools this release is supposed to ship.
  *
  * Why EXPECTED_TOOLS is DUPLICATED here vs tests/integration.test.ts:
  * deliberate — dependency-freedom over DRY. This script must not import
@@ -105,17 +107,25 @@ function runCommand(command, args, options) {
 }
 
 /**
- * Spawn the installed server, speak the MCP handshake over stdio
- * (initialize -> notifications/initialized -> tools/list), and resolve
- * with both responses. Non-JSON stdout lines (banners, stray logs) are
- * ignored rather than treated as protocol errors.
+ * Spawn the installed `foreman-mcp` bin shim directly (not `node <script>`
+ * — the point is to exercise the same entry point a consumer's `npx
+ * foreman-mcp` or PATH lookup would hit), speak the MCP handshake over
+ * stdio (initialize -> notifications/initialized -> tools/list), and
+ * resolve with both responses. Non-JSON stdout lines (banners, stray logs)
+ * are ignored rather than treated as protocol errors.
  */
-function runToolsListCheck(entryPath, cwd, env) {
+function runToolsListCheck(shimPath, cwd, env) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [entryPath], {
+    // The .cmd shim npm generates on Windows requires shell:true to launch
+    // (node >=18.20 EINVALs a bare .cmd spawn without it) — same
+    // constraint as the npm.cmd calls in main(). No injection surface:
+    // shimPath is a fixed, program-computed path and no args are passed.
+    const useShell = process.platform === "win32"
+    const child = spawn(shimPath, [], {
       cwd,
       env,
       stdio: ["pipe", "pipe", "pipe"],
+      shell: useShell,
     })
 
     let settled = false
@@ -246,17 +256,22 @@ async function main() {
       shell: useShell,
     })
 
-    const installedEntry = path.join(
+    // The bin shim npm generates from package.json#bin — spawning this
+    // (not dist/server.js directly) is what catches a broken bin mapping,
+    // one of the npm-DOA failure modes this gate exists for.
+    const shimPath = path.join(
       installDir,
       "node_modules",
-      "@malindarathnayake",
-      "foreman-mcp",
-      "dist",
-      "server.js"
+      ".bin",
+      process.platform === "win32" ? "foreman-mcp.cmd" : "foreman-mcp"
     )
-    await access(installedEntry)
+    try {
+      await access(shimPath)
+    } catch {
+      throw new Error(`bin shim not found at ${shimPath} — broken package.json#bin?`)
+    }
 
-    log("spawning the installed server with a scrubbed HOME/config environment")
+    log("spawning the installed bin shim (consumer entry path) with a scrubbed HOME/config environment")
     const scrubbedHome = await mkdtemp(path.join(os.tmpdir(), "foreman-smoke-home-"))
     tempDirs.push(scrubbedHome)
     const runCwd = await mkdtemp(path.join(os.tmpdir(), "foreman-smoke-run-"))
@@ -278,7 +293,7 @@ async function main() {
     }
 
     log("speaking MCP JSON-RPC over stdio (initialize -> initialized -> tools/list)")
-    const { initializeResult, toolsListResult } = await runToolsListCheck(installedEntry, runCwd, childEnv)
+    const { initializeResult, toolsListResult } = await runToolsListCheck(shimPath, runCwd, childEnv)
 
     const version = initializeResult?.serverInfo?.version
     if (typeof version !== "string" || version.length === 0) {
