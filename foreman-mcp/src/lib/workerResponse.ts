@@ -338,7 +338,16 @@ function isProtectedPath(rawPath: string, docsDir: string): boolean {
   if (normalized === "..") return true
 
   const lowerNormalized = normalized.toLowerCase()
-  const lowerDocsDir = docsDir.replace(/\\/g, "/").replace(/^\/+/, "").replace(/\/+$/, "").toLowerCase()
+  // Slash-trimming is loop-based, not regex (`/^\/+/` / `/\/+$/`): anchored
+  // quantifiers backtrack polynomially and CodeQL flags them on config-sourced
+  // strings (js/polynomial-redos). Behavior is identical — strip ALL leading
+  // and trailing slashes.
+  let lowerDocsDir = docsDir.replace(/\\/g, "/").toLowerCase()
+  let start = 0
+  let end = lowerDocsDir.length
+  while (start < end && lowerDocsDir[start] === "/") start++
+  while (end > start && lowerDocsDir[end - 1] === "/") end--
+  lowerDocsDir = lowerDocsDir.slice(start, end)
   if (lowerDocsDir.length > 0 && (lowerNormalized === lowerDocsDir || lowerNormalized.startsWith(lowerDocsDir + "/"))) {
     return true
   }
