@@ -3,12 +3,15 @@ import fs from "fs/promises"
 import os from "os"
 import path from "path"
 import { handleWriteLedger } from "../src/tools/writeLedger.js"
+import { handleReadLedger } from "../src/tools/readLedger.js"
 import { handleWriteProgress, FENCE_START, FENCE_END } from "../src/tools/writeProgress.js"
 import { normalizeReview } from "../src/tools/normalizeReview.js"
 import { readLedger } from "../src/lib/ledger.js"
 import { readProgress } from "../src/lib/progress.js"
-import { NormalizeReviewInputSchema, WriteLedgerInputSchema, PhaseScopeSchema } from "../src/types.js"
+import { NormalizeReviewInputSchema, WriteLedgerInputSchema, PhaseScopeSchema, WriteJournalInputSchema, JournalEventCode } from "../src/types.js"
 import { detectTestFiles } from "../src/lib/detectTestFiles.js"
+import { atomicWriteFile } from "../src/lib/atomicWrite.js"
+import { maybeCompress, drainCcrStats } from "../src/lib/compression.js"
 
 let tmpDir: string
 let ledgerPath: string
@@ -25,6 +28,57 @@ afterEach(async () => {
 })
 
 // ─── handleWriteLedger ────────────────────────────────────────────────────────
+
+describe("handleWriteLedger — v0.3.1 tier telemetry + record_review (Zod path)", () => {
+  it("accepts and persists tier + route_reason on delegation", async () => {
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "Worker brief for u1 — implement per spec", tier: "premium", route_reason: "high-risk unit" },
+    })
+    const unit = (await readLedger(ledgerPath)).phases.p1.units.u1
+    expect(unit.tier).toBe("premium")
+    expect(unit.route_reason).toBe("high-risk unit")
+    expect(unit.delegations).toHaveLength(1)
+  })
+
+  it("rejects an invalid tier value at the Zod boundary", async () => {
+    await expect(
+      handleWriteLedger(ledgerPath, {
+        operation: "set_unit_status",
+        phase: "p1",
+        unit_id: "u1",
+        data: { s: "delegated", brief: "Worker brief for u1 — implement per spec", tier: "turbo" },
+      })
+    ).rejects.toThrow()
+  })
+
+  it("record_review round-trips findings through the Zod schema and handler", async () => {
+    const result = await handleWriteLedger(ledgerPath, {
+      operation: "record_review",
+      phase: "p1",
+      data: {
+        advisor: "codex",
+        findings: [{ severity: "high", file: "ledger.ts", line: "115", description: "overwrite", classification: "confirmed" }],
+      },
+    })
+    expect(result).toContain("status: ok")
+    expect(result).toContain("operation: record_review")
+    const reviews = (await readLedger(ledgerPath)).phases.p1.reviews!
+    expect(reviews).toHaveLength(1)
+    expect(reviews[0].findings[0].classification).toBe("confirmed")
+  })
+
+  it("WriteLedgerInputSchema parses a record_review operation", () => {
+    const parsed = WriteLedgerInputSchema.parse({
+      operation: "record_review",
+      phase: "p1",
+      data: { advisor: "gemini", findings: [] },
+    })
+    expect(parsed.operation).toBe("record_review")
+  })
+})
 
 describe("handleWriteLedger", () => {
   it("valid input → returns TOON confirmation with 'status: ok'", async () => {
@@ -830,4 +884,449 @@ describe("handleWriteLedger — set_phase_scope operation", () => {
 
     expect(warnings.filter(w => w.includes("has_tests: false declared")).length).toBe(0)
   })
+})
+
+// ─── 3a: v0.5.0 schema extensions ───
+
+describe("PhaseScopeSchema — v0.5.0 hot_path/security_boundary flags", () => {
+  it("accepts scope with hot_path and security_boundary present", () => {
+    const result = PhaseScopeSchema.safeParse({
+      has_tests: true,
+      has_api: false,
+      has_build: true,
+      hot_path: true,
+      security_boundary: true,
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("still accepts a scope WITHOUT the two flags (backward compat)", () => {
+    const result = PhaseScopeSchema.safeParse({
+      has_tests: true,
+      has_api: false,
+      has_build: true,
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("rejects non-boolean hot_path", () => {
+    const result = PhaseScopeSchema.safeParse({
+      has_tests: true,
+      has_api: false,
+      has_build: true,
+      hot_path: "yes",
+    })
+    expect(result.success).toBe(false)
+  })
+})
+
+describe("WriteLedgerInputSchema — update_phase_gate agent_class/user_override (anti-strip)", () => {
+  it("retains agent_class and user_override after parse", () => {
+    const parsed = WriteLedgerInputSchema.parse({
+      operation: "update_phase_gate",
+      phase: "p1",
+      data: { g: "pass", agent_class: "frontier", user_override: true },
+    })
+    expect(parsed.operation).toBe("update_phase_gate")
+    if (parsed.operation === "update_phase_gate") {
+      expect(parsed.data.agent_class).toBe("frontier")
+      expect(parsed.data.user_override).toBe(true)
+    }
+  })
+
+  it("rejects an invalid agent_class value", () => {
+    const result = WriteLedgerInputSchema.safeParse({
+      operation: "update_phase_gate",
+      phase: "p1",
+      data: { g: "pass", agent_class: "mega" },
+    })
+    expect(result.success).toBe(false)
+  })
+})
+
+describe("WriteLedgerInputSchema — set_verdict inconclusive", () => {
+  it("accepts v: 'inconclusive'", () => {
+    const result = WriteLedgerInputSchema.safeParse({
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "inconclusive" },
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("rejects v: 'maybe'", () => {
+    const result = WriteLedgerInputSchema.safeParse({
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "maybe" },
+    })
+    expect(result.success).toBe(false)
+  })
+})
+
+describe("WriteLedgerInputSchema — set_unit_status user_override (anti-strip)", () => {
+  it("retains data.user_override === true after parse", () => {
+    const parsed = WriteLedgerInputSchema.parse({
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: {
+        s: "delegated",
+        brief: "worker brief long enough to clear the 20 char minimum",
+        user_override: true,
+      },
+    })
+    expect(parsed.operation).toBe("set_unit_status")
+    if (parsed.operation === "set_unit_status") {
+      expect(parsed.data.user_override).toBe(true)
+    }
+  })
+})
+
+describe("JournalEventCode — v0.5.0 codes", () => {
+  it("accepts SEC_BLOCK", () => {
+    expect(JournalEventCode.safeParse("SEC_BLOCK").success).toBe(true)
+  })
+
+  it("accepts EGRESS_NOTICE", () => {
+    expect(JournalEventCode.safeParse("EGRESS_NOTICE").success).toBe(true)
+  })
+
+  it("rejects an unknown code", () => {
+    expect(JournalEventCode.safeParse("NOT_A_CODE").success).toBe(false)
+  })
+})
+
+describe("WriteJournalInputSchema — init_session agent_class/worker_class (R8)", () => {
+  it("accepts env with agent_class and worker_class", () => {
+    const result = WriteJournalInputSchema.safeParse({
+      operation: "init_session",
+      data: {
+        target_version: "0.5.0",
+        branch: "release/v0.5.0",
+        phase: 1,
+        units: ["u1", "u2"],
+        env: {
+          agent: "claude",
+          worker: "claude",
+          codex: null,
+          gemini: null,
+          agent_class: "frontier",
+          worker_class: "capable",
+        },
+      },
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it("rejects an invalid agent_class value", () => {
+    const result = WriteJournalInputSchema.safeParse({
+      operation: "init_session",
+      data: {
+        target_version: "0.5.0",
+        branch: "release/v0.5.0",
+        phase: 1,
+        units: ["u1", "u2"],
+        env: {
+          agent: "claude",
+          worker: "claude",
+          codex: null,
+          gemini: null,
+          agent_class: "gigantic",
+        },
+      },
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it("still accepts env WITHOUT the class fields (backward compat)", () => {
+    const result = WriteJournalInputSchema.safeParse({
+      operation: "init_session",
+      data: {
+        target_version: "0.5.0",
+        branch: "release/v0.5.0",
+        phase: 1,
+        units: ["u1", "u2"],
+        env: {
+          agent: "claude",
+          worker: "claude",
+          codex: null,
+          gemini: null,
+        },
+      },
+    })
+    expect(result.success).toBe(true)
+  })
+})
+
+// ─── handleWriteLedger — set_verdict inconclusive (D2d) end-to-end ───────────
+
+describe("handleWriteLedger — set_verdict inconclusive end-to-end", () => {
+  it("persists inconclusive and shows up in the read_ledger verdicts table", async () => {
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "inconclusive" },
+    })
+
+    const table = await handleReadLedger(ledgerPath, { query: "verdicts" })
+    expect(table).toContain("inconclusive")
+  })
+})
+
+// ─── 3e: atomicWriteFile helper (D2c) ───
+
+describe("atomicWriteFile", () => {
+  it("two concurrent writes to one path → final file is valid JSON matching one of the payloads", async () => {
+    const p = path.join(tmpDir, "concurrent.json")
+    const payloadA = JSON.stringify({ a: 1 })
+    const payloadB = JSON.stringify({ b: 2 })
+
+    await Promise.all([atomicWriteFile(p, payloadA), atomicWriteFile(p, payloadB)])
+
+    const content = await fs.readFile(p, "utf-8")
+    const parsed = JSON.parse(content)
+    expect([JSON.parse(payloadA), JSON.parse(payloadB)]).toContainEqual(parsed)
+  })
+
+  it("no tmp siblings left behind after several writes to the same path", async () => {
+    const p = path.join(tmpDir, "repeated.json")
+
+    for (let i = 0; i < 5; i++) {
+      await atomicWriteFile(p, JSON.stringify({ i }))
+    }
+
+    const siblings = await fs.readdir(tmpDir)
+    expect(siblings).toContain("repeated.json")
+    expect(siblings.filter((f) => f.includes(".tmp"))).toHaveLength(0)
+  })
+
+  it("scrub seam redacts content before write", async () => {
+    const p = path.join(tmpDir, "scrubbed.txt")
+
+    await atomicWriteFile(p, "hello SECRETVAL world", {
+      scrub: (s) => s.replaceAll("SECRETVAL", "[REDACTED]"),
+    })
+
+    const content = await fs.readFile(p, "utf-8")
+    expect(content).toContain("[REDACTED]")
+    expect(content).not.toContain("SECRETVAL")
+  })
+
+  it("rename failure cleans up the tmp file and rethrows", async () => {
+    const p = path.join(tmpDir, "target-is-dir")
+    await fs.mkdir(p)
+
+    await expect(atomicWriteFile(p, "x")).rejects.toThrow()
+
+    const siblings = await fs.readdir(tmpDir)
+    expect(siblings.filter((f) => f.includes(".tmp"))).toHaveLength(0)
+  })
+
+  it("write failure (ENOENT on tmp path) leaves no tmp orphan", async () => {
+    await expect(
+      atomicWriteFile(path.join(tmpDir, "nonexistent-subdir", "f.json"), "x")
+    ).rejects.toThrow()
+
+    const siblings = await fs.readdir(tmpDir)
+    expect(siblings.filter((f) => f.includes(".tmp"))).toHaveLength(0)
+  })
+
+  it("end-to-end regression guard: handleWriteLedger produces a parseable ledger with no tmp sibling", async () => {
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "done" },
+    })
+
+    const content = await fs.readFile(ledgerPath, "utf-8")
+    expect(() => JSON.parse(content)).not.toThrow()
+
+    const siblings = await fs.readdir(path.dirname(ledgerPath))
+    expect(siblings.filter((f) => f.includes(".tmp"))).toHaveLength(0)
+  })
+})
+
+// ─── ccr_stats fold (Unit 5b) ─────────────────────────────────────────────────
+
+describe("ccr_stats fold (5b)", () => {
+  let savedCompression: string | undefined
+
+  // Deterministic large fixture that reliably compresses via the log strategy —
+  // mirrors compression.test.ts's SYNTHETIC_LOG shape (mixed FAILED/ERROR/INFO/DEBUG/WARN
+  // lines) so maybeCompress("run_tests", ...) actually produces a smaller <<ccr:...>> digest.
+  function bigFixture(): string {
+    const lines: string[] = []
+    lines.push("============================= test session starts ==============================")
+    lines.push("platform linux -- Python 3.11.4, pytest-7.4.0, pluggy-1.2.0")
+    lines.push("rootdir: /workspace/project")
+    lines.push("collected 4950 items")
+    lines.push("")
+    lines.push("Traceback (most recent call last):")
+    lines.push("  File \"/workspace/project/tests/conftest.py\", line 42, in setup_module")
+    lines.push("    db.connect(timeout=5)")
+    lines.push("ConnectionError: database unavailable")
+
+    const failedIndices = new Set([100, 250, 500, 750, 1000, 1500, 2000, 2500, 3000, 3500])
+    const errorIndices = new Set([200, 600, 1200])
+
+    for (let i = 0; i < 5010; i++) {
+      if (failedIndices.has(i)) {
+        lines.push(`FAILED tests/test_foo.py::test_bar_${i} - AssertionError: expected True but got False`)
+      } else if (errorIndices.has(i)) {
+        lines.push(`ERROR tests/test_foo.py::test_setup_${i} - RuntimeError: fixture teardown failed at step ${i}`)
+      } else if (i % 7 === 0) {
+        lines.push(`INFO  [${i}] Running scenario ${i}: validating input schema for endpoint /api/v${i % 10}/resource`)
+      } else if (i % 11 === 0) {
+        lines.push(`DEBUG [${i}] Cache miss for key="item:${i}" — fetching from upstream service`)
+      } else if (i % 13 === 0) {
+        lines.push(`WARN  [${i}] Retry attempt ${(i % 3) + 1} for request id=${i * 7} after timeout`)
+      } else {
+        lines.push(`INFO  [${i}] test_module_${i % 50}.test_case_${i} PASSED in ${(i % 100) + 1}ms`)
+      }
+    }
+
+    lines.push("")
+    lines.push("=== 10 failed, 4940 passed in 12.34s ===")
+
+    return lines.join("\n")
+  }
+
+  beforeEach(() => {
+    savedCompression = process.env.FOREMAN_COMPRESSION
+    drainCcrStats() // flush anything left pending by another test file/suite
+  })
+
+  afterEach(() => {
+    if (savedCompression === undefined) {
+      delete process.env.FOREMAN_COMPRESSION
+    } else {
+      process.env.FOREMAN_COMPRESSION = savedCompression
+    }
+    drainCcrStats()
+  })
+
+  // Real compression of bigFixture (context-crush, not mocked) takes a few seconds —
+  // give these tests headroom over vitest's 5s default (mirrors compression.test.ts:18).
+  it("fold on write: handleWriteLedger persists the seeded accumulator into ledger.ccr_stats", async () => {
+    process.env.FOREMAN_COMPRESSION = "1"
+    const input = bigFixture()
+    const out = maybeCompress("run_tests", input)
+    expect(out).not.toBe(input) // confirm it actually compressed
+
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "ip" },
+    })
+
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.ccr_stats?.run_tests).toBeDefined()
+    expect(ledger.ccr_stats!.run_tests.calls).toBe(1)
+    expect(ledger.ccr_stats!.run_tests.tokens_before).toBeGreaterThan(ledger.ccr_stats!.run_tests.tokens_after)
+    expect(ledger.ccr_stats!.run_tests.tokens_after).toBeGreaterThan(0)
+  }, 30000)
+
+  it("read_ledger full surfaces ccr_stats", async () => {
+    process.env.FOREMAN_COMPRESSION = "1"
+    const input = bigFixture()
+    const out = maybeCompress("run_tests", input)
+    expect(out).not.toBe(input)
+
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "ip" },
+    })
+
+    const full = await handleReadLedger(ledgerPath, { query: "full" })
+    expect(full).toContain("ccr_stats")
+    expect(full).toContain("run_tests")
+  }, 30000)
+
+  it("no-pending write leaves ccr_stats untouched (no zero-entry creation, no growth)", async () => {
+    process.env.FOREMAN_COMPRESSION = "1"
+    const input = bigFixture()
+    const out = maybeCompress("run_tests", input)
+    expect(out).not.toBe(input)
+
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "ip" },
+    })
+    const afterFirst = (await readLedger(ledgerPath)).ccr_stats
+
+    // Nothing pending this time — foldCcrStats should no-op.
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u2",
+      data: { s: "ip" },
+    })
+    const afterSecond = (await readLedger(ledgerPath)).ccr_stats
+
+    expect(afterSecond).toEqual(afterFirst)
+  }, 30000)
+
+  it("accumulates across writes: calls:2 and sums increase", async () => {
+    process.env.FOREMAN_COMPRESSION = "1"
+    const input = bigFixture()
+
+    const out1 = maybeCompress("run_tests", input)
+    expect(out1).not.toBe(input)
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "ip" },
+    })
+    const afterFirst = (await readLedger(ledgerPath)).ccr_stats!.run_tests
+
+    const out2 = maybeCompress("run_tests", input)
+    expect(out2).not.toBe(input)
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u2",
+      data: { s: "ip" },
+    })
+    const afterSecond = (await readLedger(ledgerPath)).ccr_stats!.run_tests
+
+    expect(afterFirst.calls).toBe(1)
+    expect(afterSecond.calls).toBe(2)
+    expect(afterSecond.tokens_before).toBeGreaterThan(afterFirst.tokens_before)
+    expect(afterSecond.tokens_after).toBeGreaterThan(afterFirst.tokens_after)
+  }, 30000)
+
+  it("ccr_savings footer appears on delegation_metrics only when ccr_stats evidence exists", async () => {
+    process.env.FOREMAN_COMPRESSION = "1"
+    const input = bigFixture()
+    const out = maybeCompress("run_tests", input)
+    expect(out).not.toBe(input)
+
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "ip" },
+    })
+
+    const metrics = await handleReadLedger(ledgerPath, { query: "delegation_metrics" })
+    expect(metrics).toContain("sidecar: absent")
+    const lastLine = metrics.trimEnd().split("\n").pop() as string
+    expect(lastLine).toMatch(/^ccr_savings: \d+ tokens \(\d+->\d+, \d+ calls\)$/)
+
+    // Fresh ledger path, never written to — no ccr_stats, no footer.
+    const freshLedgerPath = path.join(tmpDir, "fresh-ledger.json")
+    const freshMetrics = await handleReadLedger(freshLedgerPath, { query: "delegation_metrics" })
+    expect(freshMetrics).not.toContain("ccr_savings")
+  }, 30000)
 })

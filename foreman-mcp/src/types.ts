@@ -6,15 +6,55 @@ export interface Rejection {
   r: string
   msg: string
   ts: string
+  /** Delegation attempt this rejection belongs to (stamped by add_rejection since v0.5.0). 0 = pre-delegation. Absent on legacy entries. */
+  attempt?: number
+}
+
+export type Tier = "cheap" | "standard" | "premium"
+
+/** One delegation attempt. Appended per (re-)delegation so retry history survives the `w` overwrite. */
+export interface Delegation {
+  brief: string
+  tier?: Tier
+  route_reason?: string
+  ts: string
+  attempt: number
+  /** True when the delegation-cap was overridden by explicit user approval (D2a). */
+  user_override?: boolean
 }
 
 export interface Unit {
   s: "pending" | "ip" | "delegated" | "done" | "fail"
-  v: "pass" | "fail" | "pending"
+  v: "pass" | "fail" | "pending" | "inconclusive"
+  /** ISO timestamp of the latest set_verdict (R1). Absent on ledgers written before v0.5.0. */
+  v_ts?: string
   via?: "worker" | "pitboss-direct" | "n/a"
   note?: string
   w: string | null
   rej: Rejection[]
+  /** Capability tier the delegated worker ran at. Audit evidence, not a mechanical gate. */
+  tier?: Tier
+  route_reason?: string
+  /** Append-only delegation history. Optional: ledgers written before v0.3.1 lack it. */
+  delegations?: Delegation[]
+}
+
+/** A single classified review finding. Shared with normalize_review output. */
+export interface ReviewFinding {
+  severity: "critical" | "high" | "medium" | "low"
+  file: string
+  line: string
+  description: string
+  classification?: "confirmed" | "rejected" | "unverified"
+}
+
+/** A durable record of an advisor review at a phase checkpoint. */
+export interface PhaseReview {
+  advisor: string
+  ts: string
+  findings: ReviewFinding[]
+  packet_hash?: string
+  tokens?: number
 }
 
 export interface Phase {
@@ -22,18 +62,27 @@ export interface Phase {
   g: "pass" | "fail" | "pending"
   scope?: PhaseScope
   units: Record<string, Unit>
+  /** Durable advisor reviews recorded at checkpoints. Optional: absent on pre-v0.3.1 ledgers. */
+  reviews?: PhaseReview[]
+  /** Snapshot hash of (unit id, verdict, v_ts) taken when the gate passed (D2b staleness detection). Absent pre-v0.5.0. */
+  gate_units_hash?: { hash: string; ts: string }
 }
 
 export interface PhaseScope {
   has_tests: boolean
   has_api: boolean
   has_build: boolean
+  /** D10/D13 proportionality flags — trigger the seat-minimum gate check (3f). Optional: absent on pre-v0.5.0 scopes. */
+  hot_path?: boolean
+  security_boundary?: boolean
 }
 
 export interface LedgerFile {
   v: number
   ts: string
   phases: Record<string, Phase>
+  /** CCR compression aggregate keyed by tool name (bounded: names come from the compression allowlist). Consumed by 5b. */
+  ccr_stats?: Record<string, { calls: number; tokens_before: number; tokens_after: number }>
 }
 
 // ─── Zod Schemas for MCP Tool Input Validation ───────────────────────────────
@@ -45,6 +94,9 @@ const SetUnitStatusInput = z.object({
   data: z.object({
     s: z.enum(["pending", "ip", "delegated", "done", "fail"]),
     brief: z.string().max(50000).optional(),
+    tier: z.enum(["cheap", "standard", "premium"]).optional(),
+    route_reason: z.string().max(2000).optional(),
+    user_override: z.boolean().optional(),
   }),
 })
 
@@ -53,7 +105,7 @@ const SetVerdictInput = z.object({
   unit_id: z.string().max(10000),
   phase: z.string().max(10000),
   data: z.object({
-    v: z.enum(["pass", "fail", "pending"]),
+    v: z.enum(["pass", "fail", "pending", "inconclusive"]),
     via: z.enum(["worker", "pitboss-direct", "n/a"]).optional(),
     note: z.string().max(10000).optional(),
   }),
@@ -76,6 +128,10 @@ const UpdatePhaseGateInput = z.object({
   unit_id: z.string().max(10000).optional(),
   data: z.object({
     g: z.enum(["pass", "fail", "pending"]),
+    // D13 seat-minimum inputs. These MUST be declared here: z.object strips unknown
+    // keys, so without them the gate handler could never see agent_class/user_override.
+    agent_class: z.enum(["frontier", "capable", "compact"]).optional(),
+    user_override: z.boolean().optional(),
   }),
 })
 
@@ -83,6 +139,8 @@ export const PhaseScopeSchema = z.object({
   has_tests: z.boolean(),
   has_api: z.boolean(),
   has_build: z.boolean(),
+  hot_path: z.boolean().optional(),
+  security_boundary: z.boolean().optional(),
 })
 
 const SetPhaseScopeInput = z.object({
@@ -91,12 +149,32 @@ const SetPhaseScopeInput = z.object({
   data: PhaseScopeSchema,
 })
 
+const ReviewFindingSchema = z.object({
+  severity: z.enum(["critical", "high", "medium", "low"]),
+  file: z.string().max(4096),
+  line: z.string().max(20),
+  description: z.string().max(10000),
+  classification: z.enum(["confirmed", "rejected", "unverified"]).optional(),
+})
+
+const RecordReviewInput = z.object({
+  operation: z.literal("record_review"),
+  phase: z.string().max(10000),
+  data: z.object({
+    advisor: z.string().max(200),
+    findings: z.array(ReviewFindingSchema).max(100),
+    packet_hash: z.string().max(200).optional(),
+    tokens: z.number().min(0).optional(),
+  }),
+})
+
 export const WriteLedgerInputSchema = z.discriminatedUnion("operation", [
   SetUnitStatusInput,
   SetVerdictInput,
   AddRejectionInput,
   UpdatePhaseGateInput,
   SetPhaseScopeInput,
+  RecordReviewInput,
 ])
 
 export type WriteLedgerInput = z.infer<typeof WriteLedgerInputSchema>
@@ -104,7 +182,7 @@ export type WriteLedgerInput = z.infer<typeof WriteLedgerInputSchema>
 export const ReadLedgerInputSchema = z.object({
   unit_id: z.string().max(10000).optional(),
   phase: z.string().max(10000).optional(),
-  query: z.enum(["verdicts", "rejections", "phase_gates", "full"]).optional(),
+  query: z.enum(["verdicts", "rejections", "phase_gates", "reviews", "full", "delegation_metrics"]).optional(),
 })
 
 export type ReadLedgerInput = z.infer<typeof ReadLedgerInputSchema>
@@ -220,6 +298,9 @@ export interface JournalEnv {
   worker: string
   codex: string | null
   gemini: string | null
+  /** R8: declared capability classes (additive, v0.5.0). */
+  agent_class?: "frontier" | "capable" | "compact"
+  worker_class?: "frontier" | "capable" | "compact"
 }
 
 export interface JournalEvent {
@@ -284,6 +365,7 @@ export const JournalEventCode = z.enum([
   "SPEC_AMB", "GATE_FIX", "TOOL_ERR",
   "USR_INT", "MODEL_DEG", "PERM_DENY",
   "HOOK_BLOCK", "DEP_MISS", "SCHEMA_DRIFT", "MERGE_CONF",
+  "SEC_BLOCK", "EGRESS_NOTICE",
 ])
 
 const InitSessionData = z.object({
@@ -296,6 +378,9 @@ const InitSessionData = z.object({
     worker: z.string().max(100),
     codex: z.string().max(50).nullable(),
     gemini: z.string().max(50).nullable(),
+    // R8: capability class per seat — declared, never self-assessed.
+    agent_class: z.enum(["frontier", "capable", "compact"]).optional(),
+    worker_class: z.enum(["frontier", "capable", "compact"]).optional(),
   }),
 })
 

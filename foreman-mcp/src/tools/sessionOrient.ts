@@ -1,7 +1,9 @@
-import { readLedgerWithStatus } from "../lib/ledger.js"
+import { computeGateUnitsHash, readLedgerWithStatus } from "../lib/ledger.js"
 import { readProgress } from "../lib/progress.js"
 import { toKeyValue } from "../lib/toon.js"
 import type { Phase, Unit } from "../types.js"
+import type { HostId } from "../lib/hostProfiles.js"
+import { unsupportedCapabilities } from "../lib/capabilitySet.js"
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -21,7 +23,8 @@ function unitHasActiveRejections(unit: Unit): boolean {
 
 export async function sessionOrient(
   ledgerPath: string,
-  progressPath: string
+  progressPath: string,
+  host: HostId = "claude-code"
 ): Promise<string> {
   const { ledger, corrupt } = await readLedgerWithStatus(ledgerPath, { readOnly: true })
   await readProgress(progressPath, { readOnly: true }) // read for spec compliance; unused in output this version
@@ -52,6 +55,8 @@ export async function sessionOrient(
       active_rejections: 0,
       phases_total: 0,
       phases_done: 0,
+      unsupported_capabilities: unsupportedCapabilities(host),
+      stale_gates: "none",
     })
   }
 
@@ -130,6 +135,13 @@ export async function sessionOrient(
     }
   }
 
+  // ── stale_gates: phases whose gate snapshot no longer matches their units (D2b) ──
+  const staleGates = phaseKeys.filter((key) => {
+    const phase = ledger.phases[key]
+    return phase.gate_units_hash !== undefined &&
+      computeGateUnitsHash(phase.units) !== phase.gate_units_hash.hash
+  })
+
   return toKeyValue({
     status,
     current_phase,
@@ -140,5 +152,7 @@ export async function sessionOrient(
     active_rejections,
     phases_total,
     phases_done,
+    unsupported_capabilities: unsupportedCapabilities(host),
+    stale_gates: staleGates.length === 0 ? "none" : staleGates.join(","),
   })
 }

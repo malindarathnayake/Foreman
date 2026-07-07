@@ -18,7 +18,10 @@ describe("skillTrimming — design-partner", () => {
     const content = await readSkill("design-partner.md")
     const lines = lineCount(content)
     expect(lines).toBeGreaterThanOrEqual(140)
-    expect(lines).toBeLessThanOrEqual(210)
+    // ceiling raised 210 -> 230 in v0.5.0 (R9): ethos upstream — tier declaration in
+    // scoping, threat-table/telemetry-contract requirements in synthesis, pillar-conflict
+    // recording.
+    expect(lines).toBeLessThanOrEqual(230)
   })
 
   it("self-referential boilerplate is removed", async () => {
@@ -106,6 +109,12 @@ describe("skillTrimming — design-partner", () => {
     expect(rendered).toContain("UNKNOWN:")
     expect(rendered).toContain("CRITICAL: Never write")
   })
+
+  it("engineering-ethos include is present exactly once", async () => {
+    const content = await readSkill("design-partner.md")
+    const count = content.split("{{include: engineering-ethos}}").length - 1
+    expect(count).toBe(1)
+  })
 })
 
 describe("skillTrimming — implementor", () => {
@@ -113,7 +122,14 @@ describe("skillTrimming — implementor", () => {
     const content = await readSkill("implementor.md")
     const lines = lineCount(content)
     expect(lines).toBeGreaterThanOrEqual(180)
-    expect(lines).toBeLessThanOrEqual(240)
+    // ceiling raised 240 -> 248 in v0.3.1: the implementor protocol gained cost-tier
+    // delegation (tier + route_reason), the guarded tier-escalation rule, and the
+    // record_review checkpoint step. Still a lean-skill guardrail against bloat.
+    // raised 248 -> 270 in v0.5.0 (R9): G6 Ethos Compliance gate + CWE-prefix rule +
+    // ethos brief/validation items.
+    // raised 270 -> 285 in v0.5.0 (R9): S7 invoke_worker protocol steps + per-path
+    // inner-loop table + redaction disclosure rule (unit 4h).
+    expect(lines).toBeLessThanOrEqual(285)
   })
 
   it("self-referential boilerplate and disableSlashCommand are removed", async () => {
@@ -332,6 +348,30 @@ describe("skillTrimming — implementor", () => {
     // The set_verdict operation line must be present with note
     expect(content).toMatch(/set_verdict.*note:/)
   })
+
+  it("engineering-ethos include is present exactly once", async () => {
+    const content = await readSkill("implementor.md")
+    const count = content.split("{{include: engineering-ethos}}").length - 1
+    expect(count).toBe(1)
+  })
+
+  it("G6 Ethos Compliance gate and CWE prefix rule are present", async () => {
+    const content = await readSkill("implementor.md")
+    expect(content).toContain("Ethos Compliance")
+    expect(content).toContain("[CWE-")
+  })
+
+  it("Seat Assists rule line and all 7 class markers are present, never frontier-keyed", async () => {
+    const content = await readSkill("implementor.md")
+    expect(content.toLowerCase()).toContain("when delegating to a `compact`-class worker")
+
+    const markers = Array.from(content.matchAll(/\{\{\s*class\s+([a-z|]+)\s*:\s*([A-Za-z0-9_-]+)\s*\}\}/g))
+    expect(markers.length).toBe(7)
+    for (const m of markers) {
+      const classList = m[1].split("|")
+      expect(classList).not.toContain("frontier")
+    }
+  })
 })
 
 describe("skillTrimming — _common-protocol", () => {
@@ -347,6 +387,7 @@ describe("skillTrimming — _common-protocol", () => {
     "context-budget",
     "no-test-attestation",
     "citation-verification",
+    "engineering-ethos",
   ]
 
   it("file exists and is non-empty (length > 500 chars)", async () => {
@@ -354,7 +395,7 @@ describe("skillTrimming — _common-protocol", () => {
     expect(content.length).toBeGreaterThan(500)
   })
 
-  it("each of the 11 section IDs appears as an opening marker exactly once", async () => {
+  it("each of the 12 section IDs appears as an opening marker exactly once", async () => {
     const content = await readSkill("_common-protocol.md")
     for (const id of SECTION_IDS) {
       const marker = `<!-- section: ${id} -->`
@@ -363,16 +404,16 @@ describe("skillTrimming — _common-protocol", () => {
     }
   })
 
-  it("total count of closing markers equals 11", async () => {
+  it("total count of closing markers equals 12", async () => {
     const content = await readSkill("_common-protocol.md")
     const closingCount = (content.match(/<!-- \/section -->/g) ?? []).length
-    expect(closingCount).toBe(11)
+    expect(closingCount).toBe(12)
   })
 
-  it("total count of opening markers equals 11 (no stray openings)", async () => {
+  it("total count of opening markers equals 12 (no stray openings)", async () => {
     const content = await readSkill("_common-protocol.md")
     const openingCount = (content.match(/<!-- section:/g) ?? []).length
-    expect(openingCount).toBe(11)
+    expect(openingCount).toBe(12)
   })
 
   it("body between each opening and closing marker is non-empty (> 20 chars after trim)", async () => {
@@ -423,6 +464,17 @@ describe("skillTrimming — _common-protocol", () => {
     expect(content).toContain("scope.has_tests")
     expect(content.toLowerCase()).toContain("imports")
   })
+
+  it("engineering-ethos section body mentions the ethos tool and the tier rule", async () => {
+    const content = await readSkill("_common-protocol.md")
+    const openMarker = "<!-- section: engineering-ethos -->"
+    const closeMarker = "<!-- /section -->"
+    const start = content.indexOf(openMarker) + openMarker.length
+    const end = content.indexOf(closeMarker, start)
+    const body = content.slice(start, end)
+    expect(body).toContain("ethos")
+    expect(body).toContain("declared, not inferred")
+  })
 })
 
 describe("skillTrimming — spec-generator", () => {
@@ -430,7 +482,9 @@ describe("skillTrimming — spec-generator", () => {
     const content = await readSkill("spec-generator.md")
     const lines = lineCount(content)
     expect(lines).toBeGreaterThanOrEqual(200)
-    expect(lines).toBeLessThanOrEqual(260)
+    // ceiling raised 260 -> 290 in v0.5.0 (R9): Engineering Ethos spec sections, ethos
+    // validation rows, G9 grounding check.
+    expect(lines).toBeLessThanOrEqual(290)
   })
 
   it("self-referential boilerplate is removed", async () => {
@@ -474,7 +528,7 @@ describe("skillTrimming — spec-generator", () => {
   it("Quality Checks checklist is preserved", async () => {
     const content = await readSkill("spec-generator.md")
     expect(content).toContain("## Quality Checks")
-    expect(content).toContain("G1-G8 grounding checks all completed")
+    expect(content).toContain("G1-G9 grounding checks all completed")
   })
 
   it("write_journal init_session call is preserved in Session Start (via include)", async () => {
@@ -546,6 +600,20 @@ describe("skillTrimming — spec-generator", () => {
     // uncertainty-protocol body
     expect(rendered).toContain("UNKNOWN:")
     expect(rendered).toContain("UNVERIFIED:")
+  })
+
+  it("engineering-ethos include is present exactly once", async () => {
+    const content = await readSkill("spec-generator.md")
+    const count = content.split("{{include: engineering-ethos}}").length - 1
+    expect(count).toBe(1)
+  })
+
+  it("Engineering Ethos spec sections and G9 grounding check are present", async () => {
+    const content = await readSkill("spec-generator.md")
+    expect(content).toContain("Performance Budgets")
+    expect(content).toContain("Threat Model")
+    expect(content).toContain("Telemetry Contract")
+    expect(content).toContain("### G9:")
   })
 })
 

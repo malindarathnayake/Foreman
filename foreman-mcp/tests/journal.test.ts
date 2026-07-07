@@ -240,7 +240,40 @@ describe("journal", () => {
       expect(validCodes).toContain("W_FAIL")
       expect(validCodes).toContain("W_REJ")
       expect(validCodes).toContain("CTX_OVF")
-      expect(validCodes.length).toBe(23)
+      // 3a: +SEC_BLOCK +EGRESS_NOTICE (R6)
+      expect(validCodes).toContain("SEC_BLOCK")
+      expect(validCodes).toContain("EGRESS_NOTICE")
+      expect(validCodes.length).toBe(25)
+    })
+  })
+
+  describe("initSession env capability classes (R8)", () => {
+    it("stores agent_class/worker_class when declared in env", async () => {
+      const journal = await initSession(
+        journalPath,
+        makeInitInput({ env: { agent: "opus", worker: "sonnet", codex: null, gemini: null, agent_class: "frontier", worker_class: "capable" } })
+      )
+      const session = journal.sessions[0] as any
+      expect(session.env.agent_class).toBe("frontier")
+      expect(session.env.worker_class).toBe("capable")
+    })
+
+    it("omits agent_class/worker_class keys entirely when not declared", async () => {
+      const journal = await initSession(journalPath, makeInitInput())
+      const session = journal.sessions[0] as any
+      expect(session.env).not.toHaveProperty("agent_class")
+      expect(session.env).not.toHaveProperty("worker_class")
+    })
+
+    it("persists agent_class/worker_class to disk — re-read journal reflects them on the last session", async () => {
+      await initSession(
+        journalPath,
+        makeInitInput({ env: { agent: "opus", worker: "sonnet", codex: null, gemini: null, agent_class: "frontier", worker_class: "capable" } })
+      )
+      const journal = await readJournal(journalPath)
+      const lastSession = journal.sessions[journal.sessions.length - 1] as any
+      expect(lastSession.env.agent_class).toBe("frontier")
+      expect(lastSession.env.worker_class).toBe("capable")
     })
   })
 })

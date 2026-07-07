@@ -93,21 +93,72 @@ describe("hostProfiles — getProfile", () => {
     expect(profile.placeholders.advisor_b).toContain("composer-2-fast")
   })
 
-  it("codex profile aliases claude-code placeholders", () => {
+  it("codex profile aliases claude-code placeholders except autonomy (DRAFT)", () => {
     const codex = getProfile("codex")
     const cc = getProfile("claude-code")
     expect(codex.id).toBe("codex")
-    expect(codex.placeholders).toEqual(cc.placeholders)
+    const sharedKeys = ["host_name", "worker_invoke", "advisor_a", "advisor_b", "advisor_fallback"]
+    for (const key of sharedKeys) {
+      expect(codex.placeholders[key]).toBe(cc.placeholders[key])
+    }
+    expect(codex.placeholders.autonomy).toContain("DRAFT")
+    expect(codex.placeholders.autonomy).not.toBe(cc.placeholders.autonomy)
   })
 
   it("every profile defines all canonical placeholder keys", () => {
-    const required = ["host_name", "worker_invoke", "advisor_a", "advisor_b", "advisor_fallback"]
+    const required = [
+      "host_name",
+      "worker_invoke",
+      "advisor_a",
+      "advisor_b",
+      "advisor_fallback",
+      "autonomy",
+    ]
     for (const id of KNOWN_HOSTS) {
       const profile = getProfile(id as HostId)
       for (const key of required) {
         expect(profile.placeholders[key], `${id}.${key}`).toBeDefined()
         expect(profile.placeholders[key].length, `${id}.${key} non-empty`).toBeGreaterThan(0)
       }
+    }
+  })
+
+  it("resolves generic host via flag and env", () => {
+    expect(resolveHost({ flag: "generic" })).toBe("generic")
+    expect(resolveHost({ env: "generic" })).toBe("generic")
+  })
+
+  it("returns generic profile speaking cost tiers, not model names", () => {
+    const profile = getProfile("generic")
+    expect(profile.id).toBe("generic")
+    expect(profile.placeholders.worker_invoke).toContain("tier `{tier}`")
+    expect(profile.placeholders.worker_invoke).toContain("HOST-CONTRACT.md")
+    expect(profile.placeholders.worker_invoke).toContain("invoke_worker")
+    expect(profile.placeholders.worker_invoke).not.toContain('model: "')
+    expect(profile.placeholders.advisor_a).not.toContain('model: "')
+    expect(profile.placeholders.advisor_b).not.toContain('model: "')
+  })
+
+  it("every host defines a non-empty autonomy placeholder", () => {
+    for (const id of KNOWN_HOSTS) {
+      const autonomy = getProfile(id as HostId).placeholders.autonomy
+      expect(autonomy, `${id}.autonomy`).toBeTypeOf("string")
+      expect(autonomy.length, `${id}.autonomy non-empty`).toBeGreaterThan(0)
+    }
+    expect(getProfile("generic").placeholders.autonomy).toContain("fails closed")
+    expect(getProfile("generic").placeholders.autonomy).toContain("session_orient")
+    expect(getProfile("claude-code").placeholders.autonomy).toContain("phase gate")
+  })
+
+  it("falls back to claude-code on unknown value and mentions generic in accepted list", () => {
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {})
+    try {
+      expect(resolveHost({ flag: "bogus2" })).toBe("claude-code")
+      expect(spy).toHaveBeenCalledOnce()
+      const msg = spy.mock.calls[0][0] as string
+      expect(msg).toContain("generic")
+    } finally {
+      spy.mockRestore()
     }
   })
 })

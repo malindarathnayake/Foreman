@@ -1,11 +1,9 @@
 import { toTable } from "../lib/toon.js"
+import type { ReviewFinding } from "../types.js"
 
-export interface ReviewFinding {
-  severity: "critical" | "high" | "medium" | "low"
-  file: string
-  line: string
-  description: string
-}
+// ReviewFinding is defined in types.ts (shared with the ledger's durable review records).
+// Re-exported here so existing importers of `normalizeReview` keep working.
+export type { ReviewFinding }
 
 export interface NormalizedReview {
   reviewer: string

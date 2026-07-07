@@ -1,8 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
-import { loadSkill, renderIncludes } from "../src/lib/skillLoader.js"
+import { loadSkill, renderIncludes, resolveAgentClass } from "../src/lib/skillLoader.js"
 
 let tmpDir: string
 let bundledDir: string
@@ -221,5 +221,120 @@ describe("loadSkill — includes", () => {
     } finally {
       process.chdir(originalCwd)
     }
+  })
+})
+
+// ── class fragments (S4-min) ────────────────────────────────────────────────
+
+describe("skillLoader class fragments (S4)", () => {
+  const REAL_SKILLS_DIR = path.join(__dirname, "..", "src", "skills")
+  let savedAgentClassEnv: string | undefined
+
+  beforeEach(() => {
+    savedAgentClassEnv = process.env.FOREMAN_AGENT_CLASS
+    delete process.env.FOREMAN_AGENT_CLASS
+  })
+
+  afterEach(() => {
+    if (savedAgentClassEnv === undefined) {
+      delete process.env.FOREMAN_AGENT_CLASS
+    } else {
+      process.env.FOREMAN_AGENT_CLASS = savedAgentClassEnv
+    }
+  })
+
+  // Seeds a fixture that mirrors the real bundled implementor.md + _assists.md
+  // under a name that can never collide with a real project/user override
+  // (project- and user-override lookups are keyed by skill name, so a name no
+  // real override folder uses keeps this test hermetic across machines).
+  async function seedImplementorFixture(): Promise<string> {
+    const skillName = "implementor-fixture"
+    const raw = await fs.readFile(path.join(REAL_SKILLS_DIR, "implementor.md"), "utf-8")
+    const assists = await fs.readFile(path.join(REAL_SKILLS_DIR, "_assists.md"), "utf-8")
+    await fs.writeFile(path.join(bundledDir, `${skillName}.md`), raw)
+    await fs.writeFile(path.join(bundledDir, "_assists.md"), assists)
+    return skillName
+  }
+
+  it("frontier default — zero residue", async () => {
+    const skillName = await seedImplementorFixture()
+    const result = await loadSkill(skillName, bundledDir)
+    expect(result.content).not.toContain("{{class")
+    expect(result.content).not.toContain("Tool-loop guard")
+    expect(result.content).not.toContain("Worked worker-brief exemplar")
+  })
+
+  it("compact — exemplar present", async () => {
+    const skillName = await seedImplementorFixture()
+    const result = await loadSkill(skillName, bundledDir, "claude-code", undefined, "compact")
+    expect(result.content).toContain("Worked worker-brief exemplar")
+    expect(result.content).toContain("Tool-loop guard")
+    expect(result.content).not.toContain("{{class")
+  })
+
+  it("capable — only compact|capable fragments", async () => {
+    const skillName = await seedImplementorFixture()
+    const result = await loadSkill(skillName, bundledDir, "claude-code", undefined, "capable")
+    expect(result.content).toContain("Tool-loop guard")
+    expect(result.content).toContain("Output-format guard")
+    expect(result.content).toContain("Patch-hygiene guard")
+    expect(result.content).not.toContain("Worked worker-brief exemplar")
+    expect(result.content).not.toContain("Completion-report schema")
+    expect(result.content).not.toContain("Verdict-note exemplar")
+    expect(result.content).not.toContain("Fix-brief exemplar")
+    expect(result.content).not.toContain("{{class")
+  })
+
+  it("resolveAgentClass matrix", () => {
+    expect(resolveAgentClass(undefined)).toBe("frontier")
+    expect(resolveAgentClass("compact")).toBe("compact")
+
+    const spy = vi.spyOn(console, "error").mockImplementation(() => {})
+    try {
+      expect(resolveAgentClass("bogus")).toBe("frontier")
+      expect(spy).toHaveBeenCalledOnce()
+      const msg = spy.mock.calls[0][0] as string
+      expect(msg).toContain("bogus")
+      expect(msg).toContain("frontier")
+    } finally {
+      spy.mockRestore()
+    }
+  })
+
+  it("missing _assists.md — compact yields file-missing placeholder, frontier fast path yields no residue", async () => {
+    await fs.writeFile(
+      path.join(bundledDir, "test-skill.md"),
+      "before\n{{class compact: tool-loop-guard}}\nafter"
+    )
+    // No _assists.md written.
+
+    const compactResult = await loadSkill("test-skill", bundledDir, "claude-code", undefined, "compact")
+    expect(compactResult.content).toContain("[[ASSISTS FILE MISSING]]")
+    expect(compactResult.content).not.toContain("{{class")
+    expect(compactResult.content).toContain("before")
+    expect(compactResult.content).toContain("after")
+
+    const frontierResult = await loadSkill("test-skill", bundledDir, "claude-code", undefined, "frontier")
+    expect(frontierResult.content).not.toContain("{{class")
+    expect(frontierResult.content).not.toContain("[[ASSISTS FILE MISSING]]")
+    expect(frontierResult.content).toContain("before")
+    expect(frontierResult.content).toContain("after")
+  })
+
+  it("unknown section id — replaces with [[MISSING ASSIST: id]]", async () => {
+    await fs.writeFile(
+      path.join(bundledDir, "_assists.md"),
+      "<!-- section: tool-loop-guard -->\nSTOP retry loops.\n<!-- /section -->"
+    )
+    await fs.writeFile(
+      path.join(bundledDir, "test-skill.md"),
+      "before\n{{class compact: nonexistent-id}}\nafter"
+    )
+
+    const result = await loadSkill("test-skill", bundledDir, "claude-code", undefined, "compact")
+    expect(result.content).toContain("[[MISSING ASSIST: nonexistent-id]]")
+    expect(result.content).not.toContain("{{class")
+    expect(result.content).toContain("before")
+    expect(result.content).toContain("after")
   })
 })

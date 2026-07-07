@@ -10,7 +10,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 let server: McpServer
 let client: Client
 
-async function setupServer(config?: { ledgerPath?: string; progressPath?: string; docsDir?: string }) {
+async function setupServer(config?: { ledgerPath?: string; progressPath?: string; docsDir?: string; host?: "claude-code" | "cursor" }) {
   server = await createServer(config)
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)
@@ -23,14 +23,14 @@ afterEach(async () => {
   await server?.close()
 })
 
-describe("list tools — verify all 23 present, update_bundle absent", () => {
+describe("list tools — verify all 25 present, update_bundle absent", () => {
   beforeEach(async () => {
     await setupServer()
   })
 
-  it("lists exactly 23 tools", async () => {
+  it("lists exactly 25 tools", async () => {
     const result = await client.listTools()
-    expect(result.tools).toHaveLength(23)
+    expect(result.tools).toHaveLength(25)
   })
 
   it("includes all required tool names", async () => {
@@ -39,6 +39,7 @@ describe("list tools — verify all 23 present, update_bundle absent", () => {
     expect(names).toContain("bundle_status")
     expect(names).toContain("host_status")
     expect(names).toContain("changelog")
+    expect(names).toContain("ethos")
     expect(names).toContain("read_ledger")
     expect(names).toContain("read_progress")
     expect(names).toContain("capability_check")
@@ -59,6 +60,18 @@ describe("list tools — verify all 23 present, update_bundle absent", () => {
     expect(names).toContain("session_orient")
     expect(names).toContain("retrieve_original")
     expect(names).toContain("preview_diagram")
+    expect(names).toContain("invoke_worker")
+  })
+
+  it("invoke_worker carries EXPERIMENTAL description and open-world annotation", async () => {
+    const result = await client.listTools()
+    const tool = result.tools.find((t) => t.name === "invoke_worker")
+    expect(tool).toBeDefined()
+    expect(tool!.description).toContain("EXPERIMENTAL")
+    expect(tool!.annotations?.title).toBe("Invoke Patch Worker (EXPERIMENTAL)")
+    expect(tool!.annotations?.readOnlyHint).toBe(false)
+    expect(tool!.annotations?.destructiveHint).toBe(false)
+    expect(tool!.annotations?.openWorldHint).toBe(true)
   })
 
   it("tool descriptions telegraph Foreman routing policy", async () => {
@@ -107,10 +120,61 @@ describe("list tools — verify all 23 present, update_bundle absent", () => {
     )
   })
 
+  it("ethos tool serves the doc with the stack section rendered", async () => {
+    const result = await client.callTool({ name: "ethos", arguments: {} })
+    const content = result.content as Array<{ type: string; text: string }>
+    expect(content).toHaveLength(1)
+    const text = content[0].text
+    expect(text).toContain("# Engineering Ethos")
+    expect(text).toContain("InfluxDB") // reference stack profile rendered in
+    expect(text).not.toContain("{{stack:") // no unrendered markers
+  })
+
   it("does not include update_bundle", async () => {
     const result = await client.listTools()
     const names = result.tools.map((t) => t.name)
     expect(names).not.toContain("update_bundle")
+  })
+
+  it("every tool carries annotations: title, boolean readOnlyHint, destructiveHint false", async () => {
+    const result = await client.listTools()
+    expect(result.tools.length).toBeGreaterThan(0)
+    for (const tool of result.tools) {
+      expect(tool.annotations?.title, `${tool.name} missing annotations.title`).toBeTruthy()
+      expect(typeof tool.annotations?.readOnlyHint, `${tool.name} readOnlyHint`).toBe("boolean")
+      expect(tool.annotations?.destructiveHint, `${tool.name} destructiveHint`).toBe(false)
+    }
+  })
+
+  it("read/write hints are correct on representative tools", async () => {
+    const result = await client.listTools()
+    const byName = new Map(result.tools.map((t) => [t.name, t]))
+    expect(byName.get("read_ledger")!.annotations!.readOnlyHint).toBe(true)
+    expect(byName.get("ethos")!.annotations!.readOnlyHint).toBe(true)
+    expect(byName.get("pitboss_implementor")!.annotations!.readOnlyHint).toBe(true)
+    expect(byName.get("write_ledger")!.annotations!.readOnlyHint).toBe(false)
+    expect(byName.get("run_tests")!.annotations!.readOnlyHint).toBe(false)
+    expect(byName.get("preview_diagram")!.annotations!.readOnlyHint).toBe(false)
+  })
+
+  it("capability_check description is host-rendered", async () => {
+    const result = await client.listTools()
+    const tool = result.tools.find((t) => t.name === "capability_check")!
+    expect(tool.description).toContain("auth_status")
+    expect(tool.description).not.toContain("Task subagent")
+  })
+})
+
+describe("capability_check description — cursor host", () => {
+  beforeEach(async () => {
+    await setupServer({ host: "cursor" })
+  })
+
+  it("renders the cursor-specific text", async () => {
+    const result = await client.listTools()
+    const tool = result.tools.find((t) => t.name === "capability_check")!
+    expect(tool.description).toContain("Task subagents")
+    expect(tool.description).not.toContain("auth_status taxonomy")
   })
 })
 
@@ -240,12 +304,14 @@ describe("bundle_status round-trip", () => {
     await setupServer()
   })
 
-  it("returns bundle_version 0.3.0", async () => {
+  it("returns bundle_version matching package.json", async () => {
+    const pkgRaw = await fs.readFile(new URL("../package.json", import.meta.url), "utf-8")
+    const pkg = JSON.parse(pkgRaw) as { version: string }
     const result = await client.callTool({ name: "bundle_status", arguments: {} })
     const content = result.content as Array<{ type: string; text: string }>
     expect(content[0].type).toBe("text")
     expect(content[0].text).toContain("bundle_version")
-    expect(content[0].text).toContain("0.3.0")
+    expect(content[0].text).toContain(pkg.version)
   })
 })
 
@@ -536,5 +602,6 @@ describe("set_phase_scope round-trip via MCP", () => {
     expect(operationSchema.enum).toContain("set_verdict")
     expect(operationSchema.enum).toContain("add_rejection")
     expect(operationSchema.enum).toContain("update_phase_gate")
+    expect(operationSchema.enum).toContain("record_review")
   })
 })

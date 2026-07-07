@@ -19,3 +19,15 @@ for (const f of ["template.html", "app.js", "style.css", "mermaid.min.js", "merm
   await access(path.join(destDir, f))
 }
 console.log(`[copy-assets] copied preview assets -> ${path.relative(process.cwd(), destDir)}`)
+
+const docsSrcDir = path.resolve(__dirname, "..", "src", "docs")
+const docsDestDir = path.resolve(__dirname, "..", "dist", "docs")
+
+await mkdir(docsDestDir, { recursive: true })
+await cp(docsSrcDir, docsDestDir, { recursive: true })
+
+// Sanity: confirm the bundled engineering-ethos doc landed.
+for (const f of ["engineering-ethos.md"]) {
+  await access(path.join(docsDestDir, f))
+}
+console.log(`[copy-assets] copied docs assets -> ${path.relative(process.cwd(), docsDestDir)}`)

@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.5.0 - 2026-07-06
+
+- S8 CCR hardening: failure-output exemption (≤8192-char failing output passes through verbatim), dead-marker/empty-output fail-open guards, miss-recovery (expired `<<ccr:HASH>>` retrieval names the originating tool), Foreman-side TTL default raised to 1800 s, vendored-fork SYNC.md with pinned upstream SHAs.
+- Release engineering: push/PR CI (`ci.yml`), security workflow trio (npm audit / CodeQL / gitleaks) + dependabot, SECURITY.md with private-vulnerability-reporting route, publish smoke gate spawns the installed bin shim, SHA-pinned actions everywhere.
+- Engineering ethos upstreamed: new `ethos` tool (24th) serving the bundled ethos doc with stack-profile sections; ethos content ported into the four protocol skills; project-level stack-profile override (`foreman-stack-profile.md`).
+- Host contract: `generic` host id, single capability-set module with `unsupported_capabilities:` echo in `host_status`/`session_orient`, HOST-CONTRACT.md six-capability contract, `capability_check` closed status taxonomy (`ok|not_found|not_trusted|auth_expired|probe_timeout|error`) with versioned sentinel table, MCP `readOnlyHint`/`destructiveHint`/`title` annotations on all tools.
+- Ledger enforcement pack: delegation cap (3 distinct rejected attempts, `user_override` escape), `inconclusive` verdict, attestation floor (5 words/32 chars), gate-staleness hash (`STALE` column + `stale_gates:` echo), atomic tmp-file writes with unique suffixes, D13 seat-minimum gate check, capability-class skill fragments (`FOREMAN_AGENT_CLASS`).
+- S7 EXPERIMENTAL `invoke_worker` (25th tool): brief → OpenAI-compatible endpoint → shape-checked patch; `.foremanenv` config with `${ENV:NAME}` indirection + refuse-if-git-tracked; secret redaction on all durable writes (`[REDACTED:env:NAME]` markers); hash-chained append-only events sidecar (`Docs/.foreman-events.jsonl`); ledger post-write hook closes delegation chains; 17-stage failure taxonomy + recovery playbook in HOST-CONTRACT.md.
+- S6 metrics: `read_ledger {query:"delegation_metrics"}` (survival-chain rates with explicit denominators, refund split, per-tier scorecard, drift warnings) and `ccr_stats` token-savings evidence folded into the ledger with a `ccr_savings:` footer; paired compression evidence run executed (advisory, never CI).
+- `llms.txt` onboarding packet at repo root; README v0.5.0 funnel (host matrix, when-to-skip, migration note).
+- Deliberated out of this release and banked for v0.6: the `invoke_worker` repair round (one release of one-shot failure-stage telemetry derives the repair trigger rules first), host-autonomy integration, and the full paired benchmark matrix (the promotion gate for worker/compression defaults).
+- Bumped package to `0.5.0`.
+
+## 0.4.0 - 2026-07-01
+
+- Cost-tier telemetry and durable review records: delegations record `tier` + `route_reason` (appended to per-unit `delegations[]` history); `record_review` persists advisor findings to the ledger, retrievable via `read_ledger({ query: "reviews" })`.
+- Relicensed from AGPL-3.0 to Apache-2.0 (2026-06-29).
+
+## 0.3.0 - 2026-06-14
+
+- New `preview_diagram` tool — live in-project Mermaid diagram workshop (23rd tool).
+
 ## 0.2.2 - 2026-06-13
 
 - Successful `invoke_advisor` output (prose) is no longer eligible for lossy log compression — previously a review quoting >=3 error lines was misrouted to the log compressor and silently lost its recommendations. Success now passes through; only **failed** advisor diagnostics are compressed (and recoverable via `retrieve_original`).

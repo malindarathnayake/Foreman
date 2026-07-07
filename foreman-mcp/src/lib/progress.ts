@@ -1,6 +1,8 @@
 import fs from "fs/promises"
 import path from "path"
 import type { ProgressFile, ProgressUnit, WriteProgressInput, TruncatedView, StatusSummary } from "../types.js"
+import { atomicWriteFile } from "./atomicWrite.js"
+import { scrub } from "./redaction.js"
 
 // ─── Per-path mutex registry ──────────────────────────────────────────────────
 // Separate from ledger lock registry — do NOT share or import from ledger.ts
@@ -104,10 +106,8 @@ export async function writeProgress(
       }
     }
 
-    // Atomic write: write to .tmp then rename
-    const tmpPath = `${filePath}.tmp`
-    await fs.writeFile(tmpPath, JSON.stringify(progress), "utf-8")
-    await fs.rename(tmpPath, filePath)
+    // Atomic write via shared helper (unique tmp suffix — cross-process safe, D2c)
+    await atomicWriteFile(filePath, JSON.stringify(progress), { scrub })
 
     return progress
   })

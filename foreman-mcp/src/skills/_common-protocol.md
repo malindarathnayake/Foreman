@@ -237,3 +237,12 @@ Two gates, and they are not the same:
 
 Semantic boundary: verification proves LOCATION and VERBATIM PRESENCE only. It proves the anchor text sits at the cited line. It does NOT prove the line supports the claim. A line can match its anchor exactly while the surrounding logic contradicts the claim (renamed constant, inverted condition, value behind a feature flag). A `CONFIRMED` verdict means the anchor is located at the cited line, never that the claim is true. Route semantic conflicts to the Mismatch machinery, not to this gate.
 <!-- /section -->
+
+<!-- section: engineering-ethos -->
+## Engineering Ethos
+
+Read the `ethos` tool at session start whenever the work is flagged: any design or spec session, any unit whose phase or directive declares a perf tier above `standard`, a `security_boundary` scope, or a Telemetry Contract entry. Serve a single checklist with `ethos({ section })`.
+
+- **Tier declaration**: proportionality is declared, not inferred — every major path carries a tier (`standard`/`hot`/`extreme`) in the design summary and spec; an undeclared tier in a generated document is a gap to escalate, not a default to apply.
+- **Conflicts recorded**: pillar conflicts (perf-vs-security, perf-vs-telemetry, cost-vs-coverage) are written into the spec Decisions table or a ledger note and arbitrated — never silently resolved.
+<!-- /section -->

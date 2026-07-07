@@ -8,6 +8,8 @@ description: Pit-boss implementation orchestrator. Opus orchestrates disposable 
 
 **Model Check:** Opus required. If Sonnet/Haiku, STOP and ask user to switch (`/model opus`).
 
+{{include: engineering-ethos}}
+
 ## Core Rules
 
 | Rule | Why |
@@ -70,6 +72,7 @@ Before building brief, read actual source. Capture:
 ## BEFORE/AFTER Pattern — excerpts from actual code showing expected delta
 ## Interface Context — relevant exports from ledger, signatures worker must satisfy
 ## DO NOT — explicit scope boundaries, files to leave alone
+## Ethos — perf tier (standard/hot/extreme); budget + rationale if hot/extreme; telemetry contract excerpt if the unit emits signals
 ## Test Command — exact command to run
 ## Inner Loop Rules — compile/import/type errors: self-fix max 2. Logic/spec issues: return immediately.
 ```
@@ -91,10 +94,11 @@ Anti-pattern: *"I read Unit X's directive section carefully."* The spec is a gra
 
 ### Step 5: Spawn Sonnet Worker
 
-Record the delegation in the ledger BEFORE spawning. This is mechanically enforced — a `pass` verdict is rejected unless the unit was first set to `delegated` with a brief:
+Record the delegation in the ledger BEFORE spawning. This is mechanically enforced — a `pass` verdict is rejected unless the unit was first set to `delegated` with a brief. Also record the cost `tier` the worker runs at and a short `route_reason` — audit evidence, not a gate:
 ```
-mcp__foreman__write_ledger({ operation: "set_unit_status", phase, unit_id, data: { s: "delegated", brief: "<1-3 line summary of the worker brief>" } })
+mcp__foreman__write_ledger({ operation: "set_unit_status", phase, unit_id, data: { s: "delegated", brief: "<1-3 line summary of the worker brief>", tier: "standard", route_reason: "<why this tier fits this unit>" } })
 ```
+Tiers: `cheap` (mechanical, fully-specified change), `standard` (default Sonnet worker), `premium` (subtle or high-risk unit escalated to a stronger model). Each (re-)delegation is appended to the unit's `delegations[]` history, so the tier choice and reason survive the brief overwrite on fix attempts.
 
 {{worker_invoke}}
 - Worker sees ONLY: its brief, the BEFORE/AFTER excerpts you include, and its own tool calls
@@ -109,6 +113,7 @@ After worker returns, pit-boss validates independently — do not trust worker's
 3. Spec check — read the original spec directive sentence by sentence; confirm each has a corresponding code path
 4. Export check — verify exported names and signatures match what the ledger records as interface contracts
 5. Consistency check — confirm changes integrate cleanly with prior accepted units; no regressions introduced
+6. Budget check (hot/extreme perf-tier units only) — require the unit's benchmark/profile evidence and compare against the spec's Performance Budgets row; a regression is a reject, not a note
 
 ### Step 7: Verdict
 
@@ -140,13 +145,32 @@ mcp__foreman__write_progress({ operation: "log_error", data: { date, unit, what_
 ## Files to Fix — path + specific change required
 ## Files to Leave Alone — explicit list
 ## Previous Attempts — pulled from ledger rejection history
+## Tier + Route Reason — tier for this attempt + why (see escalation rule below)
 ## Test Command — exact command
 ## Inner Loop Rules — compile fixes OK (max 2), spec issues return immediately
 ```
 
+**Guarded tier escalation:** A repeated failure signals spec/brief ambiguity, not insufficient model horsepower. Do NOT bump a fix worker to a higher `tier` on an unchanged brief. Escalate the tier (e.g. `standard` → `premium`) ONLY when the re-delegation's `route_reason` cites a concrete brief refinement (missing context now added) or an advisor diagnosis of the failure. Record tier + route_reason on the `delegated` write so the escalation is auditable in `delegations[]`.
+
 After 3 outer-loop failures: STOP. Escalate to user with full rejection history from ledger.
 
-## Self-Review Gates G1–G5
+## Worker Invocation Paths
+
+| Path | Inner loop (self-fix) | Outer loop |
+|---|---|---|
+| Native worker (Agent tool) | ≤2 compile/import/type fixes | ≤3 attempts |
+| invoke_worker (EXPERIMENTAL) | NONE — one-shot; repair round is v0.6 | ≤3 attempts |
+
+`invoke_worker` protocol (EXPERIMENTAL S7 patch-worker delegation):
+1. Delegate in the ledger FIRST — `set_unit_status s:'delegated'` (`invoke_worker` refuses otherwise).
+2. Call `invoke_worker { phase, unit_id, brief, tier, files }`.
+3. Apply the returned patch VERBATIM via host tools after the `base_file_hashes` CAS check.
+4. Record outcomes via `add_rejection r:'ED_STALE'|'PATCH_APPLY_FAIL'|'BLD_ERR'` or `set_verdict` — the ledger hook appends the terminal sidecar event.
+5. Failure returns carry `hint:` from the recovery playbook — resolve it before re-delegating.
+
+Any brief built from scrubbed material must include this disclosure verbatim: `[REDACTED:*] tokens are intentionally removed secrets; treat as opaque; never reproduce them.`
+
+## Self-Review Gates G1–G6
 
 **Anti-rationalization list — none of these justify skipping a gate:**
 - "The diff looks clean so logic must be correct" — trace against spec
@@ -154,7 +178,8 @@ After 3 outer-loop failures: STOP. Escalate to user with full rejection history 
 - "Already validated this pattern in prior unit" — read actual files
 - "Mechanical change, no need to check" — check anyway
 - "Worker said it handled the edge case" — read the code
-- "Checking all four gates would take too long" — run them
+- "Checking all gates would take too long" — run them
+- "It's just logging/metrics, no G6 needed" — telemetry is a contract and an attack surface
 
 | Gate | Applicability | Check |
 |------|---------------|-------|
@@ -163,8 +188,9 @@ After 3 outer-loop failures: STOP. Escalate to user with full rejection history 
 | G3 | always | **Spec Fidelity** — Every sentence in the spec directive has a corresponding code path; parameter names match literally, not paraphrased |
 | G4 | scope.has_tests | **Test-Suite Impact** — Grep the full test suite for changed function/class/constant names; update any old assertions on prior behavior |
 | G5 | always | **Worker Hygiene** — dead imports, test determinism, assertion completeness, module resolution, fragile timing |
+| G6 | perf tier hot/extreme, OR any unit file appears as a Component row in the spec's Threat Table, OR the unit implements a Telemetry Contract entry, OR the unit handles authn/authz, secrets, or input crossing a Threat Table trust boundary | **Ethos Compliance** — perf rationale present and cited (spec directive or code comment); no unjustified alloc/lock/syscall on marked hot paths; for hot/extreme units, benchmark/profile evidence shows no regression vs the spec budget (extreme: before/after attached) — a rationale without measurement does not satisfy this gate; telemetry matches the spec contract (names, bounded tag values, trace correlation); security findings carry `[CWE-###]` prefix (closest class or `[CWE-UNMAPPED]` + reason) |
 
-**Gate skip protocol:** If `phase.scope.has_tests === false`, gates G2 and G4 auto-skip with `status: n/a` in the verdict. Record the skip in the verdict `note` field.
+**Gate skip protocol:** If `phase.scope.has_tests === false`, gates G2 and G4 auto-skip with `status: n/a` in the verdict. G6 auto-skips only when the unit matches none of its applicability conditions — cite the Threat Table and Telemetry Contract rows you checked in the verdict `note`. The secrets/PII check lives in G5 and never skips. Record every skip in the verdict `note` field.
 
 ### G5 — Worker Hygiene (expanded)
 
@@ -175,16 +201,17 @@ After 3 outer-loop failures: STOP. Escalate to user with full rejection history 
 | **Assertion completeness** | Every test that verifies "X doesn't throw/fail" ALSO verifies the expected side effect occurred. Catching an error without asserting what happened is a no-op test. | A test that only checks "no crash" proves nothing about correctness. |
 | **Module resolution** | Import paths match the project's module system. If ESM: extensions present. If CJS: no extensions. If Go: correct module path. If Python: relative vs absolute matches project convention. Read the project config (tsconfig, go.mod, pyproject.toml) to determine which system is in use. | Wrong resolution works in test runners but fails in production or stricter runtimes. |
 | **Fragile timing** | No test depends on microtask ordering, goroutine scheduling, thread interleaving, or sleep durations to be correct. If a test needs async work to settle, it must use the language's deterministic mechanism (fake timers, channels, waitgroups, asyncio event loop advance) — not `sleep` or `Promise.resolve()`. | Timing-dependent tests are the #1 source of CI flakes across all languages. |
+| **Secrets/PII** | No credentials, tokens, or PII in code, logs, spans, metrics, test fixtures, or the worker brief itself. | Ethos hard rule — any occurrence is CRITICAL at every tier; this check never skips. |
 
-**How to run Gate 5:** For each file the worker modified, open it and scan for the five patterns above. This is a read-only scan — no tools needed beyond Read. If any check fails, reject the unit with the specific file:line and pattern name.
+**How to run Gate 5:** For each file the worker modified, open it and scan for the six patterns above. This is a read-only scan — no tools needed beyond Read. If any check fails, reject the unit with the specific file:line and pattern name.
 
-**How to run all gates:** list all functions touched → apply G1 → grep for G2 patterns → read each spec sentence → G3 match → grep G4 symbols → scan modified files for G5 patterns. Do NOT mark CHECKPOINT REACHED until all five pass.
+**How to run all gates:** list all functions touched → apply G1 → grep for G2 patterns → read each spec sentence → G3 match → grep G4 symbols → scan modified files for G5 patterns → G6: check the unit's tier + the spec's Telemetry Contract against the ethos checklist. Do NOT mark CHECKPOINT REACHED until all six pass.
 
 {{include: advisor-grounding}}
 
 ## Checkpoint Protocol
 
-At phase end, after all five gates pass:
+At phase end, after all six gates (G1–G6) pass:
 **1. Full Test Suite:** Run the complete test suite via mcp__foreman__run_tests, not Bash.
 
 **2. Review via Deliberation:**
@@ -198,11 +225,12 @@ At phase end, after all five gates pass:
 | ✗ | ✓ | Gemini CLI | Opus agent | Opus (you) |
 | ✗ | ✗ | Opus agent | Opus agent | Opus (you) |
 
-3. Ask each advisor: "Review these phase changes against the spec. List any: (a) spec directives not implemented, (b) implementations that contradict the spec, (c) missing error handling, (d) test gaps. Be specific — file:line references required."
+3. Ask each advisor: "Review these phase changes against the spec. List any: (a) spec directives not implemented, (b) implementations that contradict the spec, (c) missing error handling, (d) test gaps, (e) security issues — prefix each `[CWE-###]` (closest class or `[CWE-UNMAPPED]` + reason if none fits); where a finding weakens a control or detection-evidence row in the spec's Threat Table, cite that row by component name — do NOT invent new technique mappings during code review, (f) telemetry contract violations — names, unbounded tag values, missing trace correlation, secrets/PII in signals. Be specific — file:line references required."
 
 4. `mcp__foreman__normalize_review` — parse review output into structured findings
 5. Classify each finding: CONFIRMED / REJECTED / UNVERIFIED
-6. If no CLIs available: ask user "Independent review unavailable. Proceed with pit-boss gates only? [y/N]"
+6. Persist the review durably — `mcp__foreman__write_ledger({ operation: "record_review", phase, data: { advisor, findings: [{ severity, file, line, description, classification }] } })`. Use lowercase classification (`confirmed` / `rejected` / `unverified`). Security findings keep their `[CWE-###]` prefix in `description`. Survives the session; retrievable via `read_ledger({ query: "reviews" })`.
+7. If no CLIs available: ask user "Independent review unavailable. Proceed with pit-boss gates only? [y/N]"
 
 **3. Persist State:**
 ```
@@ -237,3 +265,14 @@ mcp__foreman__write_journal({ operation: "end_session", data: { dur_min: <estima
 | Trusting worker summary | "Worker said tests pass" | Step 6: re-run tests yourself |
 | Skipping export check | New name doesn't match ledger contract | Step 6: verify against ledger exports |
 | Re-using stale context | Reading file from earlier in session | Step 3: always re-read before brief |
+
+## Seat Assists (S4)
+
+When delegating to a `compact`-class worker, include the worked exemplar + output schema in the brief — brief obligations scale with the RECEIVING seat's declared class; the exemplar is for the CALLER to embed, never injected into the worker.
+{{class compact: worked-brief-exemplar}}
+{{class compact: completion-report-exemplar}}
+{{class compact: verdict-note-exemplar}}
+{{class compact: fix-brief-exemplar}}
+{{class compact|capable: tool-loop-guard}}
+{{class compact|capable: output-format-guard}}
+{{class compact|capable: patch-hygiene-guard}}

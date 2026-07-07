@@ -1,0 +1,99 @@
+# llms.txt — Foreman MCP onboarding packet
+
+Foreman is an MCP server that gates AI coding-agent claims through a mechanical
+ledger: "done" is not something a model says in chat, it is a recorded,
+gated claim on disk, enforced in code rather than prompt text. Your agent still
+reasons, plans, and writes code — Foreman does not write code, pick models, or
+route requests. It orchestrates protocols, records state, and refuses invalid
+transitions (a unit cannot pass without a recorded delegation; a phase cannot
+pass while any unit is not `pass`).
+
+Package: `@malindarathnayake/foreman-mcp` · Version: `0.5.0` · Runtime: Node.js `>=22`
+
+This file is written for an AI agent that just connected to the server. It is
+an operating packet, not a feature list — read the whole thing before your
+first tool call.
+
+## 1. Public tool surface (contract)
+
+Tool count: 25
+
+- bundle_status — Returns the Foreman bundle version and override info.
+- host_status — Returns the active Foreman host and the model slugs used for worker/advisor invocation.
+- changelog — Returns the Foreman changelog, optionally since a version.
+- ethos — Serves the canonical engineering-ethos document (proportionality tiers, three pillars, review checklist), rendered with the active stack profile.
+- read_ledger — Reads the Foreman ledger file; supports verdicts/rejections/phase_gates/reviews/full/delegation_metrics queries.
+- read_progress — Reads the Foreman progress file.
+- read_journal — Reads the Foreman session journal; returns session history with rollup.
+- capability_check — Checks whether the codex or gemini CLI is available and authenticated, with a closed auth-status taxonomy.
+- invoke_advisor — Invokes the codex or gemini CLI via stdin for independent review.
+- write_ledger — Writes an operation to the Foreman ledger (unit status, verdicts, rejections, phase gates, scope, durable reviews).
+- invoke_worker — EXPERIMENTAL (egress: sends briefs + file excerpts to your configured HTTP endpoint). Delegates a single patch task to the remote OpenAI-compatible endpoint configured in `.foremanenv`; returns a shape-checked, verbatim patch for the host to apply.
+- write_progress — Writes an operation to the Foreman progress file.
+- write_journal — Writes to the Foreman session journal (init_session / log_event / end_session).
+- normalize_review — Normalizes raw review text into structured findings.
+- verify_citations — Verifies that evidence citations reference real files and that a verbatim anchor appears at or near the cited line.
+- run_tests — Runs a test command with bounded output; runner must be in an allowlist (npm, pytest, go, cargo, dotnet, make).
+- session_orient — Returns current Foreman session state: phase, unit, next pending, blocked status. Call at session start.
+- retrieve_original — Recovers the exact original text behind a `<<ccr:HASH>>` compression marker, in-memory and TTL-bound.
+- pitboss_implementor — Activates the pitboss-implementor protocol for multi-phase implementation from prepared specs (worker fan-out, gates, retries, resume).
+- design_partner — Activates the design-partner protocol: a collaborative design session that produces `Docs/design-summary.md`.
+- spec_generator — Activates the spec-generator protocol: turns an approved design summary into spec/handoff/progress/testing docs.
+- lighttask — Activates the lighttask protocol for small surgical work that still needs grounding and review.
+- spec_man — Activates the spec-man protocol: produces intended-behavior specs from existing repos, tickets, or plans.
+- doc_man — Activates the doc-man protocol: generates grounded technical documentation (README, architecture, data-flow, Confluence, machine docs).
+- preview_diagram — Renders a Mermaid diagram into a live, auto-refreshing, loopback-only browser preview.
+
+## 2. Expected workflow order
+
+1. Call `session_orient` first, always — it resumes from the ledger, never from chat memory.
+2. Activate exactly ONE protocol tool: `design_partner`, `spec_generator`, `pitboss_implementor`, `lighttask`, `spec_man`, or `doc_man`.
+3. Follow the injected procedure returned by that call — it is the operating instructions for the session, not optional color.
+4. Route every state mutation through `write_ledger`, `write_progress`, or `write_journal`. Nothing else durably records progress.
+5. Respect phase gates. Phase checkpoints mandate a fresh session (context reset) before continuing — `session_orient` is how the new session re-enters.
+
+## 3. Protocol selection rules
+
+```
+small clear change       → lighttask
+unclear behavior         → spec_man
+new feature design       → design_partner → spec_generator
+phased implementation    → pitboss_implementor
+technical documentation  → doc_man
+```
+
+## 4. CCR retrieve semantics
+
+Large `run_tests` or failed-advisor output may arrive compressed, carrying a
+`<<ccr:HASH>>` marker instead of the full text. Call `retrieve_original
+{ hash }` to get the exact original during the same session — the store is
+in-memory and TTL-bound. An expired or unknown hash returns
+`ccr_missing_or_expired` with a hint naming the tool to re-run. Never treat a
+compressed digest as the full log when exactness matters (e.g. diagnosing a
+specific failing assertion).
+
+## 5. Danger zones
+
+- NEVER write `Docs/.foreman-*.json` or `Docs/.foreman-*.jsonl` directly. These are tool-mediated only — direct edits corrupt the ledger/progress/journal/events invariants.
+- NEVER commit `.foremanenv`. The server refuses to run `invoke_worker` if that file is git-tracked.
+- Do not weaken a failing test to make a gate pass. The gates exist to catch exactly that move.
+- Verdicts require the recorded sequence `set_unit_status(s:'ip') → set_unit_status(s:'delegated', brief:'...') → set_verdict(v:'pass')`. There is no shortcut to a pass verdict.
+
+## 6. First safe tasks
+
+Run these, in order, before doing anything else:
+
+1. `session_orient`
+2. `bundle_status`
+3. `host_status`
+4. `read_ledger { query: "full" }`
+
+Then try `lighttask` on one small, grounded change to see the full loop
+(delegate → validate → record) before attempting anything larger.
+
+## 7. One URL to fetch
+
+If your host is not Claude Code or Cursor, fetch:
+`https://github.com/malindarathnayake/Foreman/blob/main/foreman-mcp/HOST-CONTRACT.md`
+— the six-capability host contract that defines what a host must provide to
+run the Foreman protocols, and how ready each capability is.

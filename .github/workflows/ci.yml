@@ -1,0 +1,69 @@
+# This workflow exists because build.yml fires only on `v*` tags + manual
+# dispatch (verified at build.yml:3-6), so ordinary pushes and PRs
+# previously ran zero CI (Foreman v0.5.0 D7). This workflow closes that gap
+# by building and testing on every push and pull request.
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  # Default GITHUB_TOKEN permissions are broader than this workflow needs —
+  # it only checks out code, builds, and runs tests, so read-only access is
+  # sufficient (least privilege).
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Tags are mutable — a compromised action repo can re-point `v7` at a
+      # malicious commit, so a tag reference like `@v7` (the cheaper
+      # alternative) doesn't protect the supply chain. Immutable SHA pins
+      # do. The `# vX.Y.Z` suffix keeps each pin human-readable, and the
+      # dependabot `github-actions` ecosystem (added by unit 1e as this
+      # pin's pair) keeps the SHAs current.
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: foreman-mcp/package-lock.json
+
+      - name: Install dependencies
+        working-directory: foreman-mcp
+        run: npm ci
+
+      - name: Build
+        working-directory: foreman-mcp
+        run: npm run build
+
+      - name: Run tests
+        working-directory: foreman-mcp
+        run: npm test
+
+  # Runs the same gate build.yml runs immediately before `npm publish` — the
+  # duplication is deliberate: publish fires on tag pushes, which can bypass a
+  # PR, so the release path cannot rely on this job having run. Here it runs on
+  # every push/PR so packaging DOA is caught at development time, not tag time.
+  publish-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6.4.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: foreman-mcp/package-lock.json
+      - name: Install dependencies
+        working-directory: foreman-mcp
+        run: npm ci
+      - name: Build
+        working-directory: foreman-mcp
+        run: npm run build
+      - name: Publish smoke (pack → clean install → tools/list)
+        working-directory: foreman-mcp
+        run: node scripts/publish-smoke.mjs

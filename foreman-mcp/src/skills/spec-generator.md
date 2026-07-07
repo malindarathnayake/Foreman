@@ -6,11 +6,17 @@ description: Generate formal implementation documents from a design summary. Pro
 
 {{include: ledger-critical}}
 
+{{include: engineering-ethos}}
+
 {{include: session-start}}
 
 ## Core Directive
 
 Transform a design summary into the complete implementation document set. No creativity — this is a translation step. Decisions are already made; format them into documents implementation agents can execute without asking questions.
+
+## Engineering Ethos
+
+The spec must carry the design summary's Performance Budget, Threat Model, and Telemetry Contract through to per-unit directives: every `hot`/`extreme` unit directive includes its perf rationale and budget; telemetry-touching units cite the contract entries they implement; pillar conflicts appear as Decisions rows, never resolved silently. A design summary missing these sections with no declared `standard`-tier rationale is a gap — escalate, don't fill.
 
 {{include: ambiguity-resolution}}
 
@@ -62,6 +68,9 @@ Check completeness across 10 items:
 | Testing archetype | Named archetype |
 | Config surface | Tunable settings identified |
 | Observability | Metrics and logging defined |
+| Performance budget | Tier per path; budgets for hot/extreme (or explicit all-standard declaration) |
+| Threat model | Threat table with technique IDs (stack profile's threat framework) + detection evidence |
+| Telemetry contract | Spans, metrics with bounded tag values, structured-log fields, audit stream |
 | Open items | None blocking, or explicitly deferred |
 
 Classify gaps as: missing sections (need design session before proceeding) or ambiguous sections (escalate via deliberation protocol).
@@ -96,6 +105,9 @@ Write `Docs/spec.md`, `Docs/handoff.md`, `Docs/PROGRESS.md`, `Docs/testing-harne
 - **Integration Discovery Findings** — if discovery was performed, what was found
 - **Core Behavior** — numbered happy-path steps, no branching
 - **Metrics/Outputs** — table: Metric | Type | Source | Notes
+- **Performance Budgets** — table: Path/Unit | Tier | Budget | Justified Costs (hot/extreme only; omit section only if all-standard is declared)
+- **Threat Table** — table: Component | Compromise Impact | Technique IDs (stack profile's threat framework) | Controls | Detection Evidence
+- **Telemetry Contract** — spans (names, key attrs); metrics (name, type, unit, tag keys + bounded value sets — unbounded values are never metric attributes; move them to span attributes or log fields); structured-log fields per the stack profile's schema; audit stream; sampling policy; transport declared per the stack profile
 - **Error Handling** — table: Scenario | Behavior | Recovery
 - **Dependencies** — table: Package | Version | Purpose (real versions or UNKNOWN)
 - **Out of Scope** — explicit list
@@ -182,6 +194,12 @@ When a unit includes "check endpoint X for Y":
 - Do NOT write verification steps from memory of the API surface.
 *Catches: verification steps pointing to wrong endpoints.*
 
+### G9: Ethos grounding
+- Every `hot`/`extreme` unit directive carries a perf rationale sourced from the design summary or a benchmark.
+- Every Telemetry Contract entry has a source (design summary, existing code, or explicit new-declaration) and every metric states its tag-value bounds.
+- The Threat Table covers every trust boundary named in the design summary; each row's technique names concrete detection evidence from the Telemetry Contract, or explicitly states no in-app detection with a compensating control — never a fabricated telemetry event.
+*Catches: hot paths speced without budgets; unbounded metric tags; trust boundaries with no threat row.*
+
 ## Ledger Seeding
 
 For each phase and unit in the implementation order:
@@ -230,7 +248,8 @@ Run before delivering documents to user:
 - [ ] Out of scope explicit and complete
 - [ ] Dependency versions real or marked UNKNOWN
 - [ ] File structure matches implementation order
-- [ ] G1-G8 grounding checks all completed
+- [ ] G1-G9 grounding checks all completed
+- [ ] Ethos sections present (Performance Budgets / Threat Table / Telemetry Contract) or all-standard declared with rationale
 - [ ] Ledger seeding calls issued for all phases and units
 - [ ] Progress seeding calls issued for phase 1
 - [ ] No ambiguities remain open (all resolved or explicitly deferred with user sign-off)

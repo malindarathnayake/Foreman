@@ -6,6 +6,8 @@ description: Collaborative engineering design sessions. Pushes back on vague req
 
 {{include: ledger-critical}}
 
+{{include: engineering-ethos}}
+
 {{include: session-start}}
 
 ## Core Directive
@@ -43,6 +45,7 @@ Draw questions from these categories:
 | Integration | Systems, protocols, APIs, auth, central vs peripheral? |
 | Runtime | One-shot, daemon, triggered? Interval? |
 | Configuration | Tunable without code changes? Credentials? |
+| Performance | Tier per path (standard/hot/extreme)? Budget for anything above standard? |
 | Observability | Metrics, logging, alerts? |
 | Error Handling | Retry, alert, exit on failures? Timeouts? |
 | Security | Network exposure, input validation, secrets? |
@@ -90,13 +93,17 @@ Produce a design summary using this structure (terse format — no filler, no ex
 ### Integration Points — table: System | Protocol | Auth | Discovery Status
 ### Config Surface — table: Setting | Type | Source | Default
 ### Error Handling — table: Scenario | Behavior
-### Observability — metrics, logging, health checks
+### Performance Budget — tier per path; budgets + justified costs for hot/extreme
+### Threat Model — table: Component | Compromise Impact | Technique IDs (stack profile's threat framework) | Controls | Detection Evidence
+### Telemetry Contract — spans; metrics (tag keys + bounded value sets); structured-log fields + trace correlation; audit stream; sampling
 ### Testing Strategy — archetype, mock boundaries, critical path
 ### Scope — in scope, out of scope, phase 2 candidates
 ### Open Items — table: Item | Status | Blocking
 ```
 
 Save to `Docs/design-summary.md`.
+
+**Pillar conflicts** (perf vs security vs telemetry) are recorded as their own row in Key Decisions — user arbitrates, never resolved silently.
 
 **Visualize it for the user.** When the architecture, data flow, lifecycle, or integration path is non-trivial, call `preview_diagram({ id, source })` with the Mermaid source so the user can SEE it live in the browser while you refine it — re-call with the same `id` (or edit `Docs/diagrams/<id>.mmd`) to update the preview in place. Reference the resulting `Docs/diagrams/<id>.mmd` from the summary; don't paste raw Mermaid as the primary user-facing diagram when a live preview is available. (Note: `architecture-beta` and `mindmap` diagram types are not supported by the renderer.)
 

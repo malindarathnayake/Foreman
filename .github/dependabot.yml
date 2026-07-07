@@ -1,0 +1,32 @@
+version: 2
+updates:
+  # npm updates for the MCP server package. Majors intentionally arrive
+  # ungrouped so they get individual review; minor/patch batch together to
+  # keep the review queue small.
+  - package-ecosystem: npm
+    directory: /foreman-mcp
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+    commit-message:
+      # Matches the repo's conventional-commit history (feat/chore/docs
+      # prefixes).
+      prefix: "chore(deps)"
+
+  # github-actions updates — the REQUIRED pair of the SHA pins used in
+  # ci.yml/security.yml: pins without an updater rot; an updater without
+  # pins is mutable-tag roulette. Weekly cadence + PR limit = the cooldown:
+  # batches noise into one review sitting.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      minor-and-patch:
+        update-types: ["minor", "patch"]
+    commit-message:
+      prefix: "chore(ci)"

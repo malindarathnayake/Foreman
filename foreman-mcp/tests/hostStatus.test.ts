@@ -24,6 +24,16 @@ describe("hostStatus — direct unit", () => {
     expect(out).toContain("advisor_b_model: gemini-3.1-pro")
     expect(out).toContain("advisor_b_fallback: composer-2-fast")
   })
+
+  it("claude-code host echoes no unsupported capabilities", () => {
+    const out = hostStatus("claude-code")
+    expect(out).toContain("unsupported_capabilities: none")
+  })
+
+  it("cursor host echoes autonomy as unsupported", () => {
+    const out = hostStatus("cursor")
+    expect(out).toContain("unsupported_capabilities: autonomy")
+  })
 })
 
 describe("host_status — MCP round-trip", () => {

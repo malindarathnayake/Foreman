@@ -2,6 +2,7 @@ import fs from "fs/promises"
 import path from "path"
 import os from "os"
 import { type HostId, getProfile } from "./hostProfiles.js"
+import { type StackProfile, getStackProfile, parseSectionTags } from "./stackProfiles.js"
 
 export interface SkillLoadResult {
   content: string
@@ -13,42 +14,28 @@ async function fileExists(p: string): Promise<boolean> {
   try { await fs.access(p); return true } catch { return false }
 }
 
+// ─── Capability class (S4-min, R4) ───────────────────────────────────────────
+export const AGENT_CLASSES = ["frontier", "capable", "compact"] as const
+export type AgentClass = (typeof AGENT_CLASSES)[number]
+
 /**
- * Parses a _common-protocol.md file and returns a map of section id -> body.
- * Section body is the content strictly between <!-- section: id --> and <!-- /section -->,
- * with outer newlines trimmed.
+ * Render-time source for the declared capability class (R4): FOREMAN_AGENT_CLASS.
+ * Declared, never self-assessed — no model-id sniffing. Unknown values warn and
+ * fall back to "frontier" (zero assist bloat), mirroring resolveHost's fail-open.
  */
-function parseCommonProtocol(source: string): Map<string, string> {
-  const map = new Map<string, string>()
-  const openTag = "<!-- section:"
-  const closeTag = "<!-- /section -->"
-  let pos = 0
-
-  while (true) {
-    const openIdx = source.indexOf(openTag, pos)
-    if (openIdx === -1) break
-
-    // Find end of opening tag line
-    const openTagEnd = source.indexOf("-->", openIdx)
-    if (openTagEnd === -1) break
-    const markerEnd = openTagEnd + 3 // past "-->"
-
-    // Extract the section id from "<!-- section: <id> -->"
-    const idRaw = source.slice(openIdx + openTag.length, openTagEnd)
-    const id = idRaw.trim()
-
-    // Find the closing tag
-    const closeIdx = source.indexOf(closeTag, markerEnd)
-    if (closeIdx === -1) break
-
-    // Body is content between end of opening marker and start of closing marker
-    const body = source.slice(markerEnd, closeIdx).replace(/^\n/, "").replace(/\n$/, "")
-    map.set(id, body)
-
-    pos = closeIdx + closeTag.length
+export function resolveAgentClass(
+  env: string | null | undefined = process.env.FOREMAN_AGENT_CLASS
+): AgentClass {
+  const candidate = env?.trim()
+  if (!candidate) return "frontier"
+  if ((AGENT_CLASSES as readonly string[]).includes(candidate)) {
+    return candidate as AgentClass
   }
-
-  return map
+  console.error(
+    `[foreman] Unknown FOREMAN_AGENT_CLASS value "${candidate}" — falling back to "frontier". ` +
+      `Accepted values: ${AGENT_CLASSES.join(", ")}.`
+  )
+  return "frontier"
 }
 
 /**
@@ -106,7 +93,7 @@ export async function renderIncludes(content: string, skillPath: string): Promis
   let sectionMap: Map<string, string> | null = null
   try {
     const protocolSource = await fs.readFile(commonProtocolPath, "utf-8")
-    sectionMap = parseCommonProtocol(protocolSource)
+    sectionMap = parseSectionTags(protocolSource)
   } catch (err) {
     const ids = includes.map(i => i.id).join(", ")
     console.error(
@@ -171,23 +158,96 @@ export function renderHostPlaceholders(content: string, host: HostId): string {
 }
 
 /**
+ * Substitutes {{stack: <section-id>}} markers with section bodies from the
+ * active stack profile. Runs after host placeholders in the loadSkill
+ * pipeline. Missing sections render as [[MISSING STACK SECTION: <id>]] with a
+ * stderr warning — mirrors the {{include:}} missing-section behavior.
+ */
+export function renderStackSections(content: string, profile: StackProfile): string {
+  const pattern = /\{\{\s*stack:\s*([A-Za-z0-9_-]+)\s*\}\}/g
+  return content.replace(pattern, (match, id: string) => {
+    if (Object.prototype.hasOwnProperty.call(profile.sections, id)) {
+      return profile.sections[id]
+    }
+    console.error(
+      `[skillLoader] Stack section "${id}" not found in profile "${profile.id}"`
+    )
+    return `[[MISSING STACK SECTION: ${id}]]`
+  })
+}
+
+/**
+ * Substitutes {{class <c1>[|<c2>]: <section-id>}} markers with section bodies from
+ * _assists.md (same directory as the skill, same section-comment format as
+ * _common-protocol.md — parser reused). A marker renders its body only when the
+ * DECLARED class is in its class list; otherwise it renders to the empty string.
+ * No fragment ever targets frontier, so frontier callers get ZERO bloat — and the
+ * frontier fast path below never even reads _assists.md.
+ * Fragments are render-time only: never slash-discoverable, never auto-triggering.
+ */
+export async function renderClassFragments(
+  content: string,
+  skillPath: string,
+  agentClass?: AgentClass
+): Promise<string> {
+  const pattern = /\{\{\s*class\s+([a-z|]+)\s*:\s*([A-Za-z0-9_-]+)\s*\}\}/g
+  const markers = Array.from(content.matchAll(pattern))
+  if (markers.length === 0) return content
+
+  const cls = agentClass ?? resolveAgentClass()
+  const wanted = markers.filter((m) => m[1].split("|").includes(cls))
+
+  // Fast path: nothing targets the declared class — strip all markers, no fs access.
+  if (wanted.length === 0) {
+    return content.replace(pattern, "")
+  }
+
+  const assistsPath = path.join(path.dirname(skillPath), "_assists.md")
+  let sectionMap: Map<string, string> | null = null
+  try {
+    const source = await fs.readFile(assistsPath, "utf-8")
+    sectionMap = parseSectionTags(source)
+  } catch (err) {
+    console.error(
+      `[skillLoader] _assists.md unavailable at "${assistsPath}" (skill: "${skillPath}"): ${(err as Error).message}`
+    )
+  }
+
+  return content.replace(pattern, (match, classList: string, id: string) => {
+    if (!classList.split("|").includes(cls)) return ""
+    if (sectionMap === null) return "[[ASSISTS FILE MISSING]]"
+    if (sectionMap.has(id)) return sectionMap.get(id)!
+    console.error(`[skillLoader] Assist section "${id}" not found in "${assistsPath}"`)
+    return `[[MISSING ASSIST: ${id}]]`
+  })
+}
+
+/**
  * Loads a skill file with override support.
  * Priority: project-local (.claude/skills/) > user-global (~/.claude/skills/) > bundled
  *
  * When `host` is provided, host-specific placeholders are rendered after include
  * expansion. Default = "claude-code" — preserves byte-identical output for
- * existing skill files vs. pre-host-mode behavior.
+ * existing skill files vs. pre-host-mode behavior. After host placeholders,
+ * {{stack: <section-id>}} markers are rendered from `stackProfile` (default:
+ * the bundled "reference" stack profile). Finally, {{class <list>: <section-id>}}
+ * markers are rendered per the declared capability class (default: resolved
+ * from FOREMAN_AGENT_CLASS, which fails open to "frontier" — zero assist bloat).
  */
 export async function loadSkill(
   skillName: string,
   bundledSkillsDir: string,
-  host: HostId = "claude-code"
+  host: HostId = "claude-code",
+  stackProfile?: StackProfile,
+  agentClass?: AgentClass
 ): Promise<SkillLoadResult> {
   const projectOverride = path.resolve(".claude", "skills", skillName, "SKILL.md")
   if (await fileExists(projectOverride)) {
     let content = await fs.readFile(projectOverride, "utf-8")
     content = await renderIncludes(content, projectOverride)
     content = renderHostPlaceholders(content, host)
+    content = renderStackSections(content, stackProfile ?? getStackProfile("reference"))
+    content = await renderClassFragments(content, projectOverride, agentClass)
     return { content, source: "project-override", path: projectOverride }
   }
 
@@ -196,6 +256,8 @@ export async function loadSkill(
     let content = await fs.readFile(userOverride, "utf-8")
     content = await renderIncludes(content, userOverride)
     content = renderHostPlaceholders(content, host)
+    content = renderStackSections(content, stackProfile ?? getStackProfile("reference"))
+    content = await renderClassFragments(content, userOverride, agentClass)
     return { content, source: "user-override", path: userOverride }
   }
 
@@ -204,6 +266,8 @@ export async function loadSkill(
     let content = await fs.readFile(bundled, "utf-8")
     content = await renderIncludes(content, bundled)
     content = renderHostPlaceholders(content, host)
+    content = renderStackSections(content, stackProfile ?? getStackProfile("reference"))
+    content = await renderClassFragments(content, bundled, agentClass)
     return { content, source: "bundled", path: bundled }
   }
 

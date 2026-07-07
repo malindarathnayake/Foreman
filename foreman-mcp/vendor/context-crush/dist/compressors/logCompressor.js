@@ -78,6 +78,28 @@ const SUMMARY_PATTERNS = [
     /^(TOTAL|Total|Summary)/,
     /^(Build|Compile|Test).*(succeeded|failed|complete)/,
 ];
+// Must-keep token guard (Foreman v0.5.0 unit 1c — see vendor/context-crush/SYNC.md).
+// Line-level adaptation of upstream headroom's word-level _KOMPRESS_MUST_KEEP_RE
+// (headroom/transforms/kompress_compressor.py): tokens like hex ids, CLI flags,
+// ALLCAPS constants, CamelCase names, paths, and extensions carry meaning agents
+// cannot reconstruct from context — lines carrying them are never dropped by
+// selection. Adaptations vs upstream (rationale in SYNC.md divergence log):
+//   - hex-id class is bare >=8 hex chars (upstream: 0x-prefixed);
+//   - CLI-flag class is left-guarded (?<![\w-]) so hyphenated prose doesn't match;
+//   - ALLCAPS class requires a digit or underscore (HTTP_500 yes; pure-alpha level
+//     words ERROR/INFO/FAILED match ~every log line and would disable compression);
+//   - upstream's "standalone number" and bare dotted-name classes are omitted from
+//     the force set for the same measured reason (83-99.9% line match on real logs).
+const MUST_KEEP_RE = new RegExp("\\b[0-9a-f]{8,}\\b" + // hex id: deadbeef01
+    "|(?<![\\w-])--?[a-z][\\w-]*" + // CLI flag: --verbose, -n
+    "|\\b[A-Z](?=[A-Z0-9_]*[0-9_])[A-Z0-9_]{2,}\\b" + // ALLCAPS w/ digit/underscore: HTTP_500
+    "|\\b[A-Z][a-z]+[A-Z]\\w*" + // CamelCase: CamelCaseId
+    "|/[a-zA-Z0-9/._-]{2,}" + // unix path: /usr/lib, src/lib/foo.ts (via /lib/foo.ts)
+    "|\\.[a-z]{2,4}\\b" // file extension: .py .ts .json
+);
+function _mustKeep(content) {
+    return MUST_KEEP_RE.test(content);
+}
 // ---------------------------------------------------------------------------
 // Core compressor logic
 // ---------------------------------------------------------------------------
@@ -303,6 +325,13 @@ function _selectLines(logLines, config, bias) {
     }
     // Add context lines around errors
     selected = _addContext(logLines, selected, config);
+    // Must-keep keep-override (1c): force-select every line carrying an
+    // irreplaceable token; the line_number dedupe below absorbs duplicates.
+    for (const logLine of logLines) {
+        if (_mustKeep(logLine.content)) {
+            selected.push(logLine);
+        }
+    }
     // Sort by line_number and dedupe by line_number (Map preserves insertion order;
     // sorted ascending by line_number via Map keyed on line_number)
     const dedupeMap = new Map();
@@ -312,10 +341,14 @@ function _selectLines(logLines, config, bias) {
         }
     }
     selected = Array.from(dedupeMap.values()).sort((a, b) => a.line_number - b.line_number);
-    // Apply adaptive line limit
+    // Apply adaptive line limit — must-keep lines are exempt (1c): the cap would
+    // otherwise re-drop the very lines the keep-override forced in.
     if (selected.length > adaptiveMax) {
-        selected.sort((a, b) => b.score - a.score);
-        selected = selected.slice(0, adaptiveMax);
+        const mustKeepLines = selected.filter((l) => _mustKeep(l.content));
+        const rest = selected.filter((l) => !_mustKeep(l.content));
+        rest.sort((a, b) => b.score - a.score);
+        const room = Math.max(0, adaptiveMax - mustKeepLines.length);
+        selected = mustKeepLines.concat(rest.slice(0, room));
         selected.sort((a, b) => a.line_number - b.line_number);
     }
     return selected;

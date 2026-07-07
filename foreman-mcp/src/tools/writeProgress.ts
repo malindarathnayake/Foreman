@@ -2,6 +2,7 @@ import { WriteProgressInputSchema } from "../types.js"
 import { writeProgress } from "../lib/progress.js"
 import { toKeyValue } from "../lib/toon.js"
 import { readLedger } from "../lib/ledger.js"
+import { scrub } from "../lib/redaction.js"
 import fs from "fs/promises"
 import path from "path"
 import type { LedgerFile } from "../types.js"
@@ -101,7 +102,7 @@ export async function handleWriteProgress(
         "\n"
     }
 
-    await fs.writeFile(markdownPath, newContent, "utf-8")
+    await fs.writeFile(markdownPath, scrub(newContent), "utf-8")
   }
 
   return toKeyValue({

@@ -4,6 +4,8 @@ import os from "os"
 import path from "path"
 import { bundleStatus } from "../src/tools/bundleStatus.js"
 import { changelog } from "../src/tools/changelog.js"
+import { ethos, ETHOS_SECTIONS } from "../src/tools/ethos.js"
+import { getStackProfile } from "../src/lib/stackProfiles.js"
 import { handleReadLedger } from "../src/tools/readLedger.js"
 import { handleReadProgress } from "../src/tools/readProgress.js"
 import { capabilityCheck } from "../src/tools/capabilityCheck.js"
@@ -48,9 +50,11 @@ afterEach(async () => {
 })
 
 describe("bundleStatus", () => {
-  it("returns TOON output containing bundle_version: 0.3.0", async () => {
+  it("returns TOON output containing bundle_version matching package.json", async () => {
+    const pkgRaw = await fs.readFile(new URL("../package.json", import.meta.url), "utf-8")
+    const pkg = JSON.parse(pkgRaw) as { version: string }
     const result = await bundleStatus()
-    expect(result).toContain("bundle_version: 0.3.0")
+    expect(result).toContain(`bundle_version: ${pkg.version}`)
   })
 
   it("returns output containing compatible: true", async () => {
@@ -66,6 +70,51 @@ describe("bundleStatus", () => {
   it("returns output mentioning .claude/skills path", async () => {
     const result = await bundleStatus()
     expect(result).toContain(".claude/skills/")
+  })
+})
+
+describe("ethos", () => {
+  const reference = getStackProfile("reference")
+
+  it("full doc contains all seven ## sections and rendered stack content", async () => {
+    const doc = await ethos(reference)
+    expect(doc).toContain("## Proportionality — declare a tier, don't assume one")
+    expect(doc).toContain("## Pillar 1 — Mechanical Sympathy")
+    expect(doc).toContain("## Pillar 2 — Security (framework-evaluated)")
+    expect(doc).toContain("## Pillar 3 — Observability (contract-first)")
+    expect(doc).toContain("## Cross-pillar rules")
+    expect(doc).toContain("## Design-time question set (design sessions must cover)")
+    expect(doc).toContain("## Review-time checklist (implementor Ethos Compliance gate G6 / council lenses)")
+    expect(doc).toContain("InfluxDB")
+    expect(doc).toContain("ATT&CK")
+    expect(doc).not.toContain("{{stack:")
+  })
+
+  it("bundled doc never references ~/.claude", async () => {
+    const doc = await ethos(reference)
+    expect(doc).not.toContain("~/.claude")
+    expect(doc).not.toContain(".claude/")
+  })
+
+  it("section=observability returns only Pillar 3", async () => {
+    const out = await ethos(reference, "observability")
+    expect(out).toContain("## Pillar 3 — Observability (contract-first)")
+    expect(out).toContain("InfluxDB")
+    expect(out).not.toContain("## Pillar 1")
+    expect(out).not.toContain("## Cross-pillar rules")
+  })
+
+  it("section=security returns only Pillar 2 with the frameworks section rendered", async () => {
+    const out = await ethos(reference, "security")
+    expect(out).toContain("## Pillar 2 — Security (framework-evaluated)")
+    expect(out).toContain("ATT&CK")
+    expect(out).not.toContain("## Pillar 3")
+  })
+
+  it("ETHOS_SECTIONS is the bounded 7-slug enum", () => {
+    expect(ETHOS_SECTIONS).toHaveLength(7)
+    expect(ETHOS_SECTIONS).toContain("proportionality")
+    expect(ETHOS_SECTIONS).toContain("review-checklist")
   })
 })
 
@@ -129,7 +178,7 @@ describe("handleReadLedger", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "Worker brief: implement unit u1 types and constants per spec" },
+      data: { s: "delegated", brief: "Worker brief: implement unit u1 types and constants per spec", tier: "standard", route_reason: "default sonnet worker" },
     })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",
@@ -139,10 +188,11 @@ describe("handleReadLedger", () => {
     })
 
     const result = await handleReadLedger(ledgerPath, { query: "verdicts" })
-    expect(result).toContain("phase | unit | verdict | via | note")
+    expect(result).toContain("phase | unit | tier | verdict | via | note")
     expect(result).toContain("p1")
     expect(result).toContain("u1")
     expect(result).toContain("pass")
+    expect(result).toContain("standard")
   })
 
   it("verdicts table includes via and note values when present", async () => {
@@ -162,6 +212,32 @@ describe("handleReadLedger", () => {
     const result = await handleReadLedger(ledgerPath, { query: "verdicts" })
     expect(result).toContain("worker")
     expect(result).toContain("manual smoke: ran CLI against fixture")
+  })
+
+  it("single-unit view includes tier, route_reason, and delegation count", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "Worker brief for unit u1 implementation work", tier: "cheap", route_reason: "mechanical rename" },
+    })
+    const result = await handleReadLedger(ledgerPath, { phase: "p1", unit_id: "u1" })
+    expect(result).toContain("tier: cheap")
+    expect(result).toContain("route_reason: mechanical rename")
+    expect(result).toContain("delegations: 1")
+  })
+
+  it("returns reviews table for query: reviews", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "record_review",
+      phase: "p1",
+      data: { advisor: "gemini", findings: [{ severity: "high", file: "a.ts", line: "10", description: "boom", classification: "confirmed" }] },
+    })
+    const result = await handleReadLedger(ledgerPath, { query: "reviews" })
+    expect(result).toContain("phase | advisor | severity | class | finding")
+    expect(result).toContain("gemini")
+    expect(result).toContain("confirmed")
+    expect(result).toContain("boom")
   })
 
   it("single-unit view includes via and note", async () => {
@@ -204,9 +280,74 @@ describe("handleReadLedger", () => {
     })
 
     const result = await handleReadLedger(ledgerPath, { query: "phase_gates" })
-    expect(result).toContain("phase | status | gate")
+    expect(result).toContain("phase | status | gate | stale")
     expect(result).toContain("p1")
     expect(result).toContain("pass")
+  })
+
+  it("phase_gates: fresh gate shows '-' (D2b)", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "Worker brief: implement unit u1 types and constants per spec" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "update_phase_gate",
+      phase: "p1",
+      data: { g: "pass" },
+    })
+
+    const result = await handleReadLedger(ledgerPath, { query: "phase_gates" })
+    expect(result).toMatch(/p1 \| \w+ \| pass \| -/)
+  })
+
+  it("phase_gates: STALE after a post-pass unit add (D2b)", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "Worker brief: implement unit u1 types and constants per spec" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "update_phase_gate",
+      phase: "p1",
+      data: { g: "pass" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u2",
+      data: { s: "pending" },
+    })
+
+    const result = await handleReadLedger(ledgerPath, { query: "phase_gates" })
+    expect(result).toMatch(/p1 \| \w+ \| pass \| STALE/)
+  })
+
+  it("phase_gates: absent hash shows 'n/a', never 'STALE' (D2b)", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "done" },
+    })
+
+    const result = await handleReadLedger(ledgerPath, { query: "phase_gates" })
+    expect(result).toMatch(/n\/a/)
+    expect(result).not.toContain("STALE")
   })
 
   it("corrupt ledger → returns ledger_corrupt error WITHOUT renaming the file", async () => {
@@ -300,7 +441,7 @@ describe("capabilityCheck", () => {
       const result = await capabilityCheck("codex")
       expect(result).toContain("cli: codex")
       expect(result).toContain("available: false")
-      expect(result).toContain("auth_status:")
+      expect(result).toContain("auth_status: not_found")
     })
   }, 5000)
 
