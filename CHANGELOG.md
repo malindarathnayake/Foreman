@@ -1,9 +1,9 @@
 # Changelog
 
-## 0.5.1 - 2026-07-07
+## 0.5.2 - 2026-07-07
 
 - Patch release so the published package and release tarball carry the two post-tag security fixes that v0.5.0's re-tagged run could not publish (409 — cannot publish over an existing version): the gitleaks test-fixture allowlist (`.gitleaks.toml`) and the linear slash-trim in the worker-patch protected-path check (CodeQL `js/polynomial-redos`, `workerResponse.ts`).
-- No functional changes beyond those fixes; bumped package to `0.5.1`.
+- Supersedes the unpublished `v0.5.1` tag (retired before its publish run); no functional changes beyond the fixes above. Bumped package to `0.5.2`.
 
 ## 0.5.0 - 2026-07-06
 
