@@ -4,13 +4,29 @@
 # Allowlist policy (Foreman v0.5.0 unit 1e): entries are EXACT TOKENS from test
 # fixtures only — never patterns broad enough to mask a real credential, never
 # production values. Every entry MUST carry a provenance comment naming the
-# fixture file and why the string is token-shaped. There are currently no
-# entries: the repo was swept for token-shaped fixture strings on 2026-07-06
-# (gh/AWS/OpenAI/Slack/Google key shapes + PEM headers) and none exist.
+# fixture file and why the string is token-shaped. The repo was swept for
+# token-shaped fixture strings on 2026-07-06 (gh/AWS/OpenAI/Slack/Google key
+# shapes + PEM headers); the entries below were added when the P4 redaction
+# test fixtures landed and generic-api-key flagged their deliberately fake,
+# low-entropy planted values (~3.5 bits entropy, unit id embedded in the name).
 
 [extend]
 useDefault = true
 
-# [allowlist]
-# description = "exact test-fixture tokens only — see policy header"
-# regexes = []
+[allowlist]
+description = "exact test-fixture tokens only — see policy header"
+regexes = [
+  # tests/foremanEnv.test.ts — FIXTURE_KEY_VALUE for the .foremanenv ${ENV:NAME}
+  # loader tests (unit 4c). Deterministic fake; asserted scrubbed-from-output.
+  '''fixture_key_4c000001''',
+  # tests/invokeWorkerLifecycle.test.ts — FIXTURE_KEY_VALUE for the S7 lifecycle
+  # secret-block tests (unit 4g). Deterministic fake; used to prove the outbound gate.
+  '''fixture_key_4g000001''',
+  # tests/redaction.test.ts — PLANTED_KEYS env-var NAMES (unit 4b scrub round-trips).
+  # generic-api-key misreads the adjacent quoted NAME as a value; these are names,
+  # their planted values are fixture_value_4b0000xx.
+  '''SCRUB_4B_LEDGER_KEY''',
+  '''SCRUB_4B_JOURNAL_KEY''',
+  '''SCRUB_4B_PROGRESS_KEY''',
+  '''SCRUB_4B_MARKDOWN_KEY''',
+]
