@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1 - 2026-07-07
+
+- Patch release so the published package and release tarball carry the two post-tag security fixes that v0.5.0's re-tagged run could not publish (409 — cannot publish over an existing version): the gitleaks test-fixture allowlist (`.gitleaks.toml`) and the linear slash-trim in the worker-patch protected-path check (CodeQL `js/polynomial-redos`, `workerResponse.ts`).
+- No functional changes beyond those fixes; bumped package to `0.5.1`.
+
 ## 0.5.0 - 2026-07-06
 
 - S8 CCR hardening: failure-output exemption (≤8192-char failing output passes through verbatim), dead-marker/empty-output fail-open guards, miss-recovery (expired `<<ccr:HASH>>` retrieval names the originating tool), Foreman-side TTL default raised to 1800 s, vendored-fork SYNC.md with pinned upstream SHAs.
