@@ -11,7 +11,7 @@ import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
 import { createServer } from "../src/server.js"
 import { runTests } from "../src/tools/runTests.js"
 import { invokeAdvisor } from "../src/tools/invokeAdvisor.js"
-import { dedupeMetaHead, lossyGuardsReject, getStore, ccrTtlSeconds } from "../src/lib/compression.js"
+import { dedupeMetaHead, lossyGuardsReject, getStore, ccrTtlSeconds, maybeCompress, drainCcrStats } from "../src/lib/compression.js"
 
 // Real run_tests compression of the multi-thousand-line SYNTHETIC_LOG takes a few seconds;
 // give this suite ample headroom over vitest's 5s default so it never flakes under CI/host load.
@@ -854,5 +854,78 @@ describe("lossyGuardsReject (S8 guards)", () => {
     expect(
       lossyGuardsReject("original body", "digest <<ccr:0123456789abcdef01234567>> tail")
     ).toBe(false)
+  })
+})
+
+// ---------------------------------------------------------------------------
+// CCR stats evidence (5b) — per-tool accumulator recording actually-served
+// compression outcomes, drained by write_ledger. Pure calls to maybeCompress
+// (no server/client needed) — mirrors Suite 7/8's pure-function style.
+// ---------------------------------------------------------------------------
+describe("CCR stats evidence (5b)", () => {
+  it("a compressed outcome records calls/tokens_before/tokens_after", () => {
+    drainCcrStats()
+    process.env.FOREMAN_COMPRESSION = "1"
+    const input = SYNTHETIC_LOG
+    const out = maybeCompress("run_tests", input)
+    expect(out).not.toBe(input)
+    const stats = drainCcrStats()
+    expect(stats).toEqual({
+      run_tests: {
+        calls: 1,
+        tokens_before: Math.ceil(input.length / 4),
+        tokens_after: Math.ceil(out.length / 4),
+      },
+    })
+  })
+
+  it("drain clears — an immediate second drain returns {}", () => {
+    drainCcrStats()
+    process.env.FOREMAN_COMPRESSION = "1"
+    const out = maybeCompress("run_tests", SYNTHETIC_LOG)
+    expect(out).not.toBe(SYNTHETIC_LOG)
+    drainCcrStats() // first drain — discard result, just clears state
+    expect(drainCcrStats()).toEqual({})
+  })
+
+  it("two compressions on the same tool aggregate", () => {
+    drainCcrStats()
+    process.env.FOREMAN_COMPRESSION = "1"
+    const out1 = maybeCompress("run_tests", SYNTHETIC_LOG)
+    const out2 = maybeCompress("run_tests", SYNTHETIC_LOG)
+    expect(out1).not.toBe(SYNTHETIC_LOG)
+    expect(out2).not.toBe(SYNTHETIC_LOG)
+    const stats = drainCcrStats()
+    expect(stats.run_tests.calls).toBe(2)
+    expect(stats.run_tests.tokens_before).toBe(2 * Math.ceil(SYNTHETIC_LOG.length / 4))
+    expect(stats.run_tests.tokens_after).toBe(
+      Math.ceil(out1.length / 4) + Math.ceil(out2.length / 4)
+    )
+  })
+
+  it("FOREMAN_COMPRESSION=0 passthrough records nothing", () => {
+    drainCcrStats()
+    process.env.FOREMAN_COMPRESSION = "0"
+    const out = maybeCompress("run_tests", SYNTHETIC_LOG)
+    expect(out).toBe(SYNTHETIC_LOG)
+    expect(drainCcrStats()).toEqual({})
+  })
+
+  it("non-allowlisted tool name records nothing", () => {
+    drainCcrStats()
+    process.env.FOREMAN_COMPRESSION = "1"
+    delete process.env.FOREMAN_COMPRESSION_TOOLS // default allowlist: run_tests,invoke_advisor
+    const out = maybeCompress("some_other_tool", SYNTHETIC_LOG)
+    expect(out).toBe(SYNTHETIC_LOG)
+    expect(drainCcrStats()).toEqual({})
+  })
+
+  it("failure-output exemption records nothing", () => {
+    drainCcrStats()
+    process.env.FOREMAN_COMPRESSION = "1"
+    const fixture = buildFailureOutput(1, 6500)
+    const out = maybeCompress("run_tests", fixture)
+    expect(out).toBe(fixture)
+    expect(drainCcrStats()).toEqual({})
   })
 })

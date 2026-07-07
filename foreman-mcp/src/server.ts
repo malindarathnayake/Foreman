@@ -8,11 +8,14 @@ import { fileURLToPath } from "url"
 
 import { bundleStatus } from "./tools/bundleStatus.js"
 import { changelog } from "./tools/changelog.js"
+import { ethos, ETHOS_SECTIONS } from "./tools/ethos.js"
+import { resolveStackProfile } from "./lib/stackProfiles.js"
 import { handleReadLedger } from "./tools/readLedger.js"
 import { handleReadProgress } from "./tools/readProgress.js"
 import { capabilityCheck } from "./tools/capabilityCheck.js"
 import { handleWriteLedger } from "./tools/writeLedger.js"
 import { handleWriteProgress } from "./tools/writeProgress.js"
+import { handleInvokeWorker } from "./tools/invokeWorker.js"
 import { normalizeReview } from "./tools/normalizeReview.js"
 import { verifyCitations } from "./tools/verifyCitations.js"
 import { runTests } from "./tools/runTests.js"
@@ -56,6 +59,13 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   const journalPath = config?.journalPath ?? "Docs/.foreman-journal.json"
   const host: HostId = config?.host ?? "claude-code"
 
+  // Stack profile resolves once per process, like host: env wins, then the
+  // project override file <docsDir>/foreman-stack-profile.md, then bundled reference.
+  const stackProfile = await resolveStackProfile({
+    env: process.env.FOREMAN_STACK_PROFILE ?? null,
+    docsDir,
+  })
+
   // Version comes from package.json — the single source; releaseInvariants.test.ts
   // pins package.json === server-reported === CHANGELOG (1g).
   const pkgPath = path.resolve(__dirname, "..", "package.json")
@@ -70,7 +80,14 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
 
   server.registerTool(
     "bundle_status",
-    { description: "Returns the Foreman bundle version and override info." },
+    {
+      description: "Returns the Foreman bundle version and override info.",
+      annotations: {
+        title: "Bundle Status",
+        readOnlyHint: true,
+        destructiveHint: false,
+      },
+    },
     async (_extra) => {
       const text = await bundleStatus()
       return { content: [{ type: "text" as const, text }] }
@@ -81,6 +98,11 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     "host_status",
     {
       description: "Returns the active Foreman host and the model slugs used for worker / advisor invocation. Use to confirm whether skills are rendered for Claude Code, Cursor, or another host.",
+      annotations: {
+        title: "Host Status",
+        readOnlyHint: true,
+        destructiveHint: false,
+      },
     },
     async (_extra) => {
       const text = hostStatus(host)
@@ -95,6 +117,11 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       inputSchema: {
         since_version: z.string().max(20).optional(),
       },
+      annotations: {
+        title: "Changelog",
+        readOnlyHint: true,
+        destructiveHint: false,
+      },
     },
     async (args, _extra) => {
       const text = changelog(args.since_version)
@@ -103,13 +130,38 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   )
 
   server.registerTool(
+    "ethos",
+    {
+      description:
+        "Serves the canonical engineering-ethos document consumed by the Foreman protocols (proportionality tiers, three pillars, G6 review checklist), rendered with the active stack profile. Pass section to fetch a single ## section.",
+      inputSchema: {
+        section: z.enum(ETHOS_SECTIONS).optional(),
+      },
+      annotations: {
+        title: "Engineering Ethos",
+        readOnlyHint: true,
+        destructiveHint: false,
+      },
+    },
+    async (args, _extra) => {
+      const text = await ethos(stackProfile, args.section)
+      return { content: [{ type: "text" as const, text }] }
+    }
+  )
+
+  server.registerTool(
     "read_ledger",
     {
-      description: "Reads the Foreman ledger file.",
+      description: "Reads the Foreman ledger file. Query 'delegation_metrics' derives worker-delegation metrics from the events sidecar.",
       inputSchema: {
         unit_id: z.string().max(10000).optional(),
         phase: z.string().max(10000).optional(),
-        query: z.enum(["verdicts", "rejections", "phase_gates", "reviews", "full"]).optional(),
+        query: z.enum(["verdicts", "rejections", "phase_gates", "reviews", "full", "delegation_metrics"]).optional(),
+      },
+      annotations: {
+        title: "Read Ledger",
+        readOnlyHint: true,
+        destructiveHint: false,
       },
     },
     async (args, _extra) => {
@@ -125,6 +177,11 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       inputSchema: {
         last_n_completed: z.number().min(1).max(100).optional(),
       },
+      annotations: {
+        title: "Read Progress",
+        readOnlyHint: true,
+        destructiveHint: false,
+      },
     },
     async (args, _extra) => {
       const text = await handleReadProgress(progressPath, args.last_n_completed)
@@ -139,6 +196,11 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       inputSchema: {
         last_n: z.number().min(1).max(100).optional(),
         rollup_only: z.boolean().optional(),
+      },
+      annotations: {
+        title: "Read Journal",
+        readOnlyHint: true,
+        destructiveHint: false,
       },
     },
     async (args, _extra) => {
@@ -157,9 +219,17 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   server.registerTool(
     "capability_check",
     {
-      description: "Checks whether codex or gemini CLI is available. In cursor host mode, returns a synthetic available response (Task subagent is always reachable).",
+      description:
+        host === "cursor"
+          ? "Returns a synthetic available response for the requested advisor — Cursor Task subagents are always reachable, so no CLI probe runs."
+          : "Checks whether the codex or gemini CLI is available and authenticated. Returns a closed auth_status taxonomy (ok|not_found|not_trusted|auth_expired|probe_timeout|error) with a corrective hint on failures.",
       inputSchema: {
         cli: z.enum(["codex", "gemini"]),
+      },
+      annotations: {
+        title: "Capability Check",
+        readOnlyHint: true,
+        destructiveHint: false,
       },
     },
     async (args, _extra) => {
@@ -176,6 +246,11 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         cli: z.enum(["codex", "gemini"]),
         prompt: z.string().max(100000),
         timeout_ms: z.number().min(5000).max(600000).default(300000),
+      },
+      annotations: {
+        title: "Invoke Advisor",
+        readOnlyHint: false,
+        destructiveHint: false,
       },
     },
     async (args, _extra) => {
@@ -209,9 +284,52 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         phase: z.string().max(10000).optional(),
         data: z.record(z.unknown()),
       },
+      annotations: {
+        title: "Write Ledger",
+        readOnlyHint: false,
+        destructiveHint: false,
+      },
     },
     async (args, _extra) => {
       const text = await handleWriteLedger(ledgerPath, args)
+      return { content: [{ type: "text" as const, text }] }
+    }
+  )
+
+  server.registerTool(
+    "invoke_worker",
+    {
+      description: [
+        "EXPERIMENTAL. Delegates a single patch task to the remote OpenAI-compatible",
+        "chat-completions endpoint configured in .foremanenv, at the requested cost tier.",
+        "EGRESS BOUNDARY: sends the brief and the listed file contents to that endpoint —",
+        "review .foremanenv routing before delegating sensitive code. An outbound secret",
+        "gate blocks the request if any configured secret value appears in the payload.",
+        "One-shot: no retries beyond a single automatic reasoning_effort downgrade if the",
+        "endpoint rejects that parameter. Returns the worker's patch VERBATIM between",
+        "-----BEGIN FOREMAN PATCH----- / -----END FOREMAN PATCH----- sentinels together with",
+        "base_file_hashes for a content-addressed staleness check; the HOST applies the patch,",
+        "never Foreman. Every outcome is classified into a closed failure-stage taxonomy and",
+        "recorded in the hash-chained event sidecar. Requires the unit to already be recorded",
+        "as s:'delegated' in the ledger (invoke_worker never writes the ledger).",
+      ].join(" "),
+      inputSchema: {
+        phase: z.string().max(10000),
+        unit_id: z.string().max(10000),
+        brief: z.string(),
+        tier: z.enum(["cheap", "standard", "premium"]),
+        files: z.array(z.string()).max(100),
+        edit_format: z.enum(["unified_diff", "search_replace", "whole_file"]).optional(),
+      },
+      annotations: {
+        title: "Invoke Patch Worker (EXPERIMENTAL)",
+        readOnlyHint: false,
+        destructiveHint: false,
+        openWorldHint: true,
+      },
+    },
+    async (args, _extra) => {
+      const text = await handleInvokeWorker(args, { docsDir, ledgerPath, journalPath })
       return { content: [{ type: "text" as const, text }] }
     }
   )
@@ -232,6 +350,11 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         operation: z.enum(["update_status", "complete_unit", "log_error", "start_phase"]),
         data: z.record(z.unknown()),
       },
+      annotations: {
+        title: "Write Progress",
+        readOnlyHint: false,
+        destructiveHint: false,
+      },
     },
     async (args, _extra) => {
       const text = await handleWriteProgress(progressPath, args, docsDir, ledgerPath)
@@ -246,6 +369,11 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       inputSchema: {
         operation: z.enum(["init_session", "log_event", "end_session"]),
         data: z.record(z.unknown()),
+      },
+      annotations: {
+        title: "Write Journal",
+        readOnlyHint: false,
+        destructiveHint: false,
       },
     },
     async (args, _extra) => {
@@ -268,6 +396,11 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     {
       description: "Normalizes raw review text into structured findings.",
       inputSchema: NormalizeReviewInputSchema.shape,
+      annotations: {
+        title: "Normalize Review",
+        readOnlyHint: true,
+        destructiveHint: false,
+      },
     },
     async (args, _extra) => {
       const { text } = normalizeReview(args.reviewer, args.raw_text)
@@ -281,6 +414,11 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       description:
         "Verifies that evidence citations reference real files and that any verbatim anchor appears at or near the cited line. Reports location and presence only (CONFIRMED/DRIFTED/MISSING/UNANCHORED/...); does not judge whether the line supports the claim. Reads files under repo_root; deterministic and read-only.",
       inputSchema: VerifyCitationsInputSchema.shape,
+      annotations: {
+        title: "Verify Citations",
+        readOnlyHint: true,
+        destructiveHint: false,
+      },
     },
     async (args, _extra) => {
       const { text } = await verifyCitations(args)
@@ -298,6 +436,11 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         timeout_ms: z.number().min(1).max(600000).optional(),
         max_output_chars: z.number().min(1).max(50000).optional(),
       },
+      annotations: {
+        title: "Run Tests",
+        readOnlyHint: false,
+        destructiveHint: false,
+      },
     },
     async (args, _extra) => {
       const text = maybeCompress("run_tests", await runTests(args.runner, args.args, args.timeout_ms, args.max_output_chars))
@@ -309,9 +452,14 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     "session_orient",
     {
       description: "Returns current Foreman session state: current phase, unit, next pending, blocked status. Call at session start for orientation.",
+      annotations: {
+        title: "Session Orient",
+        readOnlyHint: true,
+        destructiveHint: false,
+      },
     },
     async (_extra) => {
-      const text = await sessionOrient(ledgerPath, progressPath)
+      const text = await sessionOrient(ledgerPath, progressPath, host)
       return { content: [{ type: "text" as const, text }] }
     }
   )
@@ -327,6 +475,11 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         description: tool.description + " Use this whenever a compressed result (it carries a <<ccr:HASH>> marker) may be missing detail you need — e.g. a failed advisor or test call whose summary looks insufficient.",
         inputSchema: {
           hash: z.string().regex(/^[0-9a-f]{24}$/).describe("The 24 lowercase hex characters from a <<ccr:HASH>> marker."),
+        },
+        annotations: {
+          title: "Retrieve Original Output",
+          readOnlyHint: true,
+          destructiveHint: false,
         },
       },
       async (args, _extra) => {
@@ -380,6 +533,11 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       inputSchema: {
         context: z.string().max(10000).optional(),
       },
+      annotations: {
+        title: "Pitboss Implementor Protocol",
+        readOnlyHint: true,
+        destructiveHint: false,
+      },
     },
     async (args, _extra) => {
       const text = await activateImplementor(skillsDir, args.context, host)
@@ -401,6 +559,11 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       inputSchema: {
         context: z.string().max(10000).optional(),
       },
+      annotations: {
+        title: "Design Partner Protocol",
+        readOnlyHint: true,
+        destructiveHint: false,
+      },
     },
     async (args, _extra) => {
       const text = await activateDesignPartner(skillsDir, args.context, host)
@@ -421,6 +584,11 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       ].join(" "),
       inputSchema: {
         context: z.string().max(10000).optional(),
+      },
+      annotations: {
+        title: "Spec Generator Protocol",
+        readOnlyHint: true,
+        destructiveHint: false,
       },
     },
     async (args, _extra) => {
@@ -447,6 +615,11 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       inputSchema: {
         context: z.string().max(10000).optional(),
       },
+      annotations: {
+        title: "Lighttask Protocol",
+        readOnlyHint: true,
+        destructiveHint: false,
+      },
     },
     async (args, _extra) => {
       const text = await activateLighttask(skillsDir, args.context, host)
@@ -470,6 +643,11 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       inputSchema: {
         context: z.string().max(10000).optional(),
       },
+      annotations: {
+        title: "Spec-Man Protocol",
+        readOnlyHint: true,
+        destructiveHint: false,
+      },
     },
     async (args, _extra) => {
       const text = await activateSpecMan(skillsDir, args.context, host)
@@ -490,6 +668,11 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       ].join(" "),
       inputSchema: {
         context: z.string().max(10000).optional(),
+      },
+      annotations: {
+        title: "Doc-Man Protocol",
+        readOnlyHint: true,
+        destructiveHint: false,
       },
     },
     async (args, _extra) => {
@@ -521,6 +704,11 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         title: z.string().max(120).optional(),
         theme: z.enum(["default", "neutral", "dark", "forest", "base"]).optional(),
         open: z.boolean().optional(),
+      },
+      annotations: {
+        title: "Preview Diagram",
+        readOnlyHint: false,
+        destructiveHint: false,
       },
     },
     async (args, _extra) => {
@@ -556,7 +744,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
       async (resourceUri, _extra) => {
         try {
-          const result = await loadSkill(name, skillsDir, host)
+          const result = await loadSkill(name, skillsDir, host, stackProfile)
           return {
             contents: [{ uri: resourceUri.href, mimeType: "text/markdown", text: result.content }],
           }

@@ -7,6 +7,7 @@ import {
   renderHostPlaceholders,
   renderIncludes,
 } from "../src/lib/skillLoader.js"
+import { KNOWN_HOSTS } from "../src/lib/hostProfiles.js"
 
 let tmpDir: string
 let bundledDir: string
@@ -61,6 +62,21 @@ describe("renderHostPlaceholders — direct unit", () => {
     const out = renderHostPlaceholders("X {{  worker_invoke  }} Y", "cursor")
     expect(out).toContain("Task")
     expect(out).not.toContain("{{")
+  })
+
+  it("substitutes worker_invoke for generic in cost-tier vocabulary", () => {
+    const out = renderHostPlaceholders("X {{worker_invoke}} Y", "generic")
+    expect(out).toContain("tier")
+    expect(out).toContain("HOST-CONTRACT.md")
+    expect(out).not.toContain("{{worker_invoke}}")
+  })
+
+  it("substitutes autonomy for every known host with non-empty text", () => {
+    for (const host of KNOWN_HOSTS) {
+      const out = renderHostPlaceholders("{{autonomy}}", host)
+      expect(out, `${host} leaks {{autonomy}}`).not.toContain("{{autonomy}}")
+      expect(out.length, `${host} autonomy non-empty`).toBeGreaterThan(0)
+    }
   })
 })
 
@@ -164,6 +180,16 @@ describe("loadSkill — bundled skills render correctly under both hosts", () =>
   it("no host placeholder leaks through under any host (cursor)", async () => {
     for (const skill of ["implementor", "design-partner", "spec-generator"]) {
       const result = await loadSkill(skill, SKILLS_DIR, "cursor")
+      expect(result.content, `${skill} leaks {{worker_invoke}}`).not.toContain("{{worker_invoke}}")
+      expect(result.content, `${skill} leaks {{advisor_a}}`).not.toContain("{{advisor_a}}")
+      expect(result.content, `${skill} leaks {{advisor_b}}`).not.toContain("{{advisor_b}}")
+      expect(result.content, `${skill} leaks {{advisor_fallback}}`).not.toContain("{{advisor_fallback}}")
+    }
+  })
+
+  it("no host placeholder leaks through under any host (generic)", async () => {
+    for (const skill of ["implementor", "design-partner", "spec-generator"]) {
+      const result = await loadSkill(skill, SKILLS_DIR, "generic")
       expect(result.content, `${skill} leaks {{worker_invoke}}`).not.toContain("{{worker_invoke}}")
       expect(result.content, `${skill} leaks {{advisor_a}}`).not.toContain("{{advisor_a}}")
       expect(result.content, `${skill} leaks {{advisor_b}}`).not.toContain("{{advisor_b}}")

@@ -1,4 +1,5 @@
 import { type HostId, getProfile } from "../lib/hostProfiles.js"
+import { unsupportedCapabilities } from "../lib/capabilitySet.js"
 import { toKeyValue } from "../lib/toon.js"
 
 /**
@@ -30,5 +31,6 @@ export function hostStatus(host: HostId): string {
     advisor_a_model: modelOf("advisor_a"),
     advisor_b_model: modelOf("advisor_b"),
     advisor_b_fallback: advisorBFallback,
+    unsupported_capabilities: unsupportedCapabilities(host),
   })
 }

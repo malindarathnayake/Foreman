@@ -20,6 +20,71 @@ const HEALTH_COMMANDS: Record<string, { command: string; args: string[] }> = {
   },
 }
 
+export type AuthStatus = "ok" | "not_found" | "not_trusted" | "auth_expired" | "probe_timeout" | "error"
+
+interface SentinelRow {
+  cli: "codex" | "gemini"
+  /** CLI version the sentinel was observed against. Re-verify rows on every CLI version bump. */
+  cli_version_pin: string
+  kind: "exit_code" | "stderr_substring"
+  /** exit code number, "any_nonzero" wildcard, or stderr substring */
+  value: number | "any_nonzero" | string
+  maps_to: AuthStatus
+  provenance: string
+}
+
+/**
+ * Versioned per-CLI sentinel table (D11) — the recorded exemption to the
+ * no-prose-classification rule: entries are bounded, version-pinned sentinels,
+ * NOT unbounded regex corpora. Specific rows are checked before wildcards.
+ * Rule: re-verify this table on every CLI version bump.
+ */
+export const SENTINEL_TABLE: readonly SentinelRow[] = [
+  {
+    cli: "gemini", cli_version_pin: "0.47.0", kind: "exit_code", value: 55, maps_to: "not_trusted",
+    provenance: "Session-observed 2026-07-06 against gemini 0.47.0: exit 55 = folder-trust refusal. Version pin re-verified live at implementation (gemini --version -> 0.47.0).",
+  },
+  {
+    cli: "gemini", cli_version_pin: "0.47.0", kind: "exit_code", value: 52, maps_to: "error",
+    provenance: "Session-observed 2026-07-06 against gemini 0.47.0: exit 52 = config error (not an auth state). Version pin re-verified live at implementation.",
+  },
+  {
+    cli: "codex", cli_version_pin: "0.142.4", kind: "exit_code", value: "any_nonzero", maps_to: "auth_expired",
+    provenance: "Documented probe semantics of `codex login status`: exit 0 = authenticated, non-zero = expired/logged out. Re-verified live 2026-07-06 against codex-cli 0.142.4 (exit 0 while authenticated).",
+  },
+]
+
+function hintFor(status: AuthStatus, cli: "codex" | "gemini"): string | null {
+  switch (status) {
+    case "ok": return null
+    case "not_found": return "install the CLI or fix PATH, then re-run capability_check"
+    case "probe_timeout": return "probe exceeded its 15s budget — retry; if persistent, check login state and network"
+    case "not_trusted": return "trust the folder: run the gemini CLI interactively in this directory once and accept the trust prompt"
+    case "auth_expired": return cli === "codex" ? "re-login: run `codex login`" : "re-authenticate: run the gemini CLI interactively (or fix GEMINI_API_KEY)"
+    case "error": return "unclassified CLI error — run the health command manually and inspect stderr"
+  }
+}
+
+function classifyNonZeroExit(cli: "codex" | "gemini", exitCode: number, stderr: string): AuthStatus {
+  const rows = SENTINEL_TABLE.filter((r) => r.cli === cli)
+  // specific exit codes first
+  for (const r of rows) if (r.kind === "exit_code" && r.value === exitCode) return r.maps_to
+  for (const r of rows) if (r.kind === "stderr_substring" && typeof r.value === "string" && stderr.includes(r.value)) return r.maps_to
+  for (const r of rows) if (r.kind === "exit_code" && r.value === "any_nonzero") return r.maps_to
+  return "error"
+}
+
+function respond(cli: "codex" | "gemini", available: boolean, version: string, status: AuthStatus): string {
+  const hint = hintFor(status, cli)
+  return toKeyValue({
+    cli,
+    available: String(available),
+    version,
+    auth_status: status,
+    ...(hint ? { hint } : {}),
+  })
+}
+
 /**
  * Synthetic capability response for non-CLI hosts. In Cursor mode the LLM has
  * Task subagent access by definition — there is no binary to probe. Returning
@@ -57,7 +122,7 @@ export async function capabilityCheck(
 
   const config = HEALTH_COMMANDS[cli]
   if (!config) {
-    return toKeyValue({ cli, available: "false", version: "null", auth_status: "unknown" })
+    return respond(cli, false, "null", "not_found")
   }
 
   // Resolve CLI to a SpawnPlan (platform-aware: which/where, .cmd wrapping)
@@ -67,7 +132,7 @@ export async function capabilityCheck(
   } else {
     const resolution = await resolveInvocation(config.command)
     if (!resolution.ok) {
-      return toKeyValue({ cli, available: "false", version: "null", auth_status: "unknown" })
+      return respond(cli, false, "null", "not_found")
     }
     plan = resolution.plan
     resolvedPlans.set(cli, plan)
@@ -88,16 +153,16 @@ export async function capabilityCheck(
   const result = await runExternalCli(plan.command, [...plan.args, ...config.args], 15000)
 
   if (result.exitCode === -1 && !result.timedOut) {
-    return toKeyValue({ cli, available: "false", version: "null", auth_status: "unknown" })
+    return respond(cli, false, "null", "not_found")
   }
 
   if (result.timedOut) {
-    return toKeyValue({ cli, available: "true", version: version ?? "unknown", auth_status: "expired" })
+    return respond(cli, true, version ?? "unknown", "probe_timeout")
   }
 
   if (result.exitCode !== 0) {
-    return toKeyValue({ cli, available: "true", version: version ?? "unknown", auth_status: "expired" })
+    return respond(cli, true, version ?? "unknown", classifyNonZeroExit(cli, result.exitCode, result.stderr ?? ""))
   }
 
-  return toKeyValue({ cli, available: "true", version: version ?? "unknown", auth_status: "ok" })
+  return respond(cli, true, version ?? "unknown", "ok")
 }

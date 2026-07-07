@@ -3,6 +3,8 @@ import path from "path"
 import { fileURLToPath } from "url"
 import type { JournalFile, JournalSession, JournalRollup, WriteJournalInput } from "../types.js"
 import { WriteJournalInputSchema } from "../types.js"
+import { atomicWriteFile } from "./atomicWrite.js"
+import { scrub } from "./redaction.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -103,6 +105,9 @@ export async function initSession(filePath: string, input: WriteJournalInput): P
       worker: data.env.worker,
       codex: data.env.codex,
       gemini: data.env.gemini,
+      // R8: declared capability classes — pass-through only, absent keys stay absent.
+      ...(data.env.agent_class !== undefined ? { agent_class: data.env.agent_class } : {}),
+      ...(data.env.worker_class !== undefined ? { worker_class: data.env.worker_class } : {}),
     }
 
     journal.sessions.push(sessionWithEnv)
@@ -112,10 +117,8 @@ export async function initSession(filePath: string, input: WriteJournalInput): P
       journal.sessions = journal.sessions.slice(-50)
     }
 
-    // Atomic write
-    const tmpPath = `${filePath}.tmp`
-    await fs.writeFile(tmpPath, JSON.stringify(journal), "utf-8")
-    await fs.rename(tmpPath, filePath)
+    // Atomic write via shared helper (unique tmp suffix — cross-process safe, D2c)
+    await atomicWriteFile(filePath, JSON.stringify(journal), { scrub })
 
     return journal
   })
@@ -151,10 +154,8 @@ export async function logEvent(filePath: string, input: WriteJournalInput): Prom
       ...(data.gate !== undefined ? { gate: data.gate } : {}),
     })
 
-    // Atomic write
-    const tmpPath = `${filePath}.tmp`
-    await fs.writeFile(tmpPath, JSON.stringify(journal), "utf-8")
-    await fs.rename(tmpPath, filePath)
+    // Atomic write via shared helper (unique tmp suffix — cross-process safe, D2c)
+    await atomicWriteFile(filePath, JSON.stringify(journal), { scrub })
 
     return "ok"
   })
@@ -195,10 +196,8 @@ export async function endSession(filePath: string, input: WriteJournalInput): Pr
       journal.rollup = computeRollup(journal.sessions)
     }
 
-    // Atomic write
-    const tmpPath = `${filePath}.tmp`
-    await fs.writeFile(tmpPath, JSON.stringify(journal), "utf-8")
-    await fs.rename(tmpPath, filePath)
+    // Atomic write via shared helper (unique tmp suffix — cross-process safe, D2c)
+    await atomicWriteFile(filePath, JSON.stringify(journal), { scrub })
 
     return journal
   })

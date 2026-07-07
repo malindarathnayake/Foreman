@@ -35,6 +35,10 @@ async function readRootChangelog(): Promise<string> {
   return fs.readFile(new URL("../../CHANGELOG.md", import.meta.url), "utf-8")
 }
 
+async function readRootFile(name: string): Promise<string> {
+  return fs.readFile(new URL(`../../${name}`, import.meta.url), "utf-8")
+}
+
 describe("release invariants", () => {
   it("package.json version === server-reported version", async () => {
     await setupServer()
@@ -74,5 +78,25 @@ describe("release invariants", () => {
     const actualNames = result.tools.map((t) => t.name).sort()
     const expectedNames = [...EXPECTED_TOOLS].sort()
     expect(actualNames).toEqual(expectedNames)
+  })
+
+  it('README "Current release" line agrees with package.json', async () => {
+    const pkg = await readPackageJson()
+    const readme = await readRootFile("README.md")
+    const match = readme.match(/\*\*Current release:\*\* `v(\d+\.\d+\.\d+)`/)
+    expect(match).not.toBeNull()
+    expect(match?.[1]).toBe(pkg.version)
+  })
+
+  it("llms.txt tool count agrees with the live registry", async () => {
+    await setupServer()
+    const llmsTxt = await readRootFile("llms.txt")
+    const match = llmsTxt.match(/Tool count: (\d+)/)
+    expect(match).not.toBeNull()
+    const result = await client.listTools()
+    expect(Number(match?.[1])).toBe(result.tools.length)
+    for (const tool of result.tools) {
+      expect(llmsTxt).toContain(tool.name)
+    }
   })
 })

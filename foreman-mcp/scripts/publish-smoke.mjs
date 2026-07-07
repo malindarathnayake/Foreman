@@ -44,13 +44,14 @@ import readline from "node:readline"
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-// The 23 tools the live registry (src/server.ts) is expected to expose.
+// The 25 tools the live registry (src/server.ts) is expected to expose.
 // Keep in sync manually — tests/releaseInvariants.test.ts fails the build
 // the moment this drifts from the real tool list.
 export const EXPECTED_TOOLS = [
   "bundle_status",
   "host_status",
   "changelog",
+  "ethos",
   "read_ledger",
   "read_progress",
   "capability_check",
@@ -71,6 +72,7 @@ export const EXPECTED_TOOLS = [
   "session_orient",
   "retrieve_original",
   "preview_diagram",
+  "invoke_worker",
 ]
 
 const JSONRPC_TIMEOUT_MS = 30_000

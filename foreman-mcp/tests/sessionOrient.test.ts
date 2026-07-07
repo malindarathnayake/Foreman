@@ -3,6 +3,7 @@ import fs from "fs/promises"
 import os from "os"
 import path from "path"
 import { sessionOrient } from "../src/tools/sessionOrient.js"
+import { writeLedger } from "../src/lib/ledger.js"
 
 let tmpDir: string
 let ledgerPath: string
@@ -227,5 +228,79 @@ describe("sessionOrient", () => {
     const siblings = await fs.readdir(tmpDir)
     const corrupted = siblings.filter((f) => f.includes(".corrupt."))
     expect(corrupted).toHaveLength(0)
+  })
+
+  // ─── Test 8: unsupported_capabilities echo ───────────────────────────────────
+
+  it("default host (empty ledger) → unsupported_capabilities: none", async () => {
+    await seedLedger({ v: 1, ts: "2026-04-16T00:00:00Z", phases: {} })
+    await seedProgress()
+
+    const result = await sessionOrient(ledgerPath, progressPath)
+
+    expect(result).toContain("unsupported_capabilities: none")
+  })
+
+  it('cursor host → unsupported_capabilities: "autonomy"', async () => {
+    await seedLedger({ v: 1, ts: "2026-04-16T00:00:00Z", phases: {} })
+    await seedProgress()
+
+    const result = await sessionOrient(ledgerPath, progressPath, "cursor")
+
+    expect(result).toContain("unsupported_capabilities: autonomy")
+  })
+
+  // ─── Test 9: stale_gates echo (D2b) ──────────────────────────────────────────
+
+  it("normal in-progress ledger → stale_gates: none", async () => {
+    await seedLedger({
+      v: 1,
+      ts: "2026-04-16T00:00:00Z",
+      phases: {
+        p1: {
+          s: "ip",
+          g: "pending",
+          units: {
+            u1: { s: "pending", v: "pending", w: null, rej: [] },
+          },
+        },
+      },
+    })
+    await seedProgress()
+
+    const result = await sessionOrient(ledgerPath, progressPath)
+
+    expect(result).toContain("stale_gates: none")
+  })
+
+  it("gate pass + post-pass unit add → stale_gates: p1", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "update_phase_gate",
+      phase: "p1",
+      data: { g: "pass" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u2",
+      data: { s: "pending" },
+    })
+    await seedProgress()
+
+    const result = await sessionOrient(ledgerPath, progressPath)
+
+    expect(result).toContain("stale_gates: p1")
   })
 })

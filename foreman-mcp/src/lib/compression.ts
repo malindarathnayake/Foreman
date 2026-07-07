@@ -14,6 +14,29 @@ export function toolNameForHash(hash: string): string | undefined {
   return hashToolMap.get(hash)
 }
 
+// S6 CCR evidence accumulator (5b): per-tool aggregate of compression outcomes since the
+// last drain. Token counts use the chars/4 estimate (rough English/code tokenizer heuristic —
+// evidence-grade, not billing-grade). Recorded ONLY for outcomes actually SERVED compressed
+// (post-guards, final text): a guard-rejected digest or exemption passthrough saved nothing
+// and must not claim savings. In-memory and best-effort: pending entries not yet folded into
+// the ledger by a write_ledger call are lost on process restart (documented restart-loss).
+// Bounded: keys are tool names from the compression allowlist (allowedTools()).
+const pendingCcrStats: Record<string, { calls: number; tokens_before: number; tokens_after: number }> = {}
+
+function recordCcrOutcome(toolName: string, beforeChars: number, afterChars: number): void {
+  const entry = (pendingCcrStats[toolName] ??= { calls: 0, tokens_before: 0, tokens_after: 0 })
+  entry.calls += 1
+  entry.tokens_before += Math.ceil(beforeChars / 4)
+  entry.tokens_after += Math.ceil(afterChars / 4)
+}
+
+/** Returns the pending per-tool CCR aggregates and clears them (drain semantics). */
+export function drainCcrStats(): Record<string, { calls: number; tokens_before: number; tokens_after: number }> {
+  const drained = { ...pendingCcrStats }
+  for (const key of Object.keys(pendingCcrStats)) delete pendingCcrStats[key]
+  return drained
+}
+
 export function compressionEnabled(): boolean {
   // Default ON (0.2.0 pilot). Kill switch: FOREMAN_COMPRESSION=0. Any other value (incl. unset, "1") = on.
   return process.env.FOREMAN_COMPRESSION !== "0"
@@ -98,11 +121,14 @@ export function maybeCompress(toolName: string, text: string): string {
     hashToolMap.delete(oldest)
   }
   // Never prepend onto smart_crusher output — that strategy emits valid JSON.
-  if (result.strategy === "smart_crusher") {
-    return result.text
-  }
-  if (head === null) return result.text
-  return dedupeMetaHead(head, result.text)
+  const served =
+    result.strategy === "smart_crusher"
+      ? result.text
+      : head === null
+        ? result.text
+        : dedupeMetaHead(head, result.text)
+  recordCcrOutcome(toolName, text.length, served.length)
+  return served
 }
 
 // S8 fail-open guards on a lossy "compressed" result. A result with no retrievable

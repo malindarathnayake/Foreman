@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
-import { readLedger, writeLedger } from "../src/lib/ledger.js"
+import { computeGateUnitsHash, readLedger, writeLedger } from "../src/lib/ledger.js"
 
 let tmpDir: string
 let ledgerPath: string
@@ -562,5 +562,753 @@ describe("ledger v0.0.7.5 backward compat", () => {
     const ledger = await readLedger(ledgerPath)
     expect(ledger.phases.p1.units.u1.via).toBeUndefined()
     expect(ledger.phases.p1.units.u1.note).toBeUndefined()
+  })
+})
+
+describe("ledger v0.5.0 delegation cap (D2a)", () => {
+  const brief = "Worker brief: implement unit per spec (>= 20 chars)"
+
+  it("add_rejection stamps the current delegation attempt", async () => {
+    // Pre-delegation rejection stamps attempt 0
+    await writeLedger(ledgerPath, {
+      operation: "add_rejection",
+      phase: "p1",
+      unit_id: "u1",
+      data: { r: "reviewer-a", msg: "pre-delegation issue", ts: "2026-04-02T11:00:00Z" },
+    })
+
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief },
+    })
+
+    // Post-delegation rejection stamps attempt 1
+    await writeLedger(ledgerPath, {
+      operation: "add_rejection",
+      phase: "p1",
+      unit_id: "u1",
+      data: { r: "reviewer-b", msg: "post-delegation issue", ts: "2026-04-02T12:00:00Z" },
+    })
+
+    const unit = (await readLedger(ledgerPath)).phases.p1.units.u1
+    expect(unit.rej).toHaveLength(2)
+    expect(unit.rej[0].attempt).toBe(0)
+    expect(unit.rej[1].attempt).toBe(1)
+  })
+
+  it("3 distinct stamped attempts blocks the 4th delegation", async () => {
+    for (let i = 0; i < 3; i++) {
+      await writeLedger(ledgerPath, {
+        operation: "set_unit_status",
+        phase: "p1",
+        unit_id: "u1",
+        data: { s: "delegated", brief: `${brief} #${i}` },
+      })
+      await writeLedger(ledgerPath, {
+        operation: "add_rejection",
+        phase: "p1",
+        unit_id: "u1",
+        data: { r: "reviewer-a", msg: `rejection ${i}`, ts: `2026-04-0${i + 1}T00:00:00Z` },
+      })
+    }
+
+    await expect(
+      writeLedger(ledgerPath, {
+        operation: "set_unit_status",
+        phase: "p1",
+        unit_id: "u1",
+        data: { s: "delegated", brief: `${brief} #3` },
+      })
+    ).rejects.toThrow(/DELEGATION CAP: unit 'u1' has 3 distinct rejected attempts \(cap 3\)/)
+  })
+
+  it("user_override:true passes the cap and is recorded on the delegation entry", async () => {
+    for (let i = 0; i < 3; i++) {
+      await writeLedger(ledgerPath, {
+        operation: "set_unit_status",
+        phase: "p1",
+        unit_id: "u1",
+        data: { s: "delegated", brief: `${brief} #${i}` },
+      })
+      await writeLedger(ledgerPath, {
+        operation: "add_rejection",
+        phase: "p1",
+        unit_id: "u1",
+        data: { r: "reviewer-a", msg: `rejection ${i}`, ts: `2026-04-0${i + 1}T00:00:00Z` },
+      })
+    }
+
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief, user_override: true },
+    })
+
+    const unit = (await readLedger(ledgerPath)).phases.p1.units.u1
+    const delegations = unit.delegations!
+    expect(delegations).toHaveLength(4)
+    expect(delegations[3].user_override).toBe(true)
+    expect(delegations[0]).not.toHaveProperty("user_override")
+    expect(delegations[1]).not.toHaveProperty("user_override")
+    expect(delegations[2]).not.toHaveProperty("user_override")
+  })
+
+  it("two reviewers rejecting the same attempt count as one distinct attempt — cap not fired", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "add_rejection",
+      phase: "p1",
+      unit_id: "u1",
+      data: { r: "reviewer-a", msg: "issue A", ts: "2026-04-02T11:00:00Z" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "add_rejection",
+      phase: "p1",
+      unit_id: "u1",
+      data: { r: "reviewer-b", msg: "issue B", ts: "2026-04-02T11:05:00Z" },
+    })
+
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: `${brief} retry` },
+    })
+
+    const unit = (await readLedger(ledgerPath)).phases.p1.units.u1
+    expect(unit.delegations).toHaveLength(2)
+    expect(unit.w).toContain("retry")
+  })
+
+  it("3 legacy unstamped rejections block delegation (conservative treatment)", async () => {
+    const legacy = {
+      v: 1,
+      ts: "2026-01-01T00:00:00.000Z",
+      phases: {
+        p1: {
+          s: "ip",
+          g: "pending",
+          units: {
+            u1: {
+              s: "ip",
+              v: "pending",
+              w: "old brief",
+              rej: [
+                { r: "reviewer-a", msg: "legacy issue 1", ts: "2026-01-01T00:00:00Z" },
+                { r: "reviewer-b", msg: "legacy issue 2", ts: "2026-01-01T01:00:00Z" },
+                { r: "reviewer-c", msg: "legacy issue 3", ts: "2026-01-01T02:00:00Z" },
+              ],
+            },
+          },
+        },
+      },
+    }
+    await fs.writeFile(ledgerPath, JSON.stringify(legacy), "utf-8")
+
+    await expect(
+      writeLedger(ledgerPath, {
+        operation: "set_unit_status",
+        phase: "p1",
+        unit_id: "u1",
+        data: { s: "delegated", brief },
+      })
+    ).rejects.toThrow(/DELEGATION CAP/)
+  })
+
+  it("2 legacy unstamped rejections allow delegation", async () => {
+    const legacy = {
+      v: 1,
+      ts: "2026-01-01T00:00:00.000Z",
+      phases: {
+        p1: {
+          s: "ip",
+          g: "pending",
+          units: {
+            u1: {
+              s: "ip",
+              v: "pending",
+              w: "old brief",
+              rej: [
+                { r: "reviewer-a", msg: "legacy issue 1", ts: "2026-01-01T00:00:00Z" },
+                { r: "reviewer-b", msg: "legacy issue 2", ts: "2026-01-01T01:00:00Z" },
+              ],
+            },
+          },
+        },
+      },
+    }
+    await fs.writeFile(ledgerPath, JSON.stringify(legacy), "utf-8")
+
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief },
+    })
+
+    const unit = (await readLedger(ledgerPath)).phases.p1.units.u1
+    expect(unit.delegations).toHaveLength(1)
+    expect(unit.w).toBe(brief)
+  })
+
+  it("legacy rejection entries are never mutated by a successful delegation", async () => {
+    const legacy = {
+      v: 1,
+      ts: "2026-01-01T00:00:00.000Z",
+      phases: {
+        p1: {
+          s: "ip",
+          g: "pending",
+          units: {
+            u1: {
+              s: "ip",
+              v: "pending",
+              w: "old brief",
+              rej: [
+                { r: "reviewer-a", msg: "legacy issue 1", ts: "2026-01-01T00:00:00Z" },
+                { r: "reviewer-b", msg: "legacy issue 2", ts: "2026-01-01T01:00:00Z" },
+              ],
+            },
+          },
+        },
+      },
+    }
+    await fs.writeFile(ledgerPath, JSON.stringify(legacy), "utf-8")
+
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief },
+    })
+
+    const raw = await fs.readFile(ledgerPath, "utf-8")
+    const parsed = JSON.parse(raw)
+    const rej = parsed.phases.p1.units.u1.rej
+    expect(rej).toHaveLength(2)
+    expect(Object.keys(rej[0])).not.toContain("attempt")
+    expect(Object.keys(rej[1])).not.toContain("attempt")
+    expect(rej[0].attempt).toBeUndefined()
+    expect(rej[1].attempt).toBeUndefined()
+  })
+})
+
+describe("ledger v0.5.0 inconclusive + attestation floor (D2d/D2e)", () => {
+  it("inconclusive needs no delegation", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "inconclusive" },
+    })
+
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.units.u1.v).toBe("inconclusive")
+  })
+
+  it("v_ts stamped on every verdict", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "fail" },
+    })
+    let unit = (await readLedger(ledgerPath)).phases.p1.units.u1
+    expect(typeof unit.v_ts).toBe("string")
+    expect(Number.isNaN(Date.parse(unit.v_ts!))).toBe(false)
+
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "inconclusive" },
+    })
+    unit = (await readLedger(ledgerPath)).phases.p1.units.u1
+    expect(typeof unit.v_ts).toBe("string")
+    expect(Number.isNaN(Date.parse(unit.v_ts!))).toBe(false)
+  })
+
+  it("INCONCLUSIVE blocks the gate with its own sentence", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u2",
+      data: { v: "inconclusive" },
+    })
+
+    await expect(
+      writeLedger(ledgerPath, {
+        operation: "update_phase_gate",
+        phase: "p1",
+        data: { g: "pass" },
+      })
+    ).rejects.toThrow(/PHASE GATE BLOCKED: phase 'p1' has units without a pass verdict: u2/)
+    await expect(
+      writeLedger(ledgerPath, {
+        operation: "update_phase_gate",
+        phase: "p1",
+        data: { g: "pass" },
+      })
+    ).rejects.toThrow(/INCONCLUSIVE \(reviewer gave no usable verdict — re-run review, do not treat as fail\): u2\./)
+  })
+
+  it("gate message without inconclusive units is unchanged", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u2",
+      data: { s: "pending" },
+    })
+
+    let caught: Error | undefined
+    try {
+      await writeLedger(ledgerPath, {
+        operation: "update_phase_gate",
+        phase: "p1",
+        data: { g: "pass" },
+      })
+    } catch (err) {
+      caught = err as Error
+    }
+    expect(caught).toBeDefined()
+    expect(caught!.message).toMatch(/PHASE GATE BLOCKED.*u2/s)
+    expect(caught!.message).not.toContain("INCONCLUSIVE")
+  })
+
+  it("floor boundary — exactly 5 words + 32 chars passes", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_phase_scope",
+      phase: "p1",
+      data: { has_tests: false, has_api: false, has_build: true },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+    })
+
+    const note = "abcdef abcdef abcdef abcdef abcd"
+    expect(note.split(/\s+/).length).toBe(5)
+    expect(note.length).toBe(32)
+
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass", note },
+    })
+
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.units.u1.v).toBe("pass")
+    expect(ledger.phases.p1.units.u1.note).toBe(note)
+  })
+
+  it("floor — 4 words rejected", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_phase_scope",
+      phase: "p1",
+      data: { has_tests: false, has_api: false, has_build: true },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+    })
+
+    const note = "aaaaaaaaaa bbbbbbbbbb cccccccccc dd"
+    expect(note.split(/\s+/).length).toBe(4)
+    expect(note.length).toBe(35)
+
+    await expect(
+      writeLedger(ledgerPath, {
+        operation: "set_verdict",
+        phase: "p1",
+        unit_id: "u1",
+        data: { v: "pass", note },
+      })
+    ).rejects.toThrow(/ATTESTATION REQUIRED/)
+    await expect(
+      writeLedger(ledgerPath, {
+        operation: "set_verdict",
+        phase: "p1",
+        unit_id: "u1",
+        data: { v: "pass", note },
+      })
+    ).rejects.toThrow("(got 4 words / 35 chars)")
+  })
+
+  it("floor — 31 chars rejected", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_phase_scope",
+      phase: "p1",
+      data: { has_tests: false, has_api: false, has_build: true },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+    })
+
+    const note = "aaaaa bbbbb ccccc ddddd eeeeeee"
+    expect(note.split(/\s+/).length).toBe(5)
+    expect(note.length).toBe(31)
+
+    await expect(
+      writeLedger(ledgerPath, {
+        operation: "set_verdict",
+        phase: "p1",
+        unit_id: "u1",
+        data: { v: "pass", note },
+      })
+    ).rejects.toThrow("(got 5 words / 31 chars)")
+  })
+
+  it("sub-floor note on an unscoped phase still passes", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+    })
+
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass", note: "short note" },
+    })
+
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.units.u1.v).toBe("pass")
+    expect(ledger.phases.p1.units.u1.note).toBe("short note")
+  })
+})
+
+describe("ledger v0.5.0 gate staleness hash (D2b)", () => {
+  it("gate pass writes the snapshot with a sha256 hash and ISO timestamp", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "update_phase_gate",
+      phase: "p1",
+      data: { g: "pass" },
+    })
+
+    const ledger = await readLedger(ledgerPath)
+    const snapshot = ledger.phases.p1.gate_units_hash
+    expect(snapshot).toBeDefined()
+    expect(snapshot!.hash).toMatch(/^[0-9a-f]{64}$/)
+    expect(Number.isNaN(Date.parse(snapshot!.ts))).toBe(false)
+  })
+
+  it("gate fail/pending do NOT write the snapshot", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "update_phase_gate",
+      phase: "p1",
+      data: { g: "fail" },
+    })
+    let ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.gate_units_hash).toBeUndefined()
+
+    await writeLedger(ledgerPath, {
+      operation: "update_phase_gate",
+      phase: "p1",
+      data: { g: "pending" },
+    })
+    ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.gate_units_hash).toBeUndefined()
+  })
+
+  it("hash is deterministic and recomputable — mismatches after a new unit is added", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "update_phase_gate",
+      phase: "p1",
+      data: { g: "pass" },
+    })
+
+    let ledger = await readLedger(ledgerPath)
+    const stored = ledger.phases.p1.gate_units_hash!.hash
+    expect(computeGateUnitsHash(ledger.phases.p1.units)).toBe(stored)
+
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u2",
+      data: { s: "pending" },
+    })
+    ledger = await readLedger(ledgerPath)
+    expect(computeGateUnitsHash(ledger.phases.p1.units)).not.toBe(stored)
+  })
+})
+
+describe("ledger v0.5.0 seat minimum (D13)", () => {
+  const brief = "worker brief long enough to clear the 20 char minimum"
+
+  // Flagged, passing phase: one unit delegated + verdict pass, scope carries the flag(s).
+  async function setupFlaggedPhase(scopeOverrides: Record<string, unknown> = {}) {
+    await writeLedger(ledgerPath, {
+      operation: "set_phase_scope",
+      phase: "p1",
+      data: {
+        has_tests: true,
+        has_api: false,
+        has_build: true,
+        security_boundary: true,
+        ...scopeOverrides,
+      },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass" },
+    })
+  }
+
+  it("flagged + undeclared agent_class rejects with SEAT MINIMUM (Declared: none.)", async () => {
+    await setupFlaggedPhase()
+
+    await expect(
+      writeLedger(ledgerPath, {
+        operation: "update_phase_gate",
+        phase: "p1",
+        data: { g: "pass" },
+      })
+    ).rejects.toThrow(/SEAT MINIMUM: phase 'p1' is scoped security_boundary/)
+
+    await expect(
+      writeLedger(ledgerPath, {
+        operation: "update_phase_gate",
+        phase: "p1",
+        data: { g: "pass" },
+      })
+    ).rejects.toThrow("Declared: none.")
+  })
+
+  it("flagged + agent_class:'capable' rejects (Declared: capable.)", async () => {
+    await setupFlaggedPhase()
+
+    await expect(
+      writeLedger(ledgerPath, {
+        operation: "update_phase_gate",
+        phase: "p1",
+        data: { g: "pass", agent_class: "capable" },
+      })
+    ).rejects.toThrow("Declared: capable.")
+  })
+
+  it("flagged + agent_class:'frontier' passes — gate is pass, gate_units_hash present", async () => {
+    await setupFlaggedPhase()
+
+    await writeLedger(ledgerPath, {
+      operation: "update_phase_gate",
+      phase: "p1",
+      data: { g: "pass", agent_class: "frontier" },
+    })
+
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.g).toBe("pass")
+    expect(ledger.phases.p1.gate_units_hash).toBeDefined()
+  })
+
+  it("flagged + user_override:true (no agent_class) passes", async () => {
+    await setupFlaggedPhase()
+
+    await writeLedger(ledgerPath, {
+      operation: "update_phase_gate",
+      phase: "p1",
+      data: { g: "pass", user_override: true },
+    })
+
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.g).toBe("pass")
+  })
+
+  it("unflagged scope + undeclared agent_class passes — field never required", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_phase_scope",
+      phase: "p1",
+      data: { has_tests: true, has_api: false, has_build: true },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass" },
+    })
+
+    await writeLedger(ledgerPath, {
+      operation: "update_phase_gate",
+      phase: "p1",
+      data: { g: "pass" },
+    })
+
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.g).toBe("pass")
+  })
+
+  it("ordering: non-passing unit on a flagged phase blocks with PHASE GATE BLOCKED, not SEAT MINIMUM", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_phase_scope",
+      phase: "p1",
+      data: { has_tests: true, has_api: false, has_build: true, security_boundary: true },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "pending" },
+    })
+
+    let caught: Error | undefined
+    try {
+      await writeLedger(ledgerPath, {
+        operation: "update_phase_gate",
+        phase: "p1",
+        data: { g: "pass", agent_class: "frontier" },
+      })
+    } catch (err) {
+      caught = err as Error
+    }
+    expect(caught).toBeDefined()
+    expect(caught!.message).toMatch(/PHASE GATE BLOCKED/)
+    expect(caught!.message).not.toContain("SEAT MINIMUM")
+  })
+
+  it("both flags set — message names both: 'scoped hot_path, security_boundary'", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_phase_scope",
+      phase: "p1",
+      data: {
+        has_tests: true,
+        has_api: false,
+        has_build: true,
+        hot_path: true,
+        security_boundary: true,
+      },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass" },
+    })
+
+    await expect(
+      writeLedger(ledgerPath, {
+        operation: "update_phase_gate",
+        phase: "p1",
+        data: { g: "pass" },
+      })
+    ).rejects.toThrow("scoped hot_path, security_boundary")
+  })
+
+  it("hot_path-only (no security_boundary) names hot_path but not security_boundary", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_phase_scope",
+      phase: "p1",
+      data: { has_tests: true, has_api: false, has_build: true, hot_path: true },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass" },
+    })
+
+    let caught: Error | undefined
+    try {
+      await writeLedger(ledgerPath, {
+        operation: "update_phase_gate",
+        phase: "p1",
+        data: { g: "pass" },
+      })
+    } catch (err) {
+      caught = err as Error
+    }
+    expect(caught).toBeDefined()
+    expect(caught!.message).toContain("scoped hot_path")
+    expect(caught!.message).not.toContain("security_boundary")
   })
 })

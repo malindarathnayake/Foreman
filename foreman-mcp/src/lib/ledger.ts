@@ -1,7 +1,10 @@
 import fs from "fs/promises"
 import path from "path"
-import type { LedgerFile, WriteLedgerInput } from "../types.js"
+import { createHash } from "crypto"
+import type { LedgerFile, Unit, WriteLedgerInput } from "../types.js"
 import { detectTestFiles } from "./detectTestFiles.js"
+import { atomicWriteFile } from "./atomicWrite.js"
+import { scrub } from "./redaction.js"
 
 // ─── Per-path mutex registry ──────────────────────────────────────────────────
 // Each ledger path gets its own promise-chain lock so different files can be
@@ -96,6 +99,18 @@ function ensurePhase(ledger: LedgerFile, phase: string): void {
   }
 }
 
+// ─── Gate-staleness snapshot (D2b) ───────────────────────────────────────────
+// Hash of the phase's unit ids + verdicts + verdict timestamps at gate-pass time.
+// Recomputed on read: a mismatch means units changed after the gate passed.
+// Legacy units without v_ts (pre-v0.5.0) hash as empty string (R1).
+export function computeGateUnitsHash(units: Record<string, Unit>): string {
+  const material = Object.keys(units)
+    .sort()
+    .map((id) => `${id}:${units[id].v}:${units[id].v_ts ?? ""}`)
+    .join("\n")
+  return createHash("sha256").update(material, "utf-8").digest("hex")
+}
+
 // ─── Apply mutation ───────────────────────────────────────────────────────────
 // Returns an optional warning string to surface in the tool result.
 async function applyOperation(ledger: LedgerFile, operation: WriteLedgerInput): Promise<string | undefined> {
@@ -113,6 +128,19 @@ async function applyOperation(ledger: LedgerFile, operation: WriteLedgerInput): 
           )
         }
         const unit = ledger.phases[phase].units[unit_id]
+        // D2a delegation cap: count DISTINCT rejected attempts, not raw rejection count —
+        // two reviewers rejecting the same attempt fire the cap once. Stamped entries
+        // contribute their attempt number; unstamped legacy entries are conservatively
+        // treated as distinct (unique synthetic key each). Stored entries are never mutated.
+        const distinctRejectedAttempts = new Set(
+          unit.rej.map((rej, i) => (rej.attempt !== undefined ? `a${rej.attempt}` : `legacy${i}`))
+        )
+        if (distinctRejectedAttempts.size >= 3 && data.user_override !== true) {
+          throw new Error(
+            `DELEGATION CAP: unit '${unit_id}' has ${distinctRejectedAttempts.size} distinct rejected attempts (cap 3). ` +
+            "A 4th delegation requires data.user_override: true — escalate to the user with the rejection history."
+          )
+        }
         // `w` is the latest brief (the pass-gate reads it). tier/route_reason are audit evidence.
         unit.w = data.brief
         if (data.tier !== undefined) unit.tier = data.tier
@@ -130,6 +158,7 @@ async function applyOperation(ledger: LedgerFile, operation: WriteLedgerInput): 
           route_reason: data.route_reason,
           ts: new Date().toISOString(),
           attempt: lastAttempt + 1,   // monotonic even after the cap slice below
+          ...(data.user_override === true ? { user_override: true } : {}),
         })
         if (unit.delegations.length > 20) unit.delegations = unit.delegations.slice(-20)
       }
@@ -153,11 +182,11 @@ async function applyOperation(ledger: LedgerFile, operation: WriteLedgerInput): 
         // No-test/no-build phases require an attestation note on every pass verdict
         const scope = ledger.phases[phase].scope
         if (scope && (scope.has_tests === false || scope.has_build === false)) {
+          const missing = [
+            scope.has_tests === false ? "has_tests:false" : null,
+            scope.has_build === false ? "has_build:false" : null,
+          ].filter(Boolean).join(", ")
           if (!data.note || data.note.trim().length === 0) {
-            const missing = [
-              scope.has_tests === false ? "has_tests:false" : null,
-              scope.has_build === false ? "has_build:false" : null,
-            ].filter(Boolean).join(", ")
             throw new Error(
               `ATTESTATION REQUIRED: phase '${phase}' declares scope ${missing}. ` +
               "set_verdict(v:'pass') must include a non-empty 'note' describing how the unit was " +
@@ -165,10 +194,23 @@ async function applyOperation(ledger: LedgerFile, operation: WriteLedgerInput): 
               "Silent verdicts on scopeless phases are forbidden — see No-Test Phase Attestation in the protocol."
             )
           }
+          // D2e attestation floor: non-empty is not evidence. Applies ONLY on this
+          // attestation path — unscoped phases keep accepting any note.
+          const trimmed = data.note.trim()
+          const words = trimmed.split(/\s+/).length
+          if (words < 5 || trimmed.length < 32) {
+            throw new Error(
+              `ATTESTATION REQUIRED: phase '${phase}' declares scope ${missing}. ` +
+              "The attestation note must carry at least 5 words and 32 characters of real evidence " +
+              `(got ${words} words / ${trimmed.length} chars).`
+            )
+          }
         }
       }
       const unit = ledger.phases[phase].units[unit_id]
       unit.v = data.v
+      // R1: verdict timestamp — consumed by the D2b gate-staleness snapshot (3d).
+      unit.v_ts = new Date().toISOString()
       if (data.via !== undefined) {
         unit.via = data.via
       } else {
@@ -189,6 +231,9 @@ async function applyOperation(ledger: LedgerFile, operation: WriteLedgerInput): 
         r: data.r,
         msg: data.msg,
         ts: data.ts,
+        // D2a: stamp which delegation attempt this rejection belongs to.
+        // 0 = rejected before any delegation. Legacy entries (pre-v0.5.0) stay unstamped.
+        attempt: unit.delegations?.length ?? 0,
       })
       if (unit.rej.length > 20) unit.rej = unit.rej.slice(-20)
       break
@@ -209,11 +254,44 @@ async function applyOperation(ledger: LedgerFile, operation: WriteLedgerInput): 
         }
         const notPassing = unitIds.filter((id) => units[id].v !== "pass")
         if (notPassing.length > 0) {
+          // D2d: INCONCLUSIVE units are named in their own sentence — a reviewer non-answer
+          // is re-run guidance, never a fail. First list stays the complete non-passing set
+          // (existing message contract preserved; see PROGRESS Decisions).
+          const inconclusive = notPassing.filter((id) => units[id].v === "inconclusive").sort()
+          const inconclusiveSentence = inconclusive.length > 0
+            ? `INCONCLUSIVE (reviewer gave no usable verdict — re-run review, do not treat as fail): ${inconclusive.join(", ")}. `
+            : ""
           throw new Error(
             `PHASE GATE BLOCKED: phase '${phase}' has units without a pass verdict: ` +
             `${notPassing.sort().join(", ")}. ` +
+            inconclusiveSentence +
             "Every unit must reach set_verdict(v:'pass') before the phase gate can pass."
           )
+        }
+        // D13 seat minimum: a flagged phase (hot_path / security_boundary) requires a
+        // frontier-class judgment seat to pass its gate. Declared-input validation ONLY —
+        // the class is never inferred from model ids or anything else.
+        const scope = ledger.phases[phase].scope
+        if (scope?.hot_path || scope?.security_boundary) {
+          if (data.agent_class !== "frontier" && data.user_override !== true) {
+            const flags = [
+              scope.hot_path ? "hot_path" : null,
+              scope.security_boundary ? "security_boundary" : null,
+            ].filter(Boolean).join(", ")
+            throw new Error(
+              `SEAT MINIMUM: phase '${phase}' is scoped ${flags} — gate pass requires ` +
+              "data.agent_class: 'frontier' (a frontier-class judgment seat) or data.user_override: true. " +
+              `Declared: ${data.agent_class ?? "none"}.`
+            )
+          }
+        }
+      }
+      // D2b: snapshot only on a passing gate — never on fail/pending, never cleared.
+      // Read paths recompute and flag STALE; nothing is ever blocked on staleness.
+      if (data.g === "pass") {
+        ledger.phases[phase].gate_units_hash = {
+          hash: computeGateUnitsHash(ledger.phases[phase].units),
+          ts: new Date().toISOString(),
         }
       }
       ledger.phases[phase].g = data.g
@@ -279,7 +357,8 @@ export interface LedgerWriteResult {
 
 export async function writeLedger(
   filePath: string,
-  operation: WriteLedgerInput
+  operation: WriteLedgerInput,
+  preWrite?: (ledger: LedgerFile) => void
 ): Promise<LedgerWriteResult> {
   return withLedgerLock(filePath, async () => {
     const read = await readLedgerWithStatus(filePath)
@@ -294,10 +373,13 @@ export async function writeLedger(
     }
     ledger.ts = new Date().toISOString()
 
-    // Atomic write: write to .tmp then rename
-    const tmpPath = `${filePath}.tmp`
-    await fs.writeFile(tmpPath, JSON.stringify(ledger), "utf-8")
-    await fs.rename(tmpPath, filePath)
+    // 5b seam: fold caller-held in-memory aggregates (ccr_stats) into the SAME atomic
+    // write — runs only after applyOperation succeeded, so a rejected operation never
+    // consumes the caller's pending state.
+    preWrite?.(ledger)
+
+    // Atomic write via shared helper (unique tmp suffix — cross-process safe, D2c)
+    await atomicWriteFile(filePath, JSON.stringify(ledger), { scrub })
 
     return { ledger, warning }
   })
