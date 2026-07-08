@@ -711,10 +711,14 @@ describe("PLAYBOOK", () => {
     "PATCH_APPLY_FAIL",
     "BLD_ERR",
     "W_REJ",
+    "WORKER_BINARY_NOT_FOUND",
+    "WORKER_DIRTY_TREE_REFUSAL",
+    "WORKER_AIDER_EXIT",
+    "WORKER_AIDER_LLM_ERROR",
   ] as const
 
-  it("has a non-empty hint for every one of the 17 stages", () => {
-    expect(Object.keys(PLAYBOOK).length).toBe(17)
+  it("has a non-empty hint for every one of the 21 stages", () => {
+    expect(Object.keys(PLAYBOOK).length).toBe(21)
     for (const stage of ALL_STAGES) {
       expect(typeof PLAYBOOK[stage]).toBe("string")
       expect(PLAYBOOK[stage].length).toBeGreaterThan(0)

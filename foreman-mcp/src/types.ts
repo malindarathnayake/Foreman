@@ -66,6 +66,8 @@ export interface Phase {
   reviews?: PhaseReview[]
   /** Snapshot hash of (unit id, verdict, v_ts) taken when the gate passed (D2b staleness detection). Absent pre-v0.5.0. */
   gate_units_hash?: { hash: string; ts: string }
+  /** Units whose discipline-adherence contradiction was overridden at gate-pass via data.user_override (durable, auditable — P5 5a). Absent when no override occurred. */
+  discipline_overrides?: { discipline_override: true; unit_id: string; delegation_id: string }[]
 }
 
 export interface PhaseScope {
@@ -365,7 +367,7 @@ export const JournalEventCode = z.enum([
   "SPEC_AMB", "GATE_FIX", "TOOL_ERR",
   "USR_INT", "MODEL_DEG", "PERM_DENY",
   "HOOK_BLOCK", "DEP_MISS", "SCHEMA_DRIFT", "MERGE_CONF",
-  "SEC_BLOCK", "EGRESS_NOTICE",
+  "SEC_BLOCK", "EGRESS_NOTICE", "CAP_WAIVER",
 ])
 
 const InitSessionData = z.object({

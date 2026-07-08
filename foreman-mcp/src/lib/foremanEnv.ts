@@ -22,20 +22,27 @@ import { registerSecret } from "./redaction.js"
  *      not in the returned config, not in any error message, not in any log.
  *
  * Tier substitution never happens here — the loader returns exactly what is
- * configured, nothing inferred or defaulted beyond the single documented default
- * (`editFormat` -> "unified_diff"). Per-call tier *resolution* (e.g. what happens
- * when a caller asks for a tier that isn't configured) is unit 4f's job.
+ * configured, nothing inferred or defaulted beyond the documented per-tier defaults
+ * (`editFormat` -> class-dependent: "whole_file" for the `compact` class else
+ * "unified_diff"; `workerKind` -> "remote-chat"; `maxReflections` -> 3). Per-call tier
+ * *resolution* (e.g. what happens when a caller asks for a tier that isn't configured)
+ * is unit 4f's job.
  */
 
 export type Tier = "cheap" | "standard" | "premium"
 export type WorkerClass = "frontier" | "capable" | "compact"
 export type EditFormat = "unified_diff" | "search_replace" | "whole_file"
+export type WorkerKind = "remote-chat" | "aider-cli"
 
 export interface TierConfig {
   model: string
   workerClass: WorkerClass
   editFormat: EditFormat
   reasoningEffort?: string
+  workerKind: WorkerKind        // defaults to "remote-chat" when FOREMAN_WORKER_KIND_<T> is unset
+  numCtx?: number               // required for aider-cli tiers; optional for remote-chat
+  maxReflections: number        // default 3
+  reasoningTag?: string         // optional verbatim passthrough to aider
 }
 
 export interface ForemanEnvConfig {
@@ -62,6 +69,24 @@ const TIER_SUFFIX: Record<Tier, string> = {
 
 const WORKER_CLASSES: readonly WorkerClass[] = ["frontier", "capable", "compact"]
 const EDIT_FORMATS: readonly EditFormat[] = ["unified_diff", "search_replace", "whole_file"]
+const WORKER_KINDS: readonly WorkerKind[] = ["remote-chat", "aider-cli"]
+
+/**
+ * Maps Foreman's INTERNAL edit_format enum to aider's CLI edit-format names (spec R1):
+ * whole_file -> "whole", search_replace -> "diff" (editblock), unified_diff -> "udiff".
+ * This is the MODEL-facing knob passed to the aider harness. The tool's RETURNED patch is
+ * always a unified git diff regardless (R1) — this does not change the returned-patch format.
+ */
+export function aiderEditFormat(editFormat: EditFormat): "whole" | "diff" | "udiff" {
+  switch (editFormat) {
+    case "whole_file":
+      return "whole"
+    case "search_replace":
+      return "diff"
+    case "unified_diff":
+      return "udiff"
+  }
+}
 
 const SIMPLE_KEYS = new Set(["schema_version", "FOREMAN_API_BASE", "FOREMAN_API_KEY"])
 
@@ -70,12 +95,18 @@ const TIER_KEY_PREFIXES: readonly string[] = [
   "FOREMAN_WORKER_CLASS_",
   "FOREMAN_EDIT_FORMAT_",
   "FOREMAN_REASONING_EFFORT_",
+  "FOREMAN_WORKER_KIND_",
+  "FOREMAN_NUM_CTX_",
+  "FOREMAN_MAX_REFLECTIONS_",
+  "FOREMAN_REASONING_TAG_",
 ]
 
 const RECOGNIZED_KEYS_TEXT =
   "schema_version, FOREMAN_API_BASE, FOREMAN_API_KEY, " +
   "FOREMAN_TIER_<CHEAP|STANDARD|PREMIUM>, FOREMAN_WORKER_CLASS_<CHEAP|STANDARD|PREMIUM>, " +
-  "FOREMAN_EDIT_FORMAT_<CHEAP|STANDARD|PREMIUM>, FOREMAN_REASONING_EFFORT_<CHEAP|STANDARD|PREMIUM>"
+  "FOREMAN_EDIT_FORMAT_<CHEAP|STANDARD|PREMIUM>, FOREMAN_REASONING_EFFORT_<CHEAP|STANDARD|PREMIUM>, " +
+  "FOREMAN_WORKER_KIND_<CHEAP|STANDARD|PREMIUM>, FOREMAN_NUM_CTX_<CHEAP|STANDARD|PREMIUM>, " +
+  "FOREMAN_MAX_REFLECTIONS_<CHEAP|STANDARD|PREMIUM>, FOREMAN_REASONING_TAG_<CHEAP|STANDARD|PREMIUM>"
 
 function tierForSuffix(suffix: string): Tier | undefined {
   return TIERS.find((t) => TIER_SUFFIX[t] === suffix)
@@ -93,6 +124,38 @@ function isRecognizedKey(key: string): boolean {
 
 function tierKey(prefix: string, tier: Tier): string {
   return `${prefix}${TIER_SUFFIX[tier]}`
+}
+
+function isLoopbackApiBase(apiBase: string): boolean {
+  try {
+    const host = new URL(apiBase).hostname.toLowerCase()
+    return (
+      host === "localhost" ||
+      host === "::1" ||
+      host === "[::1]" ||
+      /^127\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host)
+    )
+  } catch {
+    return false
+  }
+}
+
+// [CWE-532] Logs ONLY the sanitized host — never userinfo, path, query, or fragment,
+// which may carry embedded credentials (e.g. https://user:secret@host/v1?token=...).
+function apiBaseHostForLog(apiBase: string): string {
+  try {
+    return new URL(apiBase).host
+  } catch {
+    return "(unparseable url)"
+  }
+}
+
+// Strict non-negative decimal integer from config text. Returns null for anything
+// that is not pure digits (rejects "", " ", "1e3", "0x10", "3.5", "-1", "many").
+function parseConfigInt(value: string): number | null {
+  if (!/^[0-9]+$/.test(value)) return null
+  const n = Number(value)
+  return Number.isSafeInteger(n) ? n : null
 }
 
 // ─── Message builders ───────────────────────────────────────────────────────────
@@ -280,10 +343,15 @@ function validateForemanEnv(
     const workerClassEntry = entries.get(tierKey("FOREMAN_WORKER_CLASS_", tier))
     const editFormatEntry = entries.get(tierKey("FOREMAN_EDIT_FORMAT_", tier))
     const reasoningEffortEntry = entries.get(tierKey("FOREMAN_REASONING_EFFORT_", tier))
+    const workerKindEntry = entries.get(tierKey("FOREMAN_WORKER_KIND_", tier))
+    const numCtxEntry = entries.get(tierKey("FOREMAN_NUM_CTX_", tier))
+    const maxReflectionsEntry = entries.get(tierKey("FOREMAN_MAX_REFLECTIONS_", tier))
+    const reasoningTagEntry = entries.get(tierKey("FOREMAN_REASONING_TAG_", tier))
 
     if (!tierEntry) {
       // Orphan: a per-tier key present without its FOREMAN_TIER_<T> anchor.
-      const orphan = workerClassEntry ?? editFormatEntry ?? reasoningEffortEntry
+      const orphan =
+        workerClassEntry ?? editFormatEntry ?? reasoningEffortEntry ?? workerKindEntry ?? numCtxEntry ?? maxReflectionsEntry ?? reasoningTagEntry
       if (orphan) {
         return {
           status: "config_error",
@@ -318,7 +386,10 @@ function validateForemanEnv(
       }
     }
 
-    let editFormat: EditFormat = "unified_diff"
+    // Per-tier default: compact/experimental models START on whole_file (most parseable);
+    // promote to search_replace/unified_diff only via the later M1 edit-format gate.
+    let editFormat: EditFormat =
+      (workerClassEntry.value as WorkerClass) === "compact" ? "whole_file" : "unified_diff"
     if (editFormatEntry) {
       if (!(EDIT_FORMATS as readonly string[]).includes(editFormatEntry.value)) {
         return {
@@ -329,11 +400,70 @@ function validateForemanEnv(
       editFormat = editFormatEntry.value as EditFormat
     }
 
+    if (workerKindEntry && !(WORKER_KINDS as readonly string[]).includes(workerKindEntry.value)) {
+      return {
+        status: "config_error",
+        message: unsupportedValueMessage(workerKindEntry.key, workerKindEntry.value, WORKER_KINDS.join(", ")),
+      }
+    }
+
+    // worker_kind resolves to remote-chat when unset (back-compat: preserves 0.5.0 behavior).
+    const workerKind: WorkerKind = workerKindEntry
+      ? (workerKindEntry.value as WorkerKind)
+      : "remote-chat"
+
+    // num_ctx: positive integer if present; REQUIRED for aider-cli tiers.
+    let numCtx: number | undefined
+    if (numCtxEntry) {
+      const n = parseConfigInt(numCtxEntry.value)
+      if (n === null || n <= 0) {
+        return {
+          status: "config_error",
+          message: unsupportedValueMessage(numCtxEntry.key, numCtxEntry.value, "a positive integer (served context length)"),
+        }
+      }
+      numCtx = n
+    }
+    if (workerKind === "aider-cli" && numCtx === undefined) {
+      return {
+        status: "config_error",
+        message:
+          `tier '${tier}' is worker_kind 'aider-cli' but is missing its required served context.\n\n` +
+          `Add this line:\n  ${tierKey("FOREMAN_NUM_CTX_", tier)}=<int, e.g. 262144>\n\n` +
+          `Configured tiers: ${configuredTiersText}\n`,
+      }
+    }
+
+    // max_reflections: non-negative integer, default 3.
+    let maxReflections = 3
+    if (maxReflectionsEntry) {
+      const n = parseConfigInt(maxReflectionsEntry.value)
+      if (n === null) {
+        return {
+          status: "config_error",
+          message: unsupportedValueMessage(maxReflectionsEntry.key, maxReflectionsEntry.value, "a non-negative integer"),
+        }
+      }
+      maxReflections = n
+    }
+
+    // Coherence: aider-cli egress SHOULD route through a local (loopback) proxy.
+    if (workerKind === "aider-cli" && !isLoopbackApiBase(apiBaseEntry.value)) {
+      console.error(
+        `[foreman] warning: tier '${tier}' is worker_kind 'aider-cli' but FOREMAN_API_BASE host ` +
+          `'${apiBaseHostForLog(apiBaseEntry.value)}' is not a loopback URL — aider egress should route through a local proxy.`
+      )
+    }
+
     tiers[tier] = {
       model: tierEntry.value,
       workerClass: workerClassEntry.value as WorkerClass,
       editFormat,
+      workerKind,
+      maxReflections,
       ...(reasoningEffortEntry ? { reasoningEffort: reasoningEffortEntry.value } : {}),
+      ...(numCtx !== undefined ? { numCtx } : {}),
+      ...(reasoningTagEntry ? { reasoningTag: reasoningTagEntry.value } : {}),
     }
   }
 

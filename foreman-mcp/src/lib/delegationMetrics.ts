@@ -3,20 +3,23 @@
 // consulted for exactly one purpose: the drift check at the bottom, which never
 // feeds back into any count or denominator above it.
 
-import { readEvents, type SidecarEvent, type FailureStage, type Tier, type Outcome } from "./eventsSidecar.js"
+import {
+  readEvents,
+  REFUNDED_STAGES,
+  type SidecarEvent,
+  type FailureStage,
+  type Tier,
+  type Outcome,
+} from "./eventsSidecar.js"
 import { toTable } from "./toon.js"
 import type { LedgerFile } from "../types.js"
 
 // ─── Normative stage → code mapping ───────────────────────────────────────────
-const PRESEND_CODES = new Set<FailureStage>([
-  "BRIEF_TOO_LARGE",
-  "WORKER_PAYLOAD_SECRET_BLOCK",
-  "WORKER_UNREACHABLE",
-  "WORKER_TIMEOUT",
-  "WORKER_AUTH_FAIL",
-  "WORKER_QUOTA_FAIL",
-  "WORKER_MODEL_NOT_FOUND",
-])
+// The refund set: pre-send failures AND transport-infra failures — both EXCLUDED from every
+// scorecard denominator (an infra fault must never pollute the model's tier scorecard).
+// Canonical home is eventsSidecar.ts's REFUNDED_STAGES — imported here so the refund
+// partition can never drift across files.
+const PRESEND_CODES = REFUNDED_STAGES
 
 const STAGE0_CODES = new Set<FailureStage>(["WORKER_GHOST", "WORKER_RESPONSE_TOO_LARGE", "MODEL_SCHEMA_FAIL"])
 

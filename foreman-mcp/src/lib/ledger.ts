@@ -1,10 +1,11 @@
 import fs from "fs/promises"
 import path from "path"
 import { createHash } from "crypto"
-import type { LedgerFile, Unit, WriteLedgerInput } from "../types.js"
+import type { LedgerFile, Phase, Unit, WriteLedgerInput } from "../types.js"
 import { detectTestFiles } from "./detectTestFiles.js"
 import { atomicWriteFile } from "./atomicWrite.js"
 import { scrub } from "./redaction.js"
+import { readEvents, resolveUnitDelegation, boundIdentifier, type SidecarEvent } from "./eventsSidecar.js"
 
 // ─── Per-path mutex registry ──────────────────────────────────────────────────
 // Each ledger path gets its own promise-chain lock so different files can be
@@ -111,9 +112,54 @@ export function computeGateUnitsHash(units: Record<string, Unit>): string {
   return createHash("sha256").update(material, "utf-8").digest("hex")
 }
 
+// ─── Discipline-adherence gate (P5 5a — decision #4, normative spec §311-323) ───
+// Server-side enforcement on update_phase_gate g:'pass', sequenced AFTER
+// gate-pass-requires-all-pass and D13 seat-minimum. For each pass-verdict unit it
+// reconciles the LEDGER verdict against that unit's LATEST hash-chained sidecar
+// delegation's TERMINAL outcome: a prompt that talks the model into writing 'pass'
+// into the ledger cannot forge a hash-chained validation_completed{outcome:'pass'}.
+// The reader verifies the hash chain and THROWS LOUD on any break/tamper — that
+// throw is deliberately NOT caught here (a broken chain must halt the gate).
+export type SidecarReader = () => Promise<SidecarEvent[]>
+
+async function disciplineAdherenceGate(
+  phase: string,
+  phaseObj: Phase,
+  data: { user_override?: boolean },
+  sidecarReader: SidecarReader
+): Promise<void> {
+  const events = await sidecarReader()
+  for (const [unitId, unit] of Object.entries(phaseObj.units)) {
+    if (unit.v !== "pass") continue
+    const res = resolveUnitDelegation(events, phase, unitId)
+    switch (res.kind) {
+      case "none":
+      case "pass":
+        continue
+      case "open":
+        throw new Error(
+          `DISCIPLINE ADHERENCE: unit '${boundIdentifier(unitId)}' passed in ledger but delegation ${res.delegationId} has no terminal sidecar event.`
+        )
+      case "contradiction":
+        if (data.user_override !== true) {
+          throw new Error(
+            `DISCIPLINE ADHERENCE: unit '${boundIdentifier(unitId)}' ledger verdict 'pass' contradicts sidecar terminal outcome '${res.outcome}' (delegation ${res.delegationId}); server-side enforcement refuses gate-pass — reconcile or set data.user_override: true and escalate to the user.`
+          )
+        }
+        phaseObj.discipline_overrides ??= []
+        phaseObj.discipline_overrides.push({ discipline_override: true, unit_id: unitId, delegation_id: res.delegationId })
+        break
+    }
+  }
+}
+
 // ─── Apply mutation ───────────────────────────────────────────────────────────
 // Returns an optional warning string to surface in the tool result.
-async function applyOperation(ledger: LedgerFile, operation: WriteLedgerInput): Promise<string | undefined> {
+async function applyOperation(
+  ledger: LedgerFile,
+  operation: WriteLedgerInput,
+  sidecarReader?: SidecarReader
+): Promise<string | undefined> {
   switch (operation.operation) {
     case "set_unit_status": {
       const { phase, unit_id, data } = operation
@@ -285,6 +331,12 @@ async function applyOperation(ledger: LedgerFile, operation: WriteLedgerInput): 
             )
           }
         }
+        // P5 discipline-adherence gate (decision #4): the enforcement line, after the
+        // gate-pass-requires-all-pass + D13 checks and before the D2b snapshot. A block
+        // here (throw) prevents the snapshot and the g:'pass' write.
+        if (sidecarReader) {
+          await disciplineAdherenceGate(phase, ledger.phases[phase], data, sidecarReader)
+        }
       }
       // D2b: snapshot only on a passing gate — never on fail/pending, never cleared.
       // Read paths recompute and flag STALE; nothing is ever blocked on staleness.
@@ -358,13 +410,21 @@ export interface LedgerWriteResult {
 export async function writeLedger(
   filePath: string,
   operation: WriteLedgerInput,
-  preWrite?: (ledger: LedgerFile) => void
+  preWrite?: (ledger: LedgerFile) => void,
+  sidecarReader?: SidecarReader
 ): Promise<LedgerWriteResult> {
   return withLedgerLock(filePath, async () => {
     const read = await readLedgerWithStatus(filePath)
     const ledger = read.ledger
 
-    let warning = await applyOperation(ledger, operation)
+    // Default-on enforcement: derive the sidecar reader from the ledger path when the
+    // caller does not inject one (tests inject a fake). The sidecar lives alongside the
+    // ledger (same dir), matching writeLedger.ts / invokeWorker.ts / readLedger.ts.
+    const reader: SidecarReader =
+      sidecarReader ??
+      (async () => (await readEvents(path.join(path.dirname(filePath), ".foreman-events.jsonl"))).events)
+
+    let warning = await applyOperation(ledger, operation, reader)
     if (read.corrupt) {
       const corruptNote =
         `previous ledger was corrupt JSON and was backed up to '${read.backupPath}'; ` +

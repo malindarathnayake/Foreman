@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.5.5 - 2026-07-08
+
+- EXPERIMENTAL `aider_worker` (26th tool): a sibling of `invoke_worker` (forked, not an extension) that drives the aider Python CLI as a benchmarked local subagent. Preserves the #1 invariant — never mutate the tree, never apply from the worker tool — via an isolated-worktree→`git diff` apply model: the tool runs aider in an ephemeral worktree off the base commit (`use_git=False`, `auto_commits=False`), returns the diff verbatim between `-----BEGIN/END FOREMAN PATCH-----` sentinels plus `base_file_hashes`, and the host applies after the CAS staleness check (`ED_STALE`). Dirty base tree → `WORKER_DIRTY_TREE_REFUSAL` (refunded).
+- aider transport is an external Python harness (`scripts/aider_harness.py`) spawned through the existing `lib/externalCli.ts` seam — no new Node runtime deps. A `capability_check`-style probe fails open with a recorded waiver when python/aider are absent (route falls back to `remote-chat`). Filtered child env keeps the API key off the child's environment (key travels via stdin only); harness stdout is isolated to a single metadata-only JSON object.
+- New orthogonal `worker_kind` axis in `.foremanenv` (`remote-chat | aider-cli`), defaulting to `remote-chat` so existing v0.5.0 configs keep loading; `aider-cli` tiers require `FOREMAN_NUM_CTX_<T>`.
+- Closed failure taxonomy extended 17 → 21 (`WORKER_BINARY_NOT_FOUND`, `WORKER_AIDER_EXIT`, `WORKER_AIDER_LLM_ERROR`, `WORKER_DIRTY_TREE_REFUSAL`), byte-shared between the `invoke_worker` PLAYBOOK and the events sidecar; all four new CLI stages are refunded (do not count against the per-model discipline scorecard).
+- Server-side discipline-adherence gate in `lib/ledger.ts`: reconciles each pass-unit's ledger verdict against its latest hash-chained sidecar terminal outcome. Strict/fail-closed — only a terminal `validation_completed{outcome:'pass'}` is clean; every other terminal (including a refunded-infra failure on the latest delegation) blocks the phase gate unless a `user_override` is recorded in `discipline_overrides`. Native/Agent-delegated units with no sidecar delegation skip the gate.
+- Deferred to the GPU serving host (advisory, never CI): the headroom-proxy wiring (P6) and the multi-model local bake-off (P8), which need the vLLM + aider serving environment.
+- Bumped package to `0.5.5`.
+
 ## 0.5.2 - 2026-07-07
 
 - Patch release so the published package and release tarball carry the two post-tag security fixes that v0.5.0's re-tagged run could not publish (409 — cannot publish over an existing version): the gitleaks test-fixture allowlist (`.gitleaks.toml`) and the linear slash-trim in the worker-patch protected-path check (CodeQL `js/polynomial-redos`, `workerResponse.ts`).

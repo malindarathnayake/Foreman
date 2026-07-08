@@ -22,6 +22,10 @@ Test_dojo/**
 foreman-mcp/.npm-cache/
 foreman-mcp/*.tgz
 
+# Python harness bytecode (foreman-mcp/scripts/aider_harness.py)
+__pycache__/
+*.pyc
+
 # Keep assets/ but ignore generation prompts
 assets/prompts.md
 

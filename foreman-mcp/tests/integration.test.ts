@@ -23,14 +23,14 @@ afterEach(async () => {
   await server?.close()
 })
 
-describe("list tools — verify all 25 present, update_bundle absent", () => {
+describe("list tools — verify all 26 present, update_bundle absent", () => {
   beforeEach(async () => {
     await setupServer()
   })
 
-  it("lists exactly 25 tools", async () => {
+  it("lists exactly 26 tools", async () => {
     const result = await client.listTools()
-    expect(result.tools).toHaveLength(25)
+    expect(result.tools).toHaveLength(26)
   })
 
   it("includes all required tool names", async () => {
@@ -61,6 +61,7 @@ describe("list tools — verify all 25 present, update_bundle absent", () => {
     expect(names).toContain("retrieve_original")
     expect(names).toContain("preview_diagram")
     expect(names).toContain("invoke_worker")
+    expect(names).toContain("aider_worker")
   })
 
   it("invoke_worker carries EXPERIMENTAL description and open-world annotation", async () => {
@@ -69,6 +70,17 @@ describe("list tools — verify all 25 present, update_bundle absent", () => {
     expect(tool).toBeDefined()
     expect(tool!.description).toContain("EXPERIMENTAL")
     expect(tool!.annotations?.title).toBe("Invoke Patch Worker (EXPERIMENTAL)")
+    expect(tool!.annotations?.readOnlyHint).toBe(false)
+    expect(tool!.annotations?.destructiveHint).toBe(false)
+    expect(tool!.annotations?.openWorldHint).toBe(true)
+  })
+
+  it("aider_worker carries EXPERIMENTAL description and open-world annotation", async () => {
+    const result = await client.listTools()
+    const tool = result.tools.find((t) => t.name === "aider_worker")
+    expect(tool).toBeDefined()
+    expect(tool!.description).toContain("EXPERIMENTAL")
+    expect(tool!.annotations?.title).toBe("Invoke Aider Patch Worker (EXPERIMENTAL)")
     expect(tool!.annotations?.readOnlyHint).toBe(false)
     expect(tool!.annotations?.destructiveHint).toBe(false)
     expect(tool!.annotations?.openWorldHint).toBe(true)

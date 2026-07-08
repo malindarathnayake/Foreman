@@ -27,6 +27,8 @@ export type EventType =
   | "worker_completed"
   | "patch_checked"
   | "validation_completed"
+  | "worktree_created"
+  | "worktree_torn_down"
 
 export type FailureStage =
   | "BRIEF_TOO_LARGE"
@@ -46,21 +48,28 @@ export type FailureStage =
   | "PATCH_APPLY_FAIL"
   | "BLD_ERR"
   | "W_REJ"
+  | "WORKER_BINARY_NOT_FOUND"
+  | "WORKER_DIRTY_TREE_REFUSAL"
+  | "WORKER_AIDER_EXIT"
+  | "WORKER_AIDER_LLM_ERROR"
 
 export type FinishReasonClass = "stop" | "length" | "content_filter" | "other"
 export type Tier = "cheap" | "standard" | "premium"
 export type CapabilityClass = "frontier" | "capable" | "compact"
 export type EditFormat = "unified_diff" | "search_replace" | "whole_file"
 export type Outcome = "pass" | "fail" | "inconclusive"
+export type WorkerKind = "remote-chat" | "aider-cli"
 
 const EVENT_TYPES = new Set<string>([
   "delegation_started",
   "worker_completed",
   "patch_checked",
   "validation_completed",
+  "worktree_created",
+  "worktree_torn_down",
 ])
 
-const FAILURE_STAGES = new Set<string>([
+export const FAILURE_STAGES = new Set<string>([
   "BRIEF_TOO_LARGE",
   "WORKER_PAYLOAD_SECRET_BLOCK",
   "WORKER_UNREACHABLE",
@@ -78,6 +87,27 @@ const FAILURE_STAGES = new Set<string>([
   "PATCH_APPLY_FAIL",
   "BLD_ERR",
   "W_REJ",
+  "WORKER_BINARY_NOT_FOUND",
+  "WORKER_DIRTY_TREE_REFUSAL",
+  "WORKER_AIDER_EXIT",
+  "WORKER_AIDER_LLM_ERROR",
+])
+
+// Refunded stages: pre-send + transport-infra failures that never count against model
+// discipline (an infra fault must not pollute a model's scorecard). Canonical home —
+// delegationMetrics.ts imports this so the refund partition can never drift across files.
+export const REFUNDED_STAGES: ReadonlySet<FailureStage> = new Set<FailureStage>([
+  "BRIEF_TOO_LARGE",
+  "WORKER_PAYLOAD_SECRET_BLOCK",
+  "WORKER_UNREACHABLE",
+  "WORKER_TIMEOUT",
+  "WORKER_AUTH_FAIL",
+  "WORKER_QUOTA_FAIL",
+  "WORKER_MODEL_NOT_FOUND",
+  "WORKER_BINARY_NOT_FOUND",
+  "WORKER_AIDER_EXIT",
+  "WORKER_AIDER_LLM_ERROR",
+  "WORKER_DIRTY_TREE_REFUSAL",
 ])
 
 const FINISH_REASON_CLASSES = new Set<string>(["stop", "length", "content_filter", "other"])
@@ -85,6 +115,7 @@ const TIERS = new Set<string>(["cheap", "standard", "premium"])
 const CAPABILITY_CLASSES = new Set<string>(["frontier", "capable", "compact"])
 const EDIT_FORMATS = new Set<string>(["unified_diff", "search_replace", "whole_file"])
 const OUTCOMES = new Set<string>(["pass", "fail", "inconclusive"])
+const WORKER_KINDS = new Set<string>(["remote-chat", "aider-cli"])
 
 // ─── Envelope shape ────────────────────────────────────────────────────────────
 // Input accepted by appendEvent — everything in the envelope EXCEPT the two
@@ -116,6 +147,18 @@ export interface SidecarEventInput {
   worker_confidence?: number
   outcome?: Outcome
   patch_sha256?: string
+  worker_kind?: WorkerKind
+  base_commit?: string
+  editable_count?: number
+  aider_edited_files_count?: number
+  num_malformed_responses?: number
+  num_reflections?: number
+  num_exhausted_context_windows?: number
+  tokens_sent?: number
+  tokens_received?: number
+  total_cost?: number
+  reflections_capped?: boolean
+  torn_down_ok?: boolean
 }
 
 // Full envelope as it exists on disk / in memory once appended: the hash-chain
@@ -155,6 +198,18 @@ const OPTIONAL_FIELDS = [
   "worker_confidence",
   "outcome",
   "patch_sha256",
+  "worker_kind",
+  "base_commit",
+  "editable_count",
+  "aider_edited_files_count",
+  "num_malformed_responses",
+  "num_reflections",
+  "num_exhausted_context_windows",
+  "tokens_sent",
+  "tokens_received",
+  "total_cost",
+  "reflections_capped",
+  "torn_down_ok",
 ] as const
 
 const ALLOWED_INPUT_FIELDS = new Set<string>([...REQUIRED_FIELDS, ...OPTIONAL_FIELDS])
@@ -175,6 +230,7 @@ const IDENTIFIER_FIELDS = [
   "brief_hash",
   "prompt_prefix_hash",
   "patch_sha256",
+  "base_commit",
 ] as const
 
 const IDENTIFIER_CAP = 64
@@ -274,6 +330,9 @@ function validateEnvelope(event: Record<string, unknown>): void {
   if (event.outcome !== undefined) {
     validateEnum("outcome", event.outcome, OUTCOMES)
   }
+  if (event.worker_kind !== undefined) {
+    validateEnum("worker_kind", event.worker_kind, WORKER_KINDS)
+  }
 
   for (const field of IDENTIFIER_FIELDS) {
     const value = event[field]
@@ -292,6 +351,31 @@ function validateEnvelope(event: Record<string, unknown>): void {
   if (event.elapsed_ms !== undefined) validateNonNegativeInt("elapsed_ms", event.elapsed_ms)
   if (event.worker_confidence !== undefined && typeof event.worker_confidence !== "number") {
     throw new Error("eventsSidecar: 'worker_confidence' must be a number")
+  }
+  if (event.editable_count !== undefined) validateNonNegativeInt("editable_count", event.editable_count)
+  if (event.aider_edited_files_count !== undefined) {
+    validateNonNegativeInt("aider_edited_files_count", event.aider_edited_files_count)
+  }
+  if (event.num_malformed_responses !== undefined) {
+    validateNonNegativeInt("num_malformed_responses", event.num_malformed_responses)
+  }
+  if (event.num_reflections !== undefined) validateNonNegativeInt("num_reflections", event.num_reflections)
+  if (event.num_exhausted_context_windows !== undefined) {
+    validateNonNegativeInt("num_exhausted_context_windows", event.num_exhausted_context_windows)
+  }
+  if (event.tokens_sent !== undefined) validateNonNegativeInt("tokens_sent", event.tokens_sent)
+  if (event.tokens_received !== undefined) validateNonNegativeInt("tokens_received", event.tokens_received)
+  if (
+    event.total_cost !== undefined &&
+    (typeof event.total_cost !== "number" || !Number.isFinite(event.total_cost) || event.total_cost < 0)
+  ) {
+    throw new Error("eventsSidecar: 'total_cost' must be a non-negative finite number")
+  }
+  if (event.reflections_capped !== undefined && typeof event.reflections_capped !== "boolean") {
+    throw new Error("eventsSidecar: 'reflections_capped' must be a boolean")
+  }
+  if (event.torn_down_ok !== undefined && typeof event.torn_down_ok !== "boolean") {
+    throw new Error("eventsSidecar: 'torn_down_ok' must be a boolean")
   }
 
   const bfh = event.base_file_hashes
@@ -592,4 +676,76 @@ export function followUpEventInput(
     ...(lastEvent.session_id !== undefined ? { session_id: lastEvent.session_id } : {}),
   }
   return { ...base, ...extra }
+}
+
+/**
+ * Discipline resolution for a unit's LATEST sidecar delegation. Consumed by the
+ * ledger discipline-adherence gate (P5 5a). Pure — never reads a file, never emits.
+ *  - none         : the unit has no delegation in the sidecar (native/non-delegated pass) → gate SKIPS
+ *  - open         : the latest delegation has no terminal event yet → gate BLOCKS (unterminated chain)
+ *  - pass         : the latest delegation's terminal event is validation_completed{outcome:'pass'} → clean
+ *  - contradiction: any other terminal — a non-'pass' outcome (INCLUDING refunded-infra failures like
+ *                   WORKER_AIDER_EXIT), or a 'pass' carried on a non-validation_completed event → gate
+ *                   BLOCKS unless override (checkpoint review + user arbitration 2026-07-08; spec §320/§322)
+ */
+export type UnitDisciplineResolution =
+  | { kind: "none" }
+  | { kind: "open"; delegationId: string }
+  | { kind: "pass"; delegationId: string }
+  | { kind: "contradiction"; delegationId: string; outcome: Outcome; failureStage?: FailureStage }
+
+export function resolveUnitDelegation(
+  events: SidecarEvent[],
+  phase: string,
+  unitId: string
+): UnitDisciplineResolution {
+  // The emit side stores phase/unit_id through boundIdentifier (64-char cap). Bound the
+  // lookup keys the same way so a legal long id still matches its events.
+  const boundedPhase = boundIdentifier(phase)
+  const boundedUnitId = boundIdentifier(unitId)
+
+  const filtered = events.filter((e) => e.phase === boundedPhase && e.unit_id === boundedUnitId)
+  if (filtered.length === 0) return { kind: "none" }
+
+  // Group by delegation_id in first-seen file order; "latest" = the group whose FIRST
+  // event appears last in the file (mirrors openDelegation's ordering).
+  const groups = new Map<string, SidecarEvent[]>()
+  const firstSeenOrder: string[] = []
+  for (const e of filtered) {
+    let g = groups.get(e.delegation_id)
+    if (!g) {
+      g = []
+      groups.set(e.delegation_id, g)
+      firstSeenOrder.push(e.delegation_id)
+    }
+    g.push(e)
+  }
+  const delegationId = firstSeenOrder[firstSeenOrder.length - 1]
+  const groupEvents = groups.get(delegationId) as SidecarEvent[]
+  const last = groupEvents[groupEvents.length - 1]
+
+  // No outcome on the last event → the chain never reached a terminal → open.
+  if (last.outcome === undefined) return { kind: "open", delegationId }
+
+  // Strict reconciliation (checkpoint review + user arbitration 2026-07-08; spec §320/§322).
+  // The ONLY clean terminal is a validation_completed event with outcome 'pass'. Every other
+  // terminal — a non-'pass' outcome (INCLUDING refunded-infra failures like WORKER_AIDER_EXIT),
+  // or a 'pass' carried on a non-validation_completed event — is a contradiction the gate must
+  // reconcile. Refunded EARLIER attempts don't taint a later clean pass: only the LATEST
+  // delegation is inspected, and in the legitimate flow its terminal IS the validation_completed{pass}.
+  if (last.event_type === "validation_completed" && last.outcome === "pass") {
+    return { kind: "pass", delegationId }
+  }
+
+  // Resolve a failure_stage for the audit/message (last event's, else the most recent carrying one).
+  let failureStage: FailureStage | undefined = last.failure_stage
+  if (failureStage === undefined) {
+    for (let i = groupEvents.length - 2; i >= 0; i--) {
+      if (groupEvents[i].failure_stage !== undefined) {
+        failureStage = groupEvents[i].failure_stage
+        break
+      }
+    }
+  }
+  return { kind: "contradiction", delegationId, outcome: last.outcome, failureStage }
 }

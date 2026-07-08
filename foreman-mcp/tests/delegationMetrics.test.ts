@@ -244,6 +244,45 @@ describe("renderDelegationMetrics", () => {
     expect(out).toContain("standard | model-a | 6 | 1 | 50.0% | 25.0% | 1 | BLD_ERR:1,PATCH_PARSE_FAIL:1,WORKER_GHOST:1")
   })
 
+  it("CLI-transport stages: all four are refunded (infra + pre-send), excluded from stage-survival + scorecard", async () => {
+    // Each of the 4 new CLI stages, terminal fail on worker_completed — all REFUNDED per spec
+    // (infra faults binary/exit/llm AND the pre-send dirty-tree operator setup fault; none is
+    // the model's fault, so none pollutes the model scorecard).
+    await appendEvent(sidecarPath, fixtureEvent({ event_id: "n1", unit_id: "uA", delegation_id: "delA", event_type: "delegation_started" }))
+    await appendEvent(sidecarPath, fixtureEvent({ event_id: "n2", unit_id: "uA", delegation_id: "delA", event_type: "worker_completed", failure_stage: "WORKER_AIDER_EXIT", outcome: "fail" }))
+    await appendEvent(sidecarPath, fixtureEvent({ event_id: "n3", unit_id: "uB", delegation_id: "delB", event_type: "delegation_started" }))
+    await appendEvent(sidecarPath, fixtureEvent({ event_id: "n4", unit_id: "uB", delegation_id: "delB", event_type: "worker_completed", failure_stage: "WORKER_AIDER_LLM_ERROR", outcome: "fail" }))
+    await appendEvent(sidecarPath, fixtureEvent({ event_id: "n5", unit_id: "uC", delegation_id: "delC", event_type: "delegation_started" }))
+    await appendEvent(sidecarPath, fixtureEvent({ event_id: "n6", unit_id: "uC", delegation_id: "delC", event_type: "worker_completed", failure_stage: "WORKER_BINARY_NOT_FOUND", outcome: "fail" }))
+    await appendEvent(sidecarPath, fixtureEvent({ event_id: "n7", unit_id: "uD", delegation_id: "delD", event_type: "delegation_started" }))
+    await appendEvent(sidecarPath, fixtureEvent({ event_id: "n8", unit_id: "uD", delegation_id: "delD", event_type: "worker_completed", failure_stage: "WORKER_DIRTY_TREE_REFUSAL", outcome: "fail" }))
+
+    const ledger = buildLedger("5a", {
+      uA: { s: "delegated", v: "fail" },
+      uB: { s: "delegated", v: "fail" },
+      uC: { s: "delegated", v: "fail" },
+      uD: { s: "delegated", v: "fail" },
+    })
+    const out = await renderDelegationMetrics(ledger, sidecarPath)
+
+    // All 4 refunded, none counted.
+    expect(out).toContain("refunded: 4")
+    expect(out).toContain("counted: 0")
+
+    // Each stage appears EXACTLY ONCE in the whole output — the REFUNDED table row only.
+    expect(out.split("WORKER_AIDER_EXIT").length - 1).toBe(1)
+    expect(out.split("WORKER_AIDER_LLM_ERROR").length - 1).toBe(1)
+    expect(out.split("WORKER_BINARY_NOT_FOUND").length - 1).toBe(1)
+    expect(out.split("WORKER_DIRTY_TREE_REFUSAL").length - 1).toBe(1)
+    expect(out).toContain("WORKER_AIDER_EXIT | 1")
+    expect(out).toContain("WORKER_AIDER_LLM_ERROR | 1")
+    expect(out).toContain("WORKER_BINARY_NOT_FOUND | 1")
+    expect(out).toContain("WORKER_DIRTY_TREE_REFUSAL | 1")
+
+    // Nothing counted -> stage0 denominator is 0 and no stage is attributed to it.
+    expect(out).toContain("stage0_model_discipline | counted delegations | 0 | 0 | n/a | -")
+  })
+
   it("ghost counting: counted as a failure in the headline denominator, in the stage0 histogram, and in the scorecard ghosts column", async () => {
     await seedGoldenFixture()
     const out = await renderDelegationMetrics(goldenLedgerNoDrift(), sidecarPath)

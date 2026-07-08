@@ -243,7 +243,9 @@ describe("journal", () => {
       // 3a: +SEC_BLOCK +EGRESS_NOTICE (R6)
       expect(validCodes).toContain("SEC_BLOCK")
       expect(validCodes).toContain("EGRESS_NOTICE")
-      expect(validCodes.length).toBe(25)
+      // 3a (aider_worker capability probe): +CAP_WAIVER — fail-open waiver marker
+      expect(validCodes).toContain("CAP_WAIVER")
+      expect(validCodes.length).toBe(26)
     })
   })
 
