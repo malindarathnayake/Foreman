@@ -39,3 +39,6 @@ release-pkg/
 # packs it into the tarball. Override the global dist/ ignore for this path only.
 !foreman-mcp/vendor/context-crush/dist/
 !foreman-mcp/vendor/context-crush/dist/**
+
+# Foreman local worker endpoint config (never commit)
+.foremanenv
