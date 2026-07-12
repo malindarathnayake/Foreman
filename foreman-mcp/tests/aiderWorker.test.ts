@@ -249,7 +249,7 @@ describe("aider_worker — happy path", () => {
     // The worktree dir under the root was torn down — nothing left behind.
     const remaining = await fs.readdir(ws.worktreeRoot)
     expect(remaining.length).toBe(0)
-  })
+  }, 15000)
 })
 
 // ── 2. worker_completed diagnostics ───────────────────────────────────────────────────

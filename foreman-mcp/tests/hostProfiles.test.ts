@@ -88,27 +88,34 @@ describe("hostProfiles — getProfile", () => {
     expect(profile.displayName).toBe("Cursor")
     expect(profile.placeholders.worker_invoke).toContain("Task")
     expect(profile.placeholders.worker_invoke).toContain("claude-4.6-sonnet-medium-thinking")
-    expect(profile.placeholders.advisor_a).toContain("gpt-5.5-high")
+    expect(profile.placeholders.advisor_a).toContain("gpt-5.6-sol-ultra")
     expect(profile.placeholders.advisor_b).toContain("gemini-3.1-pro")
     expect(profile.placeholders.advisor_b).toContain("composer-2-fast")
   })
 
-  it("codex profile aliases claude-code placeholders except autonomy (DRAFT)", () => {
+  it("codex profile uses native subagents and Claude/Gemini advisors", () => {
     const codex = getProfile("codex")
-    const cc = getProfile("claude-code")
     expect(codex.id).toBe("codex")
-    const sharedKeys = ["host_name", "worker_invoke", "advisor_a", "advisor_b", "advisor_fallback"]
-    for (const key of sharedKeys) {
-      expect(codex.placeholders[key]).toBe(cc.placeholders[key])
-    }
-    expect(codex.placeholders.autonomy).toContain("DRAFT")
-    expect(codex.placeholders.autonomy).not.toBe(cc.placeholders.autonomy)
+    expect(codex.displayName).toBe("Codex")
+    expect(codex.placeholders.worker_invoke).toContain("spawn_agent")
+    expect(codex.placeholders.worker_invoke).toContain("gpt-5.6-luna")
+    expect(codex.placeholders.worker_invoke).toContain("record the actual model")
+    expect(codex.placeholders.worker_invoke).not.toContain("Agent tool")
+    expect(codex.placeholders.advisor_checks).toContain('cli: "claude"')
+    expect(codex.placeholders.advisor_a).toContain('cli: "claude"')
+    expect(codex.placeholders.advisor_a).toContain('model: "claude-fable-5"')
+    expect(codex.placeholders.advisor_a).toContain("max")
+    expect(codex.placeholders.advisor_b).toContain('cli: "gemini"')
+    expect(codex.placeholders.advisor_fallback).toContain("Non-independent")
+    expect(codex.placeholders.autonomy).toContain("host-controlled")
   })
 
   it("every profile defines all canonical placeholder keys", () => {
     const required = [
       "host_name",
       "worker_invoke",
+      "worker_fanout",
+      "advisor_checks",
       "advisor_a",
       "advisor_b",
       "advisor_fallback",
@@ -120,6 +127,25 @@ describe("hostProfiles — getProfile", () => {
         expect(profile.placeholders[key], `${id}.${key}`).toBeDefined()
         expect(profile.placeholders[key].length, `${id}.${key} non-empty`).toBeGreaterThan(0)
       }
+    }
+  })
+
+  it("codex worker_fanout describes parallel spawn_agent with explorer/worker roles", () => {
+    const fanout = getProfile("codex").placeholders.worker_fanout
+    expect(fanout).toContain("spawn_agent")
+    expect(fanout).toContain("explorer")
+    expect(fanout).toContain("max_threads")
+    expect(fanout).toContain("max_depth=1")
+    expect(fanout).toContain("codex_agents_init")
+    expect(fanout).toContain("write_ledger")
+  })
+
+  it("hostRuntimePreamble includes worker_fanout for every host", async () => {
+    const { hostRuntimePreamble } = await import("../src/lib/hostProfiles.js")
+    for (const id of KNOWN_HOSTS) {
+      const preamble = hostRuntimePreamble(id as HostId)
+      expect(preamble, `${id} preamble`).toContain("Worker fan-out:")
+      expect(preamble, `${id} preamble non-empty fanout`).not.toContain("Worker fan-out: undefined")
     }
   })
 

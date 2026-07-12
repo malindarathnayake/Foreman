@@ -20,7 +20,8 @@ export type Capability = (typeof CAPABILITIES)[number]
 export const SUPPORT: Record<HostId, Record<Capability, boolean>> = {
   "claude-code": { "spawn-worker": true, "invoke-advisor": true, "run-tests": true, "report-tokens": true, "honor-isolation": true, autonomy: true },
   cursor: { "spawn-worker": true, "invoke-advisor": true, "run-tests": true, "report-tokens": true, "honor-isolation": true, autonomy: false },
-  // codex is an alias preset of claude-code minus autonomy (autonomy text is DRAFT in its host profile)
+  // Codex uses native collaboration subagents plus Claude/Gemini advisor CLIs.
+  // Per-child model choice remains host-owned; unattended continuation is not declared.
   codex: { "spawn-worker": true, "invoke-advisor": true, "run-tests": true, "report-tokens": true, "honor-isolation": true, autonomy: false },
   // generic: the bundled generic profile declares the full six-capability contract
   // (HOST-CONTRACT.md); a generic host is by definition a contract implementer.

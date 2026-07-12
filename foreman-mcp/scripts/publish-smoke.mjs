@@ -249,12 +249,9 @@ async function main() {
     log("installing the tarball into a fresh directory")
     const installDir = await mkdtemp(path.join(os.tmpdir(), "foreman-smoke-install-"))
     tempDirs.push(installDir)
-    // The two unbundled dependencies (@modelcontextprotocol/sdk, zod) are
-    // fetched from the registry as part of this install — that's
-    // intentional, it exercises the real install path a consumer hits.
-    // context-crush ships as a bundleDependency, so it installs from
-    // inside the tarball itself, not the registry.
-    await runCommand(npmCmd, ["install", tarballPath, "--no-save", "--prefix", installDir], {
+    // All runtime dependencies are bundled. Force offline mode so this gate
+    // proves that a release tarball installs without registry/DNS access.
+    await runCommand(npmCmd, ["install", tarballPath, "--no-save", "--prefix", installDir, "--offline"], {
       cwd: installDir,
       shell: useShell,
     })

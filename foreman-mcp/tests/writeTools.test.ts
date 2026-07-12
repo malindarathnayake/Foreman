@@ -1012,6 +1012,7 @@ describe("WriteJournalInputSchema — init_session agent_class/worker_class (R8)
         env: {
           agent: "claude",
           worker: "claude",
+          claude: "2.1.206",
           codex: null,
           gemini: null,
           agent_class: "frontier",
@@ -1020,6 +1021,7 @@ describe("WriteJournalInputSchema — init_session agent_class/worker_class (R8)
       },
     })
     expect(result.success).toBe(true)
+    if (result.success) expect(result.data.data.env.claude).toBe("2.1.206")
   })
 
   it("rejects an invalid agent_class value", () => {

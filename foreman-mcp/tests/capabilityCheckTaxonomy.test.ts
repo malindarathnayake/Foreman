@@ -16,7 +16,8 @@ async function load() {
   return { ext: ext as any, mod }
 }
 
-const VERSION_STDOUT: Record<"codex" | "gemini", string> = {
+const VERSION_STDOUT: Record<"claude" | "codex" | "gemini", string> = {
+  claude: "2.1.206 (Claude Code)",
   codex: "codex-cli 0.142.4",
   gemini: "gemini 0.47.0",
 }
@@ -32,7 +33,7 @@ function healthResult(overrides: Partial<{ exitCode: number; stdout: string; std
   }
 }
 
-function mockRun(cli: "codex" | "gemini", healthResultValue: ReturnType<typeof healthResult>) {
+function mockRun(cli: "claude" | "codex" | "gemini", healthResultValue: ReturnType<typeof healthResult>) {
   return vi.fn(async (_cmd: string, args: string[]) =>
     args.includes("--version")
       ? { exitCode: 0, stdout: VERSION_STDOUT[cli], stderr: "", timedOut: false, truncated: false }
@@ -146,5 +147,33 @@ describe("capabilityCheck — auth_status taxonomy (D11)", () => {
       expect(typeof row.provenance).toBe("string")
       expect(row.provenance.length).toBeGreaterThan(0)
     }
+  })
+
+  it("11. claude auth status exit 0 -> ok and reports version without pinning it", async () => {
+    const { ext, mod } = await load()
+    ext.resolveInvocation.mockResolvedValue({ ok: true, plan: { command: "claude", args: [] } })
+    ext.runExternalCli.mockImplementation(mockRun("claude", healthResult({ exitCode: 0 })))
+
+    const result = await mod.capabilityCheck("claude", "codex")
+    expect(result).toContain("cli: claude")
+    expect(result).toContain("available: true")
+    expect(result).toContain("version: 2.1.206 (Claude Code)")
+    expect(result).toContain("auth_status: ok")
+    expect(mod.SENTINEL_TABLE.some((row: any) => row.cli === "claude")).toBe(false)
+  })
+
+  it("12. claude auth status non-zero -> auth_expired independent of CLI version", async () => {
+    const { ext, mod } = await load()
+    ext.resolveInvocation.mockResolvedValue({ ok: true, plan: { command: "claude", args: [] } })
+    ext.runExternalCli.mockImplementation(async (_cmd: string, args: string[]) =>
+      args.includes("--version")
+        ? healthResult({ exitCode: 0, stdout: "9.9.9 (Claude Code)" })
+        : healthResult({ exitCode: 1 })
+    )
+
+    const result = await mod.capabilityCheck("claude", "codex")
+    expect(result).toContain("version: 9.9.9 (Claude Code)")
+    expect(result).toContain("auth_status: auth_expired")
+    expect(result).toContain("claude auth login")
   })
 })

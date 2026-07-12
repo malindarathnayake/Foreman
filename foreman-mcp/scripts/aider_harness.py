@@ -218,7 +218,14 @@ def main():
     # Exactly one JSON object on stdout — metadata only, never patch/diff bytes. Written
     # to the REAL stdout captured above, bypassing _run_main's stdout->stderr redirect.
     real_stdout.write(json.dumps(response, separators=(",", ":")) + "\n")
-    return EXIT_OK
+    real_stdout.flush()
+    # Hard-exit so no aider background thread (e.g. the async chat-history summarizer,
+    # which fires on larger delegations and can fail at interpreter shutdown) can append
+    # to the REAL stdout AFTER the envelope. Enforces the R3 "exactly one JSON object on
+    # stdout" contract against ASYNC pollution, not just the synchronous redirect during
+    # the run. Node owns worktree teardown, so skipping atexit/GC here is safe.
+    os._exit(EXIT_OK)
+    return EXIT_OK  # unreachable; kept for clarity
 
 
 if __name__ == "__main__":

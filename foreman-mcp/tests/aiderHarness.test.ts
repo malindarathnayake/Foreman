@@ -133,7 +133,7 @@ describe.skipIf(!pythonOk)("aider_harness.py contract", () => {
     const request = {
       model: "openai/does-not-exist",
       edit_format: "whole",
-      api_base: "http://127.0.0.1:1/v1", // bogus/unreachable — never actually connects
+      api_base: "http://127.0.0.1:1/v1", // never reached: cwd below is deliberately missing
       api_key: FAKE_KEY,
       num_ctx: 1024,
       reasoning_tag: "",
@@ -142,7 +142,9 @@ describe.skipIf(!pythonOk)("aider_harness.py contract", () => {
       fnames: [],
       read_only_fnames: [],
       message: "noop",
-      cwd,
+      // The harness loads api_key before chdir. This triggers its generic scrubbed-error
+      // boundary without a provider call whose retries vary by aider/litellm version.
+      cwd: path.join(cwd, "missing"),
     }
 
     const result = await runHarness(py.plan.command, [...py.plan.args, HARNESS_PATH], JSON.stringify(request))

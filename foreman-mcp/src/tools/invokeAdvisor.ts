@@ -3,13 +3,26 @@ import {
   resolveInvocation,
   runWithStdin,
 } from "../lib/externalCli.js"
+import type { AdvisorCli } from "../lib/advisorCli.js"
 
-const ADVISOR_CONFIGS: Record<string, { buildArgs: () => string[] }> = {
+const ADVISOR_CONFIGS: Record<AdvisorCli, { buildArgs: () => string[] }> = {
+  claude: {
+    buildArgs: () => [
+      "-p",
+      "--no-session-persistence",
+      "--permission-mode", "dontAsk",
+      "--model", "claude-fable-5",
+      "--effort", "max",
+      "--tools=",
+      "--max-budget-usd", "1",
+      "--output-format", "text",
+    ],
+  },
   codex: {
     buildArgs: () => [
       "exec", "--skip-git-repo-check", "-s", "read-only",
-      "-m", "gpt-5.5",
-      "-c", "model_reasoning_effort=high",
+      "-m", "gpt-5.6-sol",
+      "-c", "model_reasoning_effort=ultra",
       "-c", "hide_agent_reasoning=true", "-"
     ],
   },
@@ -22,7 +35,7 @@ const ADVISOR_CONFIGS: Record<string, { buildArgs: () => string[] }> = {
 }
 
 export async function invokeAdvisor(
-  cli: "codex" | "gemini",
+  cli: AdvisorCli,
   prompt: string,
   timeoutMs: number,
 ): Promise<ExternalCliResult> {

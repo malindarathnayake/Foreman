@@ -129,7 +129,9 @@ describe("skillTrimming — implementor", () => {
     // ethos brief/validation items.
     // raised 270 -> 285 in v0.5.0 (R9): S7 invoke_worker protocol steps + per-path
     // inner-loop table + redaction disclosure rule (unit 4h).
-    expect(lines).toBeLessThanOrEqual(285)
+    // raised 285 -> 295 in v0.5.8: Codex multi-agent fan-out — {{worker_fanout}} + ledger
+    // constraint lines under Step 2 Decide Batching.
+    expect(lines).toBeLessThanOrEqual(295)
   })
 
   it("self-referential boilerplate and disableSlashCommand are removed", async () => {
@@ -149,10 +151,11 @@ describe("skillTrimming — implementor", () => {
     expect(first20).toContain("{{include: ledger-critical}}")
   })
 
-  it("Model Check still mandates Opus", async () => {
+  it("Seat Check still mandates a frontier pitboss without provider lock-in", async () => {
     const content = await readSkill("implementor.md")
-    expect(content).toMatch(/Model Check/i)
-    expect(content).toContain("Opus")
+    expect(content).toMatch(/Seat Check/i)
+    expect(content).toContain("frontier-class pitboss")
+    expect(content).not.toContain("Opus required")
   })
 
   it("all Per-Unit Workflow step headings remain", async () => {
@@ -206,10 +209,12 @@ describe("skillTrimming — implementor", () => {
     expect(content).toContain("DO NOT")
   })
 
-  it("Checkpoint Protocol tier table lists codex and gemini", async () => {
+  it("Checkpoint Protocol tier table is advisor/provider neutral", async () => {
     const content = await readSkill("implementor.md")
-    expect(content).toContain("Codex CLI")
-    expect(content).toContain("Gemini CLI")
+    expect(content).toContain("Advisor A")
+    expect(content).toContain("Advisor B")
+    expect(content).toContain("Pitboss (you)")
+    expect(content).toContain("{{advisor_checks}}")
   })
 
   it("Brief Preflight Gate section is present", async () => {
@@ -223,7 +228,7 @@ describe("skillTrimming — implementor", () => {
     const content = await readSkill("implementor.md")
     const step4 = content.indexOf("Build Worker Brief")
     const preflight = content.indexOf("Brief Preflight Gate")
-    const step5 = content.indexOf("Spawn Sonnet Worker")
+    const step5 = content.indexOf("Spawn Worker")
     expect(step4).toBeGreaterThan(-1)
     expect(preflight).toBeGreaterThan(step4)
     expect(step5).toBeGreaterThan(preflight)

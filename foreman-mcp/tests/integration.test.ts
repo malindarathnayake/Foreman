@@ -10,7 +10,7 @@ import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 let server: McpServer
 let client: Client
 
-async function setupServer(config?: { ledgerPath?: string; progressPath?: string; docsDir?: string; host?: "claude-code" | "cursor" }) {
+async function setupServer(config?: { ledgerPath?: string; progressPath?: string; docsDir?: string; host?: "claude-code" | "cursor" | "codex" }) {
   server = await createServer(config)
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
   await server.connect(serverTransport)
@@ -174,6 +174,30 @@ describe("list tools — verify all 26 present, update_bundle absent", () => {
     const tool = result.tools.find((t) => t.name === "capability_check")!
     expect(tool.description).toContain("auth_status")
     expect(tool.description).not.toContain("Task subagent")
+    expect((tool.inputSchema.properties as any).cli.enum).toContain("claude")
+  })
+
+  it("invoke_advisor schema exposes Claude as a first-class CLI", async () => {
+    const result = await client.listTools()
+    const tool = result.tools.find((t) => t.name === "invoke_advisor")!
+    expect(tool.description).toContain("claude|codex|gemini")
+    expect((tool.inputSchema.properties as any).cli.enum).toEqual(["claude", "codex", "gemini"])
+  })
+})
+
+describe("Codex-only tool registration", () => {
+  beforeEach(async () => {
+    await setupServer({ host: "codex" })
+  })
+
+  it("registers codex_agents_init only for the codex host", async () => {
+    const result = await client.listTools()
+    const tool = result.tools.find((entry) => entry.name === "codex_agents_init")
+    expect(result.tools).toHaveLength(27)
+    expect(tool).toBeDefined()
+    expect(tool?.annotations?.title).toBe("Init Codex Agent Roles")
+    expect(tool?.annotations?.readOnlyHint).toBe(false)
+    expect(tool?.annotations?.destructiveHint).toBe(false)
   })
 })
 
@@ -185,7 +209,8 @@ describe("capability_check description — cursor host", () => {
   it("renders the cursor-specific text", async () => {
     const result = await client.listTools()
     const tool = result.tools.find((t) => t.name === "capability_check")!
-    expect(tool.description).toContain("Task subagents")
+    expect(tool.description).toContain("Cursor's codex/gemini advisor seats")
+    expect(tool.description).toContain("claude")
     expect(tool.description).not.toContain("auth_status taxonomy")
   })
 })

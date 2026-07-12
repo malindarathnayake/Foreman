@@ -1,5 +1,33 @@
 # Changelog
 
+## 0.5.9 - 2026-07-12
+
+- Fixed `run_tests` on Windows when `where npm` resolves first to Node's extensionless bash shim (`C:\Program Files\nodejs\npm`), which `spawn()` cannot execute and previously failed with `ENOENT`. Foreman now invokes the adjacent `npm-cli.js` with its current Node executable, without `cmd.exe` or shell interpolation.
+- Windows runner resolution now prefers native `.exe`/`.com` candidates over extensionless shims. `.cmd`/`.bat` shims remain refused when no shell-free invocation exists.
+- Bumped package to `0.5.9`.
+
+## 0.5.8 - 2026-07-12
+
+- Codex multi-agent orchestration (`--host=codex`): new `worker_fanout` host placeholder on all profiles; implementor Step 2 renders parallel spawn/wait/summarize with per-unit ledger `delegated` before spawn and `max_depth=1`.
+- New `codex_agents_init` MCP tool (registered only when `host===codex`): writes `.codex/agents/explorer.toml` + `worker.toml` (overrides built-in roles to pin sandbox_mode); creates `.codex/config.toml` `[agents]` only when absent — never clobbers existing config; model pins are optional caller overrides.
+- Release tarballs now bundle all runtime dependencies (`@modelcontextprotocol/sdk`, `zod`, and `context-crush`) so local `.tgz` installation does not require npm registry access.
+- Bumped package to `0.5.8`.
+
+## 0.5.7 - 2026-07-10
+
+- Replaced the broken Claude-Code alias in `--host=codex` with a native Codex profile: bounded workers use Codex `spawn_agent`, with `gpt-5.6-luna` recorded as a preference only when the host confirms that model selection.
+- Added Claude as a first-class `capability_check` / `invoke_advisor` CLI. Codex-mode adversarial review now runs headless `claude-fable-5` at `max` effort with tools disabled and a one-dollar call budget, with Gemini as the second independent advisor.
+- Removed provider names from the bundled implementor's pitboss, worker, and checkpoint rules. Advisor detection and invocation now render from the active host profile.
+- Added an authoritative host-runtime preamble for project/user skill overrides so stale provider instructions cannot shadow current host routing. Claude CLI versions remain telemetry only and never gate compatibility.
+- Clarified that Crucible is an optional future custom/local-model worker runner, not part of the normal Codex or Claude flow and not an owner of the frontier pitboss conversation.
+- Bumped package to `0.5.7`.
+
+## 0.5.6 - 2026-07-09
+
+- Updated Codex review routing to `gpt-5.6-sol` with `ultra` reasoning effort.
+- Updated the Cursor Advisor A profile to the matching `gpt-5.6-sol-ultra` model slug and added direct regression coverage for the Codex invocation arguments.
+- Bumped package to `0.5.6`.
+
 ## 0.5.5 - 2026-07-08
 
 - EXPERIMENTAL `aider_worker` (26th tool): a sibling of `invoke_worker` (forked, not an extension) that drives the aider Python CLI as a benchmarked local subagent. Preserves the #1 invariant — never mutate the tree, never apply from the worker tool — via an isolated-worktree→`git diff` apply model: the tool runs aider in an ephemeral worktree off the base commit (`use_git=False`, `auto_commits=False`), returns the diff verbatim between `-----BEGIN/END FOREMAN PATCH-----` sentinels plus `base_file_hashes`, and the host applies after the CAS staleness check (`ED_STALE`). Dirty base tree → `WORKER_DIRTY_TREE_REFUSAL` (refunded).

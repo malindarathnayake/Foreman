@@ -37,14 +37,51 @@ describe("renderHostPlaceholders — direct unit", () => {
     expect(out).not.toContain("{{worker_invoke}}")
   })
 
+  it("substitutes native spawn_agent worker instructions for codex", () => {
+    const out = renderHostPlaceholders("before {{worker_invoke}} after", "codex")
+    expect(out).toContain("spawn_agent")
+    expect(out).toContain("gpt-5.6-luna")
+    expect(out).toContain("record the actual model")
+    expect(out).not.toContain("Agent tool")
+    expect(out).not.toContain("{{worker_invoke}}")
+  })
+
+  it("substitutes worker_fanout for every known host with non-empty text", () => {
+    for (const host of KNOWN_HOSTS) {
+      const out = renderHostPlaceholders("{{worker_fanout}}", host)
+      expect(out, `${host} leaks {{worker_fanout}}`).not.toContain("{{worker_fanout}}")
+      expect(out.length, `${host} worker_fanout non-empty`).toBeGreaterThan(0)
+      expect(out, `${host} fanout mentions delegated`).toContain("delegated")
+    }
+  })
+
+  it("codex worker_fanout contains spawn_agent and explorer", () => {
+    const out = renderHostPlaceholders("{{worker_fanout}}", "codex")
+    expect(out).toContain("spawn_agent")
+    expect(out).toContain("explorer")
+    expect(out).toContain("max_threads")
+  })
+
   it("substitutes advisor_a / advisor_b for cursor with model slugs", () => {
     const out = renderHostPlaceholders(
       "A: {{advisor_a}}\nB: {{advisor_b}}",
       "cursor"
     )
-    expect(out).toContain("gpt-5.5-high")
+    expect(out).toContain("gpt-5.6-sol-ultra")
     expect(out).toContain("gemini-3.1-pro")
     expect(out).toContain("composer-2-fast")
+  })
+
+  it("substitutes Claude Fable and Gemini advisors for codex", () => {
+    const out = renderHostPlaceholders(
+      "CHECKS: {{advisor_checks}}\nA: {{advisor_a}}\nB: {{advisor_b}}",
+      "codex"
+    )
+    expect(out).toContain('capability_check({ cli: "claude" })')
+    expect(out).toContain('invoke_advisor({ cli: "claude"')
+    expect(out).toContain("claude-fable-5")
+    expect(out).toContain('invoke_advisor({ cli: "gemini"')
+    expect(out).not.toContain("{{advisor_checks}}")
   })
 
   it("leaves unknown placeholders untouched (forward compat)", () => {
@@ -123,7 +160,7 @@ describe("loadSkill — host placeholder integration", () => {
 
     const cursorResult = await loadSkill("test-skill", bundledDir, "cursor")
     expect(cursorResult.content).toContain("INSIDE")
-    expect(cursorResult.content).toContain("gpt-5.5-high")
+    expect(cursorResult.content).toContain("gpt-5.6-sol-ultra")
     expect(cursorResult.content).not.toContain("{{advisor_a}}")
   })
 })
@@ -145,6 +182,23 @@ describe("loadSkill — bundled skills render correctly under both hosts", () =>
     expect(result.content).not.toContain("{{worker_invoke}}")
   })
 
+  it("implementor renders native Codex worker and Claude advisor paths", async () => {
+    const result = await loadSkill("implementor", SKILLS_DIR, "codex")
+    if (result.source !== "bundled") {
+      expect(result.content).toContain("Active Host Runtime (authoritative)")
+      expect(result.content).toContain("supersede")
+    }
+    expect(result.content).toContain("spawn_agent")
+    expect(result.content).toContain("gpt-5.6-luna")
+    expect(result.content).toContain('cli: "claude"')
+    expect(result.content).toContain("claude-fable-5")
+    const legacyModelCheck = result.content.indexOf("Model Check")
+    if (legacyModelCheck >= 0) {
+      expect(result.content.indexOf("Active Host Runtime (authoritative)")).toBeLessThan(legacyModelCheck)
+    }
+    expect(result.content).not.toContain("{{advisor_checks}}")
+  })
+
   it("design-partner renders advisor_a / advisor_b via deliberation include — claude-code", async () => {
     const result = await loadSkill("design-partner", SKILLS_DIR, "claude-code")
     expect(result.content).toContain("mcp__foreman__invoke_advisor")
@@ -154,7 +208,7 @@ describe("loadSkill — bundled skills render correctly under both hosts", () =>
 
   it("design-partner renders advisor_a / advisor_b via deliberation include — cursor", async () => {
     const result = await loadSkill("design-partner", SKILLS_DIR, "cursor")
-    expect(result.content).toContain("gpt-5.5-high")
+    expect(result.content).toContain("gpt-5.6-sol-ultra")
     expect(result.content).toContain("gemini-3.1-pro")
     expect(result.content).not.toContain("{{advisor_a}}")
     expect(result.content).not.toContain("{{advisor_b}}")
@@ -162,7 +216,7 @@ describe("loadSkill — bundled skills render correctly under both hosts", () =>
 
   it("spec-generator renders advisor placeholders under cursor", async () => {
     const result = await loadSkill("spec-generator", SKILLS_DIR, "cursor")
-    expect(result.content).toContain("gpt-5.5-high")
+    expect(result.content).toContain("gpt-5.6-sol-ultra")
     expect(result.content).toContain("gemini-3.1-pro")
     expect(result.content).not.toContain("{{advisor_a}}")
   })
@@ -171,8 +225,10 @@ describe("loadSkill — bundled skills render correctly under both hosts", () =>
     for (const skill of ["implementor", "design-partner", "spec-generator"]) {
       const result = await loadSkill(skill, SKILLS_DIR, "claude-code")
       expect(result.content, `${skill} leaks {{worker_invoke}}`).not.toContain("{{worker_invoke}}")
+      expect(result.content, `${skill} leaks {{worker_fanout}}`).not.toContain("{{worker_fanout}}")
       expect(result.content, `${skill} leaks {{advisor_a}}`).not.toContain("{{advisor_a}}")
       expect(result.content, `${skill} leaks {{advisor_b}}`).not.toContain("{{advisor_b}}")
+      expect(result.content, `${skill} leaks {{advisor_checks}}`).not.toContain("{{advisor_checks}}")
       expect(result.content, `${skill} leaks {{advisor_fallback}}`).not.toContain("{{advisor_fallback}}")
     }
   })
@@ -181,8 +237,10 @@ describe("loadSkill — bundled skills render correctly under both hosts", () =>
     for (const skill of ["implementor", "design-partner", "spec-generator"]) {
       const result = await loadSkill(skill, SKILLS_DIR, "cursor")
       expect(result.content, `${skill} leaks {{worker_invoke}}`).not.toContain("{{worker_invoke}}")
+      expect(result.content, `${skill} leaks {{worker_fanout}}`).not.toContain("{{worker_fanout}}")
       expect(result.content, `${skill} leaks {{advisor_a}}`).not.toContain("{{advisor_a}}")
       expect(result.content, `${skill} leaks {{advisor_b}}`).not.toContain("{{advisor_b}}")
+      expect(result.content, `${skill} leaks {{advisor_checks}}`).not.toContain("{{advisor_checks}}")
       expect(result.content, `${skill} leaks {{advisor_fallback}}`).not.toContain("{{advisor_fallback}}")
     }
   })
@@ -191,10 +249,32 @@ describe("loadSkill — bundled skills render correctly under both hosts", () =>
     for (const skill of ["implementor", "design-partner", "spec-generator"]) {
       const result = await loadSkill(skill, SKILLS_DIR, "generic")
       expect(result.content, `${skill} leaks {{worker_invoke}}`).not.toContain("{{worker_invoke}}")
+      expect(result.content, `${skill} leaks {{worker_fanout}}`).not.toContain("{{worker_fanout}}")
       expect(result.content, `${skill} leaks {{advisor_a}}`).not.toContain("{{advisor_a}}")
       expect(result.content, `${skill} leaks {{advisor_b}}`).not.toContain("{{advisor_b}}")
+      expect(result.content, `${skill} leaks {{advisor_checks}}`).not.toContain("{{advisor_checks}}")
       expect(result.content, `${skill} leaks {{advisor_fallback}}`).not.toContain("{{advisor_fallback}}")
     }
+  })
+
+  it("no host placeholder leaks through under codex", async () => {
+    for (const skill of ["implementor", "design-partner", "spec-generator"]) {
+      const result = await loadSkill(skill, SKILLS_DIR, "codex")
+      expect(result.content, `${skill} leaks {{worker_invoke}}`).not.toContain("{{worker_invoke}}")
+      expect(result.content, `${skill} leaks {{worker_fanout}}`).not.toContain("{{worker_fanout}}")
+      expect(result.content, `${skill} leaks {{advisor_a}}`).not.toContain("{{advisor_a}}")
+      expect(result.content, `${skill} leaks {{advisor_b}}`).not.toContain("{{advisor_b}}")
+      expect(result.content, `${skill} leaks {{advisor_checks}}`).not.toContain("{{advisor_checks}}")
+      expect(result.content, `${skill} leaks {{advisor_fallback}}`).not.toContain("{{advisor_fallback}}")
+    }
+  })
+
+  it("implementor renders worker_fanout under codex with spawn_agent + explorer", async () => {
+    const result = await loadSkill("implementor", SKILLS_DIR, "codex")
+    expect(result.content).toContain("spawn_agent")
+    expect(result.content).toContain("explorer")
+    expect(result.content).toContain("max_threads")
+    expect(result.content).not.toContain("{{worker_fanout}}")
   })
 })
 

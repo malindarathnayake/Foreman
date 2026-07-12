@@ -45,7 +45,7 @@ Foreman is a single-maintainer project. The following are best-effort targets, n
 
 **Out of scope:**
 
-- Vulnerabilities in the advisor CLIs themselves (Codex CLI, Gemini CLI) — report upstream
+- Vulnerabilities in the advisor CLIs themselves (Claude Code, Codex CLI, Gemini CLI) — report upstream
 - MCP host applications (Claude Code, Cursor, etc.) — report to their vendors
 - Vulnerabilities in third-party dependencies without a Foreman-specific exploitation path — report upstream; we track advisories via `npm audit`/Dependabot
 - Social engineering
@@ -61,7 +61,7 @@ Foreman polices exactly two things: its own outbound calls, and its own durable 
 
 **Out of scope by architecture: the host's own model traffic.** Foreman is an MCP tool server, not a proxy. The host agent (Claude Code, Cursor, etc.) reads files and talks to its own LLM directly, and that traffic never passes through Foreman — Foreman cannot see it, filter it, or redact it. Whatever the host agent's own context window ends up holding is the host's and the operator's responsibility.
 
-**Advisor CLI children (`invoke_advisor`).** A spawned Codex or Gemini CLI process inherits the full environment. This is a documented boundary, not a filtered one: stripping a child's environment would break that CLI's own authentication. The residual risk is stated honestly rather than hidden — a spawned CLI's own stderr/stdout could carry an environment value before it ever reaches Foreman. Foreman's scrub-on-write cleans what lands in a Foreman-owned artifact; it cannot clean the child process's own output ahead of that.
+**Advisor CLI children (`invoke_advisor`).** A spawned Claude, Codex, or Gemini CLI process inherits the full environment. This is a documented boundary, not a filtered one: stripping a child's environment would break that CLI's own authentication. The residual risk is stated honestly rather than hidden — a spawned CLI's own stderr/stdout could carry an environment value before it ever reaches Foreman. Foreman's scrub-on-write cleans what lands in a Foreman-owned artifact; it cannot clean the child process's own output ahead of that. Claude's Codex-host review path disables Claude tools, uses no persistent session, and still requires the CLI's own network access.
 
 **File-only secrets are invisible to the gate.** The harvest reads the process environment, plus any key resolved through `.foremanenv`'s `${ENV:NAME}` indirection and explicitly registered with the redaction module. A secret that lives only in a file on disk — never exported to the environment — is unknown to both the scrub and the outbound gate.
 

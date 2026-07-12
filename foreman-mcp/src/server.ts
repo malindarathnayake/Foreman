@@ -36,6 +36,8 @@ import { renderIncludes, loadSkill } from "./lib/skillLoader.js"
 import { hostStatus } from "./tools/hostStatus.js"
 import { type HostId, resolveHost, parseHostFlag, getProfile } from "./lib/hostProfiles.js"
 import { maybeCompress, compressionEnabled, getRetrieveOriginalTool, toolNameForHash } from "./lib/compression.js"
+import { ADVISOR_CLIS } from "./lib/advisorCli.js"
+import { codexAgentsInit, CODEX_AGENT_ROLES } from "./tools/codexAgentsInit.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -222,10 +224,10 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     {
       description:
         host === "cursor"
-          ? "Returns a synthetic available response for the requested advisor — Cursor Task subagents are always reachable, so no CLI probe runs."
-          : "Checks whether the codex or gemini CLI is available and authenticated. Returns a closed auth_status taxonomy (ok|not_found|not_trusted|auth_expired|probe_timeout|error) with a corrective hint on failures.",
+          ? "Returns synthetic availability for Cursor's codex/gemini advisor seats. An explicit claude check probes the local Claude CLI."
+          : "Checks whether the claude, codex, or gemini CLI is available and authenticated. Returns a closed auth_status taxonomy (ok|not_found|not_trusted|auth_expired|probe_timeout|error) with a corrective hint on failures.",
       inputSchema: {
-        cli: z.enum(["codex", "gemini"]),
+        cli: z.enum(ADVISOR_CLIS),
       },
       annotations: {
         title: "Capability Check",
@@ -242,9 +244,9 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   server.registerTool(
     "invoke_advisor",
     {
-      description: "Invoke codex|gemini CLI via stdin. Resolves binary cross-platform, wraps .cmd shims on win32. Failed calls may be compressed; if a failed call's summary is insufficient, call retrieve_original with the <<ccr:HASH>> marker for the full diagnostic.",
+      description: "Invoke claude|codex|gemini CLI via stdin. Resolves binaries cross-platform and wraps .cmd shims on win32. Claude runs headless with Fable 5 at max effort and no tools. Failed calls may be compressed; if a failed call's summary is insufficient, call retrieve_original with the <<ccr:HASH>> marker for the full diagnostic.",
       inputSchema: {
-        cli: z.enum(["codex", "gemini"]),
+        cli: z.enum(ADVISOR_CLIS),
         prompt: z.string().max(100000),
         timeout_ms: z.number().min(5000).max(600000).default(300000),
       },
@@ -535,6 +537,46 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
           }
         }
         return { content: [{ type: "text" as const, text: JSON.stringify(result) }], isError: true }
+      }
+    )
+  }
+
+  // Codex-only: write .codex/agents role TOMLs + optional [agents] config for parallel fan-out.
+  if (host === "codex") {
+    server.registerTool(
+      "codex_agents_init",
+      {
+        description: [
+          "Writes Codex custom-agent role definitions into the project (.codex/agents/*.toml)",
+          "and creates .codex/config.toml with [agents] max_threads/max_depth only when that file is absent.",
+          "Existing .codex/config.toml is never overwritten (may hold mcp_servers); a merge hint is returned instead.",
+          "explorer/worker TOMLs override Codex built-in roles of those names to pin sandbox_mode.",
+          "Model pins are optional — omit to let Codex choose. Call once per project before parallel fan-out.",
+        ].join(" "),
+        inputSchema: {
+          project_dir: z.string().min(1).optional().describe("Project root (default: process.cwd())"),
+          max_threads: z.number().int().min(1).max(12).optional().describe("Concurrent agent threads (default 6)"),
+          max_depth: z.number().int().min(1).max(3).optional().describe("Nesting depth (default 1; >1 warns)"),
+          roles: z.array(z.enum(CODEX_AGENT_ROLES)).min(1).optional().describe("Roles to write (default: explorer, worker)"),
+          overwrite: z.boolean().optional().describe("Overwrite existing role TOMLs (default false). Never overwrites config.toml."),
+          models: z
+            .object({
+              explorer: z.string().min(1).optional(),
+              worker: z.string().min(1).optional(),
+            })
+            .optional()
+            .describe("Optional per-role model pins; omit to let Codex choose"),
+        },
+        annotations: {
+          title: "Init Codex Agent Roles",
+          readOnlyHint: false,
+          destructiveHint: false,
+        },
+      },
+      async (args, _extra) => {
+        const text = await codexAgentsInit(args)
+        const isError = text.includes("status: error")
+        return { content: [{ type: "text" as const, text }], isError }
       }
     )
   }

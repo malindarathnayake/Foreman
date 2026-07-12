@@ -1,7 +1,68 @@
 import { describe, test, expect, beforeAll, afterAll } from 'vitest'
-import { runTests, DEFAULT_ALLOWED_RUNNERS } from '../src/tools/runTests.js'
+import { runTests, DEFAULT_ALLOWED_RUNNERS, planFromCandidates } from '../src/tools/runTests.js'
 
 describe('runTests', () => {
+  describe('runner spawn plans', () => {
+    test('uses npm-cli.js with Node for Windows npm shims', () => {
+      const npmCli = 'C:\\Program Files\\nodejs\\node_modules\\npm\\bin\\npm-cli.js'
+      const result = planFromCandidates(
+        'npm',
+        ['C:\\Program Files\\nodejs\\npm', 'C:\\Program Files\\nodejs\\npm.cmd'],
+        'win32',
+        (candidate) => candidate === npmCli,
+      )
+
+      expect(result).toEqual({
+        ok: true,
+        plan: { command: process.execPath, args: [npmCli] },
+      })
+    })
+
+    test('prefers a native Windows executable over an extensionless shim', () => {
+      const result = planFromCandidates(
+        'pytest',
+        ['C:\\Python\\Scripts\\pytest', 'C:\\Python\\Scripts\\pytest.exe'],
+        'win32',
+        () => false,
+      )
+
+      expect(result).toEqual({
+        ok: true,
+        plan: { command: 'C:\\Python\\Scripts\\pytest.exe', args: [] },
+      })
+    })
+
+    test('rejects a Windows cmd shim when no safe npm-cli.js fallback exists', () => {
+      const result = planFromCandidates(
+        'npm',
+        ['C:\\Program Files\\nodejs\\npm.cmd'],
+        'win32',
+        () => false,
+      )
+
+      expect(result).toEqual({
+        ok: false,
+        error: 'runner resolves only to a .cmd shim on Windows; not spawnable safely\nrunner: npm',
+      })
+    })
+
+    test('uses the first resolved candidate unchanged on POSIX', () => {
+      const result = planFromCandidates('npm', ['/usr/bin/npm', '/usr/local/bin/npm'], 'linux', () => false)
+
+      expect(result).toEqual({
+        ok: true,
+        plan: { command: '/usr/bin/npm', args: [] },
+      })
+    })
+
+    test.runIf(process.platform === 'win32')('runs npm through the Windows fallback', async () => {
+      const result = await runTests('npm', ['--version'])
+
+      expect(result).toContain('exit_code: 0')
+      expect(result).toContain('passed: true')
+    })
+  })
+
   describe('allowlist enforcement', () => {
     const savedEnv = process.env.FOREMAN_TEST_ALLOWLIST
 

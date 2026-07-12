@@ -298,6 +298,7 @@ export interface JournalEnv {
   foreman: string
   agent: string
   worker: string
+  claude?: string | null
   codex: string | null
   gemini: string | null
   /** R8: declared capability classes (additive, v0.5.0). */
@@ -378,6 +379,7 @@ const InitSessionData = z.object({
   env: z.object({
     agent: z.string().max(100),
     worker: z.string().max(100),
+    claude: z.string().max(50).nullable().optional(),
     codex: z.string().max(50).nullable(),
     gemini: z.string().max(50).nullable(),
     // R8: capability class per seat — declared, never self-assessed.

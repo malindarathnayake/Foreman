@@ -16,13 +16,22 @@ describe("hostStatus — direct unit", () => {
     expect(out).toContain("advisor_b_model: n/a")
   })
 
-  it("cursor host reports sonnet-4.6 worker + GPT-5.5/Gemini-3.1 advisors", () => {
+  it("cursor host reports sonnet-4.6 worker + GPT-5.6-SOL/Gemini-3.1 advisors", () => {
     const out = hostStatus("cursor")
     expect(out).toContain("host: cursor")
     expect(out).toContain("worker_model: claude-4.6-sonnet-medium-thinking")
-    expect(out).toContain("advisor_a_model: gpt-5.5-high")
+    expect(out).toContain("advisor_a_model: gpt-5.6-sol-ultra")
     expect(out).toContain("advisor_b_model: gemini-3.1-pro")
     expect(out).toContain("advisor_b_fallback: composer-2-fast")
+  })
+
+  it("codex host reports Claude Fable 5 advisor and host-selected worker", () => {
+    const out = hostStatus("codex")
+    expect(out).toContain("host: codex")
+    expect(out).toContain("display_name: Codex")
+    expect(out).toContain("worker_model: n/a")
+    expect(out).toContain("advisor_a_model: claude-fable-5")
+    expect(out).toContain("unsupported_capabilities: autonomy")
   })
 
   it("claude-code host echoes no unsupported capabilities", () => {
@@ -68,8 +77,28 @@ describe("host_status — MCP round-trip", () => {
     const content = result.content as Array<{ type: string; text: string }>
     expect(content[0].text).toContain("host: cursor")
     expect(content[0].text).toContain("worker_model: claude-4.6-sonnet-medium-thinking")
-    expect(content[0].text).toContain("advisor_a_model: gpt-5.5-high")
+    expect(content[0].text).toContain("advisor_a_model: gpt-5.6-sol-ultra")
     expect(content[0].text).toContain("advisor_b_model: gemini-3.1-pro")
+  })
+
+  it("codex-configured server reports native Codex profile and Claude advisor", async () => {
+    await setup("codex")
+    const result = await client.callTool({ name: "host_status", arguments: {} })
+    const content = result.content as Array<{ type: string; text: string }>
+    expect(content[0].text).toContain("host: codex")
+    expect(content[0].text).toContain("display_name: Codex")
+    expect(content[0].text).toContain("advisor_a_model: claude-fable-5")
+  })
+
+  it("codex activator renders spawn_agent and Claude Fable advisor", async () => {
+    await setup("codex")
+    const result = await client.callTool({ name: "pitboss_implementor", arguments: {} })
+    const content = result.content as Array<{ type: string; text: string }>
+    expect(content[0].text).toContain("host: codex")
+    expect(content[0].text).toContain("spawn_agent")
+    expect(content[0].text).toContain("gpt-5.6-luna")
+    expect(content[0].text).toContain("claude-fable-5")
+    expect(content[0].text).not.toContain("{{advisor_checks}}")
   })
 
   it("host_status tool is listed and has expected description shape", async () => {
@@ -105,6 +134,6 @@ describe("host_status — MCP round-trip", () => {
     })
     const content = result.content as Array<{ type: string; text: string }>
     expect(content[0].text).toContain("mechanism: cursor_subagent")
-    expect(content[0].text).toContain("model: gpt-5.5-high")
+    expect(content[0].text).toContain("model: gpt-5.6-sol-ultra")
   })
 })

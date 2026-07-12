@@ -10,7 +10,7 @@ CRITICAL: Never write `.foreman-ledger.json` directly — all mutations go throu
 1. `mcp__foreman__bundle_status` — verify version, log warnings
 2. `mcp__foreman__read_ledger` with query "full" — get current state
 3. `mcp__foreman__read_progress` — truncated view
-4. `mcp__foreman__write_journal({ operation: "init_session", data: { target_version: "<version>", branch: "<branch>", phase: <N>, units: ["<unit ids>"], env: { agent: "opus", worker: "sonnet", codex: null, gemini: null } } })`
+4. `mcp__foreman__write_journal({ operation: "init_session", data: { target_version: "<version>", branch: "<branch>", phase: <N>, units: ["<unit ids>"], env: { agent: "frontier-pitboss", worker: "configured-worker", claude: null, codex: null, gemini: null } } })`
 5. Find handoff.md in `Docs/` or `docs/`
 6. Answer the five questions:
 
@@ -42,16 +42,17 @@ CRITICAL: Never write `.foreman-ledger.json` directly — all mutations go throu
 When non-trivial ambiguities need resolution — escalate to multi-model deliberation.
 
 ### Detection
-1. `mcp__foreman__capability_check({ cli: "codex" })` → codex available?
-2. `mcp__foreman__capability_check({ cli: "gemini" })` → gemini available?
+Check the two independent advisor seats configured for the active host:
+
+{{advisor_checks}}
 
 ### Tier Mapping
-| Codex | Gemini | Advisor A | Advisor B | Moderator |
-|-------|--------|-----------|-----------|-----------|
-| ✓ | ✓ | Codex CLI | Gemini CLI | Opus (you) |
-| ✓ | ✗ | Codex CLI | Opus agent | Opus (you) |
-| ✗ | ✓ | Gemini CLI | Opus agent | Opus (you) |
-| ✗ | ✗ | Opus agent | Opus agent (adversarial) | Opus (you) |
+| Advisor A | Advisor B | Review path | Moderator |
+|-----------|-----------|-------------|-----------|
+| available | available | Invoke both independently | Pitboss (you) |
+| available | unavailable | Advisor A + recorded non-independent fallback | Pitboss (you) |
+| unavailable | available | Advisor B + recorded non-independent fallback | Pitboss (you) |
+| unavailable | unavailable | Two adversarial self-review passes, recorded as non-independent | Pitboss (you) |
 
 ### Advisor Invocation
 Advisor invocation is host-specific. The active host is resolved at server start (default: Claude Code; set `FOREMAN_HOST=cursor` or pass `--host=cursor` for Cursor mode).
@@ -177,7 +178,7 @@ Use the `code-searcher` sub-agent for search-heavy tasks — symbol greps across
 <!-- section: advisor-grounding -->
 ## Advisor Grounding Protocol
 
-When invoking an advisor (codex/gemini or Opus agent) on code that depends on a specific library, framework, or SDK, include in the prompt: (a) the current relevant imports from the actual source file, (b) a short excerpt or link to the library's documented behavior, and (c) the specific call site line numbers. Without this context advisors hallucinate library APIs and flag phantom bugs.
+When invoking an advisor (external CLI or host-native fallback) on code that depends on a specific library, framework, or SDK, include in the prompt: (a) the current relevant imports from the actual source file, (b) a short excerpt or link to the library's documented behavior, and (c) the specific call site line numbers. Without this context advisors hallucinate library APIs and flag phantom bugs.
 
 Rule: if the review target touches a third-party API, paste the imports and the relevant doc excerpt into the advisor prompt; do not rely on the advisor's training recall.
 <!-- /section -->

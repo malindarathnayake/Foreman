@@ -6,6 +6,9 @@ node_modules/
 .npm-cache/
 .github/
 _DOJO/
+__pycache__/
+*.pyc
+CONTEXT-BOUNDARY-PLAN.md
 
 # Heavy vendored asset ships once from dist/preview (runtime resolves there);
 # drop the src/ duplicate from the tarball.

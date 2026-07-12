@@ -169,7 +169,7 @@ async function applyOperation(
         if (!data.brief || data.brief.trim().length < 20) {
           throw new Error(
             "DELEGATION REQUIRED: set_unit_status with s:'delegated' requires a 'brief' field (min 20 chars) " +
-            "containing the worker brief summary. The pitboss must build a brief and spawn a Sonnet worker — " +
+            "containing the worker brief summary. The pitboss must build a brief and delegate to a worker — " +
             "do NOT write implementation code directly. Call mcp__foreman__pitboss_implementor to load the full protocol."
           )
         }
@@ -221,7 +221,7 @@ async function applyOperation(
           throw new Error(
             "VERDICT BLOCKED: Cannot set verdict 'pass' without prior delegation. " +
             "Unit must go through: set_unit_status(s:'ip') → set_unit_status(s:'delegated', brief:'...') → set_verdict(v:'pass'). " +
-            "The pitboss must spawn a Sonnet worker via Agent tool before marking pass. " +
+            "The pitboss must delegate to a worker through the active host before marking pass. " +
             "Call mcp__foreman__pitboss_implementor to load the full protocol."
           )
         }

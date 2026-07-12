@@ -1,11 +1,13 @@
 import { spawn } from 'child_process'
-import { runExternalCli, RESOLVE_CMD, parseResolutionOutput, isAbsolutePath } from '../lib/externalCli.js'
+import { existsSync } from 'fs'
+import { runExternalCli, RESOLVE_CMD, parseResolutionOutput, type SpawnPlan } from '../lib/externalCli.js'
 import path from 'path'
 
 export const DEFAULT_ALLOWED_RUNNERS = ["npm", "pytest", "go", "cargo", "dotnet", "make"]
 const BUFFER_CAP_MULTIPLIER = 4
-const resolvedRunners = new Map<string, string>()
+const resolvedRunners = new Map<string, SpawnPlan>()
 
+const NATIVE_EXTS = new Set(['.exe', '.com'])
 const CMD_EXTS = new Set(['.cmd', '.bat'])
 
 function getAllowedRunners(): string[] {
@@ -23,21 +25,83 @@ function getAllowedRunners(): string[] {
   return DEFAULT_ALLOWED_RUNNERS
 }
 
-async function resolveRunner(runner: string): Promise<string | null> {
-  if (resolvedRunners.has(runner)) return resolvedRunners.get(runner)!
-  const result = await runExternalCli(RESOLVE_CMD, [runner], 3000)
-  if (result.exitCode === 0 && result.stdout.trim()) {
-    const candidates = parseResolutionOutput(result.stdout)
-    if (candidates.length === 0) return null
-    const absPath = candidates[0]
-    // Reject .cmd/.bat on Windows — user-controlled args through cmd.exe /c is unsafe
-    if (process.platform === 'win32' && CMD_EXTS.has(path.extname(absPath).toLowerCase())) {
-      return null
-    }
-    resolvedRunners.set(runner, absPath)
-    return absPath
+export type RunnerResolution =
+  | { ok: true; plan: SpawnPlan }
+  | { ok: false; error: string }
+
+/**
+ * Convert executable candidates into a safe spawn plan.
+ *
+ * On Windows, npm's extensionless bash shim cannot be spawned directly and
+ * npm.cmd requires cmd.exe. Invoke npm-cli.js with Foreman's Node executable
+ * instead, which keeps user-supplied arguments out of a shell.
+ */
+export function planFromCandidates(
+  runner: string,
+  candidates: string[],
+  platform: NodeJS.Platform,
+  fileExists: (candidate: string) => boolean,
+): RunnerResolution {
+  if (candidates.length === 0) {
+    return { ok: false, error: `runner not found\nrunner: ${runner}` }
   }
-  return null
+
+  if (platform !== 'win32') {
+    return { ok: true, plan: { command: candidates[0], args: [] } }
+  }
+
+  const windowsPath = path.win32
+  const native = candidates.find((candidate) =>
+    NATIVE_EXTS.has(windowsPath.extname(candidate).toLowerCase()),
+  )
+  if (native) {
+    return { ok: true, plan: { command: native, args: [] } }
+  }
+
+  if (runner.toLowerCase() === 'npm') {
+    const npmCliDirs = [
+      ...candidates.map((candidate) => windowsPath.dirname(candidate)),
+      windowsPath.dirname(process.execPath),
+    ]
+    for (const dir of [...new Set(npmCliDirs)]) {
+      const npmCli = windowsPath.join(dir, 'node_modules', 'npm', 'bin', 'npm-cli.js')
+      if (fileExists(npmCli)) {
+        return { ok: true, plan: { command: process.execPath, args: [npmCli] } }
+      }
+    }
+  }
+
+  if (candidates.some((candidate) => CMD_EXTS.has(windowsPath.extname(candidate).toLowerCase()))) {
+    return {
+      ok: false,
+      error: `runner resolves only to a .cmd shim on Windows; not spawnable safely\nrunner: ${runner}`,
+    }
+  }
+
+  return {
+    ok: false,
+    error: `runner resolved but no executable candidate found\nrunner: ${runner}`,
+  }
+}
+
+async function resolveRunner(runner: string): Promise<RunnerResolution> {
+  const cached = resolvedRunners.get(runner)
+  if (cached) return { ok: true, plan: cached }
+  const result = await runExternalCli(RESOLVE_CMD, [runner], 3000)
+  if (result.exitCode !== 0 || !result.stdout.trim()) {
+    return { ok: false, error: `runner not found\nrunner: ${runner}` }
+  }
+
+  const resolution = planFromCandidates(
+    runner,
+    parseResolutionOutput(result.stdout),
+    process.platform,
+    existsSync,
+  )
+  if (resolution.ok) {
+    resolvedRunners.set(runner, resolution.plan)
+  }
+  return resolution
 }
 
 function truncate(buf: string, max: number): { text: string; wasTruncated: boolean } {
@@ -58,9 +122,9 @@ export async function runTests(
     )
   }
 
-  const resolvedPath = await resolveRunner(runner)
-  if (!resolvedPath) {
-    return `error: runner not found\nrunner: ${runner}\nallowed_runners: ${DEFAULT_ALLOWED_RUNNERS.join(", ")}`
+  const resolution = await resolveRunner(runner)
+  if (!resolution.ok) {
+    return `error: ${resolution.error}\nallowed_runners: ${DEFAULT_ALLOWED_RUNNERS.join(", ")}`
   }
 
   return new Promise((resolve) => {
@@ -69,7 +133,7 @@ export async function runTests(
     let settled = false
     let timedOut = false
 
-    const child = spawn(resolvedPath, args, {
+    const child = spawn(resolution.plan.command, [...resolution.plan.args, ...args], {
       stdio: ['pipe', 'pipe', 'pipe'],
     })
 
