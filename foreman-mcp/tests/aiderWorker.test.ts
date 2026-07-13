@@ -80,6 +80,20 @@ function pathWithoutPythonInterpreters(): string {
     .join(sep)
 }
 
+/**
+ * True when a bare python/python3 interpreter is still reachable on the given PATH.
+ * On hosts where python shares a directory with a guarded tool (e.g. /usr/bin hosts
+ * both python3 and git on GitHub Ubuntu runners), pathWithoutPythonInterpreters()
+ * cannot hide it — the "python missing" scenario is unproducible there.
+ */
+function pythonResolvesOn(pathValue: string): boolean {
+  const sep = process.platform === "win32" ? ";" : ":"
+  const pyNames = process.platform === "win32" ? ["python.exe", "python3.exe"] : ["python", "python3"]
+  return pathValue
+    .split(sep)
+    .some((d) => d && pyNames.some((n) => existsSync(path.join(d, n))))
+}
+
 // ── Per-test workspace ────────────────────────────────────────────────────────────
 let dirsToClean: string[] = []
 let originalCwd: string
@@ -552,47 +566,55 @@ describe("aider_worker — terminal outcome on the final worktree_torn_down even
 })
 
 // ── 15. Capability probe fails (python missing) [FIX D] ─────────────────────────────────
+// resolvePython() falls back to real python3/python if either resolves on this host's
+// PATH — the test hides bare python interpreters so the probe deterministically exhausts
+// all candidates. On hosts where python is co-located with a guarded tool (e.g. /usr/bin
+// hosts both python3 and git on GitHub Ubuntu runners), python cannot be hidden and the
+// "python missing" scenario is unproducible — skip there.
+const PYTHON_UNHIDEABLE = pythonResolvesOn(pathWithoutPythonInterpreters())
+
 describe("aider_worker — harness capability probe fails (python missing)", () => {
-  it("FOREMAN_AIDER_PYTHON pointing at a nonexistent binary -> WORKER_BINARY_NOT_FOUND, waiver naming python, no worktree/sidecar", async () => {
-    const ws = await makeWorkspace()
-    await initJournalSession(ws.journalPath)
-    process.chdir(ws.repoDir)
-    setEnv("FOREMAN_AIDER_PYTHON", "definitely-not-a-real-interp-xyz123")
-    process.env.FOREMAN_AIDER_HARNESS = FIXTURE_HARNESS_PATH
-    process.env.FOREMAN_AIDER_WORKTREE_ROOT = ws.worktreeRoot
+  it.skipIf(PYTHON_UNHIDEABLE)(
+    "FOREMAN_AIDER_PYTHON pointing at a nonexistent binary -> WORKER_BINARY_NOT_FOUND, waiver naming python, no worktree/sidecar",
+    async () => {
+      const strippedPath = pathWithoutPythonInterpreters()
+      const ws = await makeWorkspace()
+      await initJournalSession(ws.journalPath)
+      process.chdir(ws.repoDir)
+      setEnv("FOREMAN_AIDER_PYTHON", "definitely-not-a-real-interp-xyz123")
+      process.env.FOREMAN_AIDER_HARNESS = FIXTURE_HARNESS_PATH
+      process.env.FOREMAN_AIDER_WORKTREE_ROOT = ws.worktreeRoot
 
-    // resolvePython() falls back to real python3/python if either resolves on this
-    // host's PATH — hide any bare python interpreter so the probe deterministically
-    // exhausts all candidates regardless of what's installed on the dev machine.
-    const originalPath = process.env.PATH
-    process.env.PATH = pathWithoutPythonInterpreters()
-    let text: string
-    try {
-      text = await handleAiderWorker(baseInput(ws), ws.deps)
-    } finally {
-      process.env.PATH = originalPath
-    }
+      const originalPath = process.env.PATH
+      process.env.PATH = strippedPath
+      let text: string
+      try {
+        text = await handleAiderWorker(baseInput(ws), ws.deps)
+      } finally {
+        process.env.PATH = originalPath
+      }
 
-    expect(text).toContain("status: fail")
-    expect(text).toContain("failure_stage: WORKER_BINARY_NOT_FOUND")
-    expect(text).toContain("refunded: true")
+      expect(text).toContain("status: fail")
+      expect(text).toContain("failure_stage: WORKER_BINARY_NOT_FOUND")
+      expect(text).toContain("refunded: true")
 
-    // Pre-send gate: no delegation ever opened, so the sidecar file was never created.
-    expect(await fileExists(ws.sidecarPath)).toBe(false)
+      // Pre-send gate: no delegation ever opened, so the sidecar file was never created.
+      expect(await fileExists(ws.sidecarPath)).toBe(false)
 
-    // No worktree left behind either (none was ever created — probe runs pre-send).
-    const rootExists = await fileExists(ws.worktreeRoot)
-    const remaining = rootExists ? await fs.readdir(ws.worktreeRoot) : []
-    expect(remaining.length).toBe(0)
+      // No worktree left behind either (none was ever created — probe runs pre-send).
+      const rootExists = await fileExists(ws.worktreeRoot)
+      const remaining = rootExists ? await fs.readdir(ws.worktreeRoot) : []
+      expect(remaining.length).toBe(0)
 
-    // A CAP_WAIVER journal event was recorded naming the missing capability only —
-    // never the fake interpreter string beyond the capability name "python".
-    const events = await readJournalEvents(ws.journalPath)
-    const waiver = events.find((e) => e.t === "CAP_WAIVER")
-    expect(waiver).toBeDefined()
-    expect(waiver!.msg).toContain("missing: python")
-    expect(waiver!.msg).not.toContain("definitely-not-a-real-interp-xyz123")
-  })
+      // A CAP_WAIVER journal event was recorded naming the missing capability only —
+      // never the fake interpreter string beyond the capability name "python".
+      const events = await readJournalEvents(ws.journalPath)
+      const waiver = events.find((e) => e.t === "CAP_WAIVER")
+      expect(waiver).toBeDefined()
+      expect(waiver!.msg).toContain("missing: python")
+      expect(waiver!.msg).not.toContain("definitely-not-a-real-interp-xyz123")
+    },
+  )
 })
 
 // ── 15b. Capability probe fails (aider not importable) ──────────────────────────────────

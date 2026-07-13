@@ -42,3 +42,12 @@ release-pkg/
 
 # Foreman local worker endpoint config (never commit)
 .foremanenv
+
+# Temp/scratch directories and files
+temp/
+tmp/
+.tmp/
+*.tmp
+.aider.chat.history.md
+.aider.input.history
+dojo/T1-semver/local-repaired/semver.mjs
