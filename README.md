@@ -38,7 +38,7 @@ intent / existing repository
 
 Foreman is not another general-purpose agent framework, and it does not replace your coding host, repository tools, or CI. It controls the development lifecycle across them.
 
-**Current release:** `v0.5.9` | **Package:** `@malindarathnayake/foreman-mcp` | **Runtime:** Node.js `>=22` | **License:** Apache-2.0
+**Current release:** `v0.5.10` | **Package:** `@malindarathnayake/foreman-mcp` | **Runtime:** Node.js `>=22` | **License:** Apache-2.0
 
 **Quickstart:** [Install](#install) → [Configure an MCP host](#configure-an-mcp-host) → [Start a project](#start-a-project). Already installed? Point your MCP host at `foreman-mcp` with the right `--host` flag and call `session_orient`.
 

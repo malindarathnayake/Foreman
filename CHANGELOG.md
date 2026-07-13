@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.5.10 - 2026-07-13
+
+- Codex advisor reviews now run `gpt-5.6-sol` at `xhigh` reasoning effort (was `ultra`); regression coverage updated.
+- `invoke_advisor` timeout budget raised for newer Sol-class thinking time: default 5 → 15 minutes, cap 10 → 30 minutes. A timed-out advisor was previously killed mid-reasoning and recorded as unavailable.
+- Gitleaks allowlist: exact-token entries for the aider transport and foremanEnv test fixtures, plus a path allowlist for dojo ledger-snapshot sha256 content hashes (all false positives; CI secret scan green again).
+- The aiderWorker "python missing" capability-probe test now skips on hosts where python cannot be hidden from PATH (e.g. GitHub Ubuntu runners, where /usr/bin hosts both python3 and git).
+- Bumped package to `0.5.10`.
+
 ## 0.5.9 - 2026-07-12
 
 - Fixed `run_tests` on Windows when `where npm` resolves first to Node's extensionless bash shim (`C:\Program Files\nodejs\npm`), which `spawn()` cannot execute and previously failed with `ENOENT`. Foreman now invokes the adjacent `npm-cli.js` with its current Node executable, without `cmd.exe` or shell interpolation.
