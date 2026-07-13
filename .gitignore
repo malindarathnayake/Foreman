@@ -51,3 +51,4 @@ tmp/
 .aider.chat.history.md
 .aider.input.history
 dojo/T1-semver/local-repaired/semver.mjs
+.vscode/.checkmarxIgnored
