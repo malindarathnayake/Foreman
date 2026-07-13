@@ -248,7 +248,9 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       inputSchema: {
         cli: z.enum(ADVISOR_CLIS),
         prompt: z.string().max(100000),
-        timeout_ms: z.number().min(5000).max(600000).default(300000),
+        // Newer Sol-class models at xhigh reasoning effort routinely think for
+        // >5 min on large review prompts — budget 15 min by default, cap at 30.
+        timeout_ms: z.number().min(5000).max(1800000).default(900000),
       },
       annotations: {
         title: "Invoke Advisor",

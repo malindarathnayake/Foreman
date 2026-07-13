@@ -22,7 +22,7 @@ const ADVISOR_CONFIGS: Record<AdvisorCli, { buildArgs: () => string[] }> = {
     buildArgs: () => [
       "exec", "--skip-git-repo-check", "-s", "read-only",
       "-m", "gpt-5.6-sol",
-      "-c", "model_reasoning_effort=ultra",
+      "-c", "model_reasoning_effort=xhigh",
       "-c", "hide_agent_reasoning=true", "-"
     ],
   },
