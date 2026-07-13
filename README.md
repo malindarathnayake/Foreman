@@ -44,6 +44,24 @@ Foreman is not another general-purpose agent framework, and it does not replace 
 
 ---
 
+## Not another agent framework
+
+There are hundreds of multi-agent orchestrators, spec-driven development kits, and autonomous coding agents. Nearly all of them compete on the same axis: **more autonomy** — spawn more agents, run longer unattended, touch more of the repository per prompt.
+
+Foreman competes on the opposite axis: **control and trust over the code that ships.** It exists for work where you need fine-grained control over what gets written and verifiable grounds for accepting it — not a longer leash for the model.
+
+| Typical agent tooling | Foreman |
+|---|---|
+| Discipline lives in prompts and system messages, and decays with context compaction | Non-negotiables are TypeScript checks against durable state; they cannot be compacted away or rationalized past |
+| The same agent writes, reviews, and accepts its own work | Writing, accepting, and reviewing are separate seats; a verdict without a recorded delegation is refused |
+| "All tests pass" is a sentence in the transcript | A pass requires recorded delegation and evidence, or an explicit attestation; a gate goes stale when a unit changes under it |
+| Progress state lives in the context window | State lives on disk in a validated ledger; a new session reconstructs reality from `session_orient`, not from a summary of a summary |
+| Failure handling is retry-until-plausible | Three rejected attempts freeze the unit until a human explicitly overrides |
+| Review findings are unverified prose | Advisor findings are normalized, classified, and their `file:line` citations mechanically verified before they are recorded |
+| Autonomy is the product | The human owns intent, arbitration, and final authority; autonomy is granted only inside a bounded, evidenced unit |
+
+This makes Foreman deliberately demanding. It asks you to approve designs, arbitrate recorded trade-offs, and own phase acceptance. If you want an agent that runs unattended overnight and hands you a diff to skim, Foreman is the wrong tool — that workflow is precisely the failure mode it was built to prevent. It is made for engineers who read the code, understand the state of their system, and need to trust *how* "done" was reached, not just that something was produced.
+
 ## Forged in real development
 
 Foreman grew out of delivering and maintaining real systems across **Java, Go, C#, C++, Python, and React**.
@@ -205,6 +223,24 @@ This is how the harness combines a strong pitboss with smaller local or remote m
 
 **Codex workers:** Codex mode uses native `spawn_agent` subagents — singly or as a parallel fan-out under `agents.max_threads` — and names `gpt-5.6-luna` as the preferred worker seat. The current Codex spawn contract does not expose per-child model selection, so Foreman records the actual model and never claims Luna unless the host confirms it. Parallel fan-out never relaxes the ledger sequence: every unit is delegated before its worker spawns and receives its own independent verdict. Crucible is planned only as an optional deterministic routing boundary for custom/local workers.
 
+## Advisor seats and deliberation
+
+Advisors are independent reviewer seats — models with no stake in the work — used for design deliberation and checkpoint review. They are deliberately drawn from a different vendor than the pitboss: same-family models share training priors and blind spots, so cross-vendor review catches classes of defects that self-review structurally cannot.
+
+When non-trivial ambiguities or checkpoint reviews need resolution, the protocol runs a fixed deliberation loop: both advisors analyze the same questions independently and in parallel; the moderator digests their positions and flags hallucination risk, over-engineering, missing evidence, and sycophancy; the advisors cross-examine each other for at most three rounds; and the result is presented as a consensus or as competing proposals with a moderator recommendation. Non-trivial deadlocks go to the user, and the run does not proceed until the user arbitrates. Advisors never see each other's raw output, never receive the moderator's position first, and never write verdicts — review findings pass through `normalize_review` and `verify_citations` before anything is recorded.
+
+Default seat assignments per host:
+
+| Host | Advisor A | Advisor B | Moderator | Degraded fallback |
+|---|---|---|---|---|
+| Claude Code | Codex CLI — GPT-5.6 Sol, reasoning `ultra`, read-only sandbox | Gemini CLI — the operator's `arch-review` model profile | The host pitboss model | Opus agents with an adversarial critic prompt |
+| Cursor | GPT-5.6 Sol `ultra`, read-only task | Gemini 3.1 Pro, read-only task | The host pitboss model | Sonnet adversarial review, recorded as non-independent |
+| Codex | Headless Claude — `claude-fable-5`, effort `max`, tools and session persistence disabled | Gemini CLI | The Codex pitboss | Adversarial self-review, recorded as non-independent |
+
+These assignments come from real project runs, not published benchmarks. In practice across those runs: the Codex/Sol seat has been the strongest reviewer of state machines and protocol invariants; the Gemini seat reads large Java codebases more reliably than the alternatives; and Claude frontier models have been most effective in the moderator seat. A moderator arbitrating two opposing, evidence-cited advisor positions produces sharper judgments than the same model asked to find issues in raw code cold — the structured deliberation transcript is better conditioning material than an unframed diff. That observation is why the protocol requires the moderator to digest and compare advisor positions instead of relaying their output verbatim.
+
+When an advisor seat is unavailable, the run continues with the documented fallback and the ledger records that independent review was unavailable — the weakness is made visible, not papered over.
+
 ## Durable state and recovery
 
 State is stored relative to the MCP server's current working directory, which should be the target repository root:
@@ -301,7 +337,7 @@ args = ["--host=codex"]
 
 **Codex mode:** Foreman uses native Codex subagents for bounded work. Independent units can run in parallel; Foreman records delegation first, then independently validates each result. Call `codex_agents_init` to create optional explorer/worker roles and concurrency settings without overwriting existing Codex config.
 
-Codex uses headless Claude Fable 5 at max effort for Advisor A and Gemini for Advisor B. Restart Codex after changing MCP configuration or reinstalling Foreman.
+In Codex mode, headless Claude serves as Advisor A and Gemini as Advisor B — see [Advisor seats and deliberation](#advisor-seats-and-deliberation) for the per-host seat assignments and the deliberation loop. Restart Codex after changing MCP configuration or reinstalling Foreman.
 
 <details>
 <summary>Codex parallel-worker details</summary>
