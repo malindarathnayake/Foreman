@@ -62,6 +62,16 @@ Foreman competes on the opposite axis: **control and trust over the code that sh
 
 This makes Foreman deliberately demanding. It asks you to approve designs, arbitrate recorded trade-offs, and own phase acceptance. If you want an agent that runs unattended overnight and hands you a diff to skim, Foreman is the wrong tool — that workflow is precisely the failure mode it was built to prevent. It is made for engineers who read the code, understand the state of their system, and need to trust *how* "done" was reached, not just that something was produced.
 
+### No model lock-in
+
+Because project state lives in the ledger rather than in any vendor's session memory, the pitboss seat is a replaceable slot. A project can be ground through its breadth phases by one frontier model under one host, then hand its hardest integration unit to a different vendor's model under a different host — the incoming model calls `session_orient`, receives the exact unit status, rejection history, and named open findings, and resumes mid-unit with no handoff document and no re-explanation. The same mechanism is what lets a smaller local model eventually occupy a worker or pitboss seat: the discipline lives in the harness, so the seat only has to code.
+
+Model vendors are building in the opposite direction — memory features and persistent sessions that make their model the place your project state lives. Foreman keeps that state in files no vendor owns.
+
+### Auditable down to the bottom
+
+A harness whose product is trust must itself be inspectable. All of Foreman's state — ledger, progress, journal, events — is JSON and Markdown inside your repository: you can `git diff` a verdict, grep the session history, and read every protocol as plain bundled Markdown. There is no web console, no dashboard, and no service between you and your project's record. The enforcement layer itself is small TypeScript with two production dependencies, readable in an afternoon. Nothing about how "done" was reached is stored anywhere you cannot open in an editor.
+
 ## Forged in real development
 
 Foreman grew out of delivering and maintaining real systems across **Java, Go, C#, C++, Python, and React**.
