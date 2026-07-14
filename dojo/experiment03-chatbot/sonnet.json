@@ -1,0 +1,119 @@
+{
+  "q1": {
+    "calls": [
+      {
+        "endpoint": "get_current_status",
+        "params": {
+          "truck_id": "T123"
+        }
+      }
+    ]
+  },
+  "q2": {
+    "calls": [
+      {
+        "endpoint": "get_trucks_at_location",
+        "params": {
+          "location": "Warehouse A"
+        }
+      }
+    ]
+  },
+  "q3": {
+    "calls": [
+      {
+        "endpoint": "get_avg_dwell",
+        "params": {
+          "location": "Warehouse A"
+        }
+      }
+    ]
+  },
+  "q4": {
+    "calls": [
+      {
+        "endpoint": "get_route_history",
+        "params": {
+          "truck_id": "T123"
+        }
+      }
+    ]
+  },
+  "q5": {
+    "calls": [
+      {
+        "endpoint": "get_assets",
+        "params": {}
+      }
+    ]
+  },
+  "q6": {
+    "calls": [
+      {
+        "endpoint": "get_trucks_at_location",
+        "params": {
+          "location": "warehouse a"
+        }
+      }
+    ]
+  },
+  "q7": {
+    "calls": [
+      {
+        "endpoint": "get_avg_dwell",
+        "params": {
+          "location": "warehouse a"
+        }
+      }
+    ]
+  },
+  "q8": {
+    "calls": [
+      {
+        "endpoint": "get_current_status",
+        "params": {
+          "truck_id": "T500"
+        }
+      }
+    ]
+  },
+  "q9": {
+    "calls": [
+      {
+        "endpoint": "get_current_status",
+        "params": {
+          "truck_id": "T126"
+        }
+      }
+    ]
+  },
+  "q10": {
+    "calls": [
+      {
+        "endpoint": "get_current_status",
+        "params": {
+          "truck_id": "T124"
+        }
+      }
+    ]
+  },
+  "q11": {
+    "calls": []
+  },
+  "q12": {
+    "calls": [
+      {
+        "endpoint": "get_assets",
+        "params": {
+          "group": "Fleet Alpha"
+        }
+      },
+      {
+        "endpoint": "get_avg_dwell",
+        "params": {
+          "location": "Warehouse A"
+        }
+      }
+    ]
+  }
+}

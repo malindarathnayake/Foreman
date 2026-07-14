@@ -103,6 +103,7 @@ export async function initSession(filePath: string, input: WriteJournalInput): P
       foreman: foremanVersion,
       agent: data.env.agent,
       worker: data.env.worker,
+      ...(data.env.claude !== undefined ? { claude: data.env.claude } : {}),
       codex: data.env.codex,
       gemini: data.env.gemini,
       // R8: declared capability classes — pass-through only, absent keys stay absent.

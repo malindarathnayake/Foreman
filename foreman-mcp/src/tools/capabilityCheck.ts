@@ -1,11 +1,16 @@
 import { runExternalCli, resolveInvocation, type SpawnPlan } from "../lib/externalCli.js"
 import { toKeyValue } from "../lib/toon.js"
 import { type HostId, getProfile } from "../lib/hostProfiles.js"
+import type { AdvisorCli } from "../lib/advisorCli.js"
 
 // Module-level cache for resolved SpawnPlans
 const resolvedPlans = new Map<string, SpawnPlan>()
 
-const HEALTH_COMMANDS: Record<string, { command: string; args: string[] }> = {
+const HEALTH_COMMANDS: Record<AdvisorCli, { command: string; args: string[] }> = {
+  claude: {
+    command: "claude",
+    args: ["auth", "status"],
+  },
   codex: {
     // `codex login status` is a fast, no-API-call auth probe: exit 0 = authenticated,
     // non-zero = expired/logged out. A full `codex exec` health call is slow, model-
@@ -23,7 +28,7 @@ const HEALTH_COMMANDS: Record<string, { command: string; args: string[] }> = {
 export type AuthStatus = "ok" | "not_found" | "not_trusted" | "auth_expired" | "probe_timeout" | "error"
 
 interface SentinelRow {
-  cli: "codex" | "gemini"
+  cli: AdvisorCli
   /** CLI version the sentinel was observed against. Re-verify rows on every CLI version bump. */
   cli_version_pin: string
   kind: "exit_code" | "stderr_substring"
@@ -54,18 +59,27 @@ export const SENTINEL_TABLE: readonly SentinelRow[] = [
   },
 ]
 
-function hintFor(status: AuthStatus, cli: "codex" | "gemini"): string | null {
+function hintFor(status: AuthStatus, cli: AdvisorCli): string | null {
   switch (status) {
     case "ok": return null
     case "not_found": return "install the CLI or fix PATH, then re-run capability_check"
     case "probe_timeout": return "probe exceeded its 15s budget — retry; if persistent, check login state and network"
     case "not_trusted": return "trust the folder: run the gemini CLI interactively in this directory once and accept the trust prompt"
-    case "auth_expired": return cli === "codex" ? "re-login: run `codex login`" : "re-authenticate: run the gemini CLI interactively (or fix GEMINI_API_KEY)"
+    case "auth_expired": {
+      if (cli === "claude") return "re-login: run `claude auth login`"
+      if (cli === "codex") return "re-login: run `codex login`"
+      return "re-authenticate: run the gemini CLI interactively (or fix GEMINI_API_KEY)"
+    }
     case "error": return "unclassified CLI error — run the health command manually and inspect stderr"
   }
 }
 
-function classifyNonZeroExit(cli: "codex" | "gemini", exitCode: number, stderr: string): AuthStatus {
+function classifyNonZeroExit(cli: AdvisorCli, exitCode: number, stderr: string): AuthStatus {
+  // `claude auth status` is itself the stable auth contract. Its version is
+  // reported as telemetry, but review availability must not be pinned to the
+  // locally observed CLI version.
+  if (cli === "claude") return "auth_expired"
+
   const rows = SENTINEL_TABLE.filter((r) => r.cli === cli)
   // specific exit codes first
   for (const r of rows) if (r.kind === "exit_code" && r.value === exitCode) return r.maps_to
@@ -74,7 +88,7 @@ function classifyNonZeroExit(cli: "codex" | "gemini", exitCode: number, stderr: 
   return "error"
 }
 
-function respond(cli: "codex" | "gemini", available: boolean, version: string, status: AuthStatus): string {
+function respond(cli: AdvisorCli, available: boolean, version: string, status: AuthStatus): string {
   const hint = hintFor(status, cli)
   return toKeyValue({
     cli,
@@ -91,9 +105,10 @@ function respond(cli: "codex" | "gemini", available: boolean, version: string, s
  * `available: true` with `mechanism: cursor_subagent` lets the deliberation
  * tier mapping treat both advisors as available without shelling out.
  *
- * The `cli` enum stays as `"codex" | "gemini"` for backward compatibility.
- * Semantic mapping in cursor mode: codex -> Advisor A (GPT-5.5),
- * gemini -> Advisor B (Gemini-3.1-pro / Composer fallback).
+ * Cursor keeps its historical semantic mapping for codex/gemini:
+ * codex -> Advisor A (GPT-5.6-SOL), gemini -> Advisor B
+ * (Gemini-3.1-pro / Composer fallback). An explicit claude check still probes
+ * the local Claude CLI instead of pretending Cursor supplied that seat.
  */
 function syntheticCursorResponse(cli: "codex" | "gemini"): string {
   const profile = getProfile("cursor")
@@ -113,10 +128,10 @@ function syntheticCursorResponse(cli: "codex" | "gemini"): string {
 }
 
 export async function capabilityCheck(
-  cli: "codex" | "gemini",
+  cli: AdvisorCli,
   host: HostId = "claude-code"
 ): Promise<string> {
-  if (host === "cursor") {
+  if (host === "cursor" && cli !== "claude") {
     return syntheticCursorResponse(cli)
   }
 

@@ -1,13 +1,20 @@
 import fs from "fs/promises"
 import path from "path"
 import os from "os"
-import { type HostId, getProfile } from "./hostProfiles.js"
+import { type HostId, getProfile, hostRuntimePreamble } from "./hostProfiles.js"
 import { type StackProfile, getStackProfile, parseSectionTags } from "./stackProfiles.js"
 
 export interface SkillLoadResult {
   content: string
   source: "project-override" | "user-override" | "bundled"
   path: string
+}
+
+const HOST_RUNTIME_SKILLS = new Set(["implementor", "design-partner", "spec-generator"])
+
+function prependHostRuntimeForOverride(content: string, skillName: string, host: HostId): string {
+  if (!HOST_RUNTIME_SKILLS.has(skillName)) return content
+  return `${hostRuntimePreamble(host)}\n\n${content}`
 }
 
 async function fileExists(p: string): Promise<boolean> {
@@ -248,6 +255,7 @@ export async function loadSkill(
     content = renderHostPlaceholders(content, host)
     content = renderStackSections(content, stackProfile ?? getStackProfile("reference"))
     content = await renderClassFragments(content, projectOverride, agentClass)
+    content = prependHostRuntimeForOverride(content, skillName, host)
     return { content, source: "project-override", path: projectOverride }
   }
 
@@ -258,6 +266,7 @@ export async function loadSkill(
     content = renderHostPlaceholders(content, host)
     content = renderStackSections(content, stackProfile ?? getStackProfile("reference"))
     content = await renderClassFragments(content, userOverride, agentClass)
+    content = prependHostRuntimeForOverride(content, skillName, host)
     return { content, source: "user-override", path: userOverride }
   }
 

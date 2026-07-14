@@ -3,12 +3,12 @@
 Foreman is an MCP server that gates AI coding-agent claims through a mechanical
 ledger: "done" is not something a model says in chat, it is a recorded,
 gated claim on disk, enforced in code rather than prompt text. Your agent still
-reasons, plans, and writes code — Foreman does not write code, pick models, or
-route requests. It orchestrates protocols, records state, and refuses invalid
+reasons, plans, and writes code — Foreman does not autonomously choose models
+or routing policy. It orchestrates protocols, records state, and refuses invalid
 transitions (a unit cannot pass without a recorded delegation; a phase cannot
 pass while any unit is not `pass`).
 
-Package: `@malindarathnayake/foreman-mcp` · Version: `0.5.0` · Runtime: Node.js `>=22`
+Package: `@malindarathnayake/foreman-mcp` · Version: `0.5.7` · Runtime: Node.js `>=22`
 
 This file is written for an AI agent that just connected to the server. It is
 an operating packet, not a feature list — read the whole thing before your
@@ -16,7 +16,7 @@ first tool call.
 
 ## 1. Public tool surface (contract)
 
-Tool count: 25
+Tool count: 26
 
 - bundle_status — Returns the Foreman bundle version and override info.
 - host_status — Returns the active Foreman host and the model slugs used for worker/advisor invocation.
@@ -25,10 +25,11 @@ Tool count: 25
 - read_ledger — Reads the Foreman ledger file; supports verdicts/rejections/phase_gates/reviews/full/delegation_metrics queries.
 - read_progress — Reads the Foreman progress file.
 - read_journal — Reads the Foreman session journal; returns session history with rollup.
-- capability_check — Checks whether the codex or gemini CLI is available and authenticated, with a closed auth-status taxonomy.
-- invoke_advisor — Invokes the codex or gemini CLI via stdin for independent review.
+- capability_check — Checks whether the claude, codex, or gemini CLI is available and authenticated, with a closed auth-status taxonomy. CLI versions are telemetry, not compatibility pins.
+- invoke_advisor — Invokes the claude, codex, or gemini CLI via stdin for independent review. Claude runs headless `claude-fable-5` at `max` effort with tools disabled.
 - write_ledger — Writes an operation to the Foreman ledger (unit status, verdicts, rejections, phase gates, scope, durable reviews).
 - invoke_worker — EXPERIMENTAL (egress: sends briefs + file excerpts to your configured HTTP endpoint). Delegates a single patch task to the remote OpenAI-compatible endpoint configured in `.foremanenv`; returns a shape-checked, verbatim patch for the host to apply.
+- aider_worker — EXPERIMENTAL (local aider CLI in an isolated git worktree). Drives aider to edit a throwaway worktree, computes the git diff itself, and returns a shape-checked verbatim patch + base_file_hashes for the host to apply; never applies, never writes the ledger.
 - write_progress — Writes an operation to the Foreman progress file.
 - write_journal — Writes to the Foreman session journal (init_session / log_event / end_session).
 - normalize_review — Normalizes raw review text into structured findings.
@@ -93,7 +94,7 @@ Then try `lighttask` on one small, grounded change to see the full loop
 
 ## 7. One URL to fetch
 
-If your host is not Claude Code or Cursor, fetch:
+If your host is not Claude Code, Cursor, or Codex, fetch:
 `https://github.com/malindarathnayake/Foreman/blob/main/foreman-mcp/HOST-CONTRACT.md`
 — the six-capability host contract that defines what a host must provide to
 run the Foreman protocols, and how ready each capability is.

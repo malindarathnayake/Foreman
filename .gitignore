@@ -22,6 +22,10 @@ Test_dojo/**
 foreman-mcp/.npm-cache/
 foreman-mcp/*.tgz
 
+# Python harness bytecode (foreman-mcp/scripts/aider_harness.py)
+__pycache__/
+*.pyc
+
 # Keep assets/ but ignore generation prompts
 assets/prompts.md
 
@@ -35,3 +39,16 @@ release-pkg/
 # packs it into the tarball. Override the global dist/ ignore for this path only.
 !foreman-mcp/vendor/context-crush/dist/
 !foreman-mcp/vendor/context-crush/dist/**
+
+# Foreman local worker endpoint config (never commit)
+.foremanenv
+
+# Temp/scratch directories and files
+temp/
+tmp/
+.tmp/
+*.tmp
+.aider.chat.history.md
+.aider.input.history
+dojo/T1-semver/local-repaired/semver.mjs
+.vscode/.checkmarxIgnored

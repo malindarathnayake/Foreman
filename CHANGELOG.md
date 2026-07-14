@@ -1,5 +1,56 @@
 # Changelog
 
+## 0.5.10 - 2026-07-13
+
+- Codex advisor reviews now run `gpt-5.6-sol` at `xhigh` reasoning effort (was `ultra`); regression coverage updated.
+- `invoke_advisor` timeout budget raised for newer Sol-class thinking time: default 5 → 15 minutes, cap 10 → 30 minutes. A timed-out advisor was previously killed mid-reasoning and recorded as unavailable.
+- Gitleaks allowlist: exact-token entries for the aider transport and foremanEnv test fixtures, plus a path allowlist for dojo ledger-snapshot sha256 content hashes (all false positives; CI secret scan green again).
+- The aiderWorker "python missing" capability-probe test now skips on hosts where python cannot be hidden from PATH (e.g. GitHub Ubuntu runners, where /usr/bin hosts both python3 and git).
+- Bumped package to `0.5.10`.
+
+## 0.5.9 - 2026-07-12
+
+- Fixed `run_tests` on Windows when `where npm` resolves first to Node's extensionless bash shim (`C:\Program Files\nodejs\npm`), which `spawn()` cannot execute and previously failed with `ENOENT`. Foreman now invokes the adjacent `npm-cli.js` with its current Node executable, without `cmd.exe` or shell interpolation.
+- Windows runner resolution now prefers native `.exe`/`.com` candidates over extensionless shims. `.cmd`/`.bat` shims remain refused when no shell-free invocation exists.
+- Bumped package to `0.5.9`.
+
+## 0.5.8 - 2026-07-12
+
+- Codex multi-agent orchestration (`--host=codex`): new `worker_fanout` host placeholder on all profiles; implementor Step 2 renders parallel spawn/wait/summarize with per-unit ledger `delegated` before spawn and `max_depth=1`.
+- New `codex_agents_init` MCP tool (registered only when `host===codex`): writes `.codex/agents/explorer.toml` + `worker.toml` (overrides built-in roles to pin sandbox_mode); creates `.codex/config.toml` `[agents]` only when absent — never clobbers existing config; model pins are optional caller overrides.
+- Release tarballs now bundle all runtime dependencies (`@modelcontextprotocol/sdk`, `zod`, and `context-crush`) so local `.tgz` installation does not require npm registry access.
+- Bumped package to `0.5.8`.
+
+## 0.5.7 - 2026-07-10
+
+- Replaced the broken Claude-Code alias in `--host=codex` with a native Codex profile: bounded workers use Codex `spawn_agent`, with `gpt-5.6-luna` recorded as a preference only when the host confirms that model selection.
+- Added Claude as a first-class `capability_check` / `invoke_advisor` CLI. Codex-mode adversarial review now runs headless `claude-fable-5` at `max` effort with tools disabled and a one-dollar call budget, with Gemini as the second independent advisor.
+- Removed provider names from the bundled implementor's pitboss, worker, and checkpoint rules. Advisor detection and invocation now render from the active host profile.
+- Added an authoritative host-runtime preamble for project/user skill overrides so stale provider instructions cannot shadow current host routing. Claude CLI versions remain telemetry only and never gate compatibility.
+- Clarified that Crucible is an optional future custom/local-model worker runner, not part of the normal Codex or Claude flow and not an owner of the frontier pitboss conversation.
+- Bumped package to `0.5.7`.
+
+## 0.5.6 - 2026-07-09
+
+- Updated Codex review routing to `gpt-5.6-sol` with `ultra` reasoning effort.
+- Updated the Cursor Advisor A profile to the matching `gpt-5.6-sol-ultra` model slug and added direct regression coverage for the Codex invocation arguments.
+- Bumped package to `0.5.6`.
+
+## 0.5.5 - 2026-07-08
+
+- EXPERIMENTAL `aider_worker` (26th tool): a sibling of `invoke_worker` (forked, not an extension) that drives the aider Python CLI as a benchmarked local subagent. Preserves the #1 invariant — never mutate the tree, never apply from the worker tool — via an isolated-worktree→`git diff` apply model: the tool runs aider in an ephemeral worktree off the base commit (`use_git=False`, `auto_commits=False`), returns the diff verbatim between `-----BEGIN/END FOREMAN PATCH-----` sentinels plus `base_file_hashes`, and the host applies after the CAS staleness check (`ED_STALE`). Dirty base tree → `WORKER_DIRTY_TREE_REFUSAL` (refunded).
+- aider transport is an external Python harness (`scripts/aider_harness.py`) spawned through the existing `lib/externalCli.ts` seam — no new Node runtime deps. A `capability_check`-style probe fails open with a recorded waiver when python/aider are absent (route falls back to `remote-chat`). Filtered child env keeps the API key off the child's environment (key travels via stdin only); harness stdout is isolated to a single metadata-only JSON object.
+- New orthogonal `worker_kind` axis in `.foremanenv` (`remote-chat | aider-cli`), defaulting to `remote-chat` so existing v0.5.0 configs keep loading; `aider-cli` tiers require `FOREMAN_NUM_CTX_<T>`.
+- Closed failure taxonomy extended 17 → 21 (`WORKER_BINARY_NOT_FOUND`, `WORKER_AIDER_EXIT`, `WORKER_AIDER_LLM_ERROR`, `WORKER_DIRTY_TREE_REFUSAL`), byte-shared between the `invoke_worker` PLAYBOOK and the events sidecar; all four new CLI stages are refunded (do not count against the per-model discipline scorecard).
+- Server-side discipline-adherence gate in `lib/ledger.ts`: reconciles each pass-unit's ledger verdict against its latest hash-chained sidecar terminal outcome. Strict/fail-closed — only a terminal `validation_completed{outcome:'pass'}` is clean; every other terminal (including a refunded-infra failure on the latest delegation) blocks the phase gate unless a `user_override` is recorded in `discipline_overrides`. Native/Agent-delegated units with no sidecar delegation skip the gate.
+- Deferred to the GPU serving host (advisory, never CI): the headroom-proxy wiring (P6) and the multi-model local bake-off (P8), which need the vLLM + aider serving environment.
+- Bumped package to `0.5.5`.
+
+## 0.5.2 - 2026-07-07
+
+- Patch release so the published package and release tarball carry the two post-tag security fixes that v0.5.0's re-tagged run could not publish (409 — cannot publish over an existing version): the gitleaks test-fixture allowlist (`.gitleaks.toml`) and the linear slash-trim in the worker-patch protected-path check (CodeQL `js/polynomial-redos`, `workerResponse.ts`).
+- Supersedes the unpublished `v0.5.1` tag (retired before its publish run); no functional changes beyond the fixes above. Bumped package to `0.5.2`.
+
 ## 0.5.0 - 2026-07-06
 
 - S8 CCR hardening: failure-output exemption (≤8192-char failing output passes through verbatim), dead-marker/empty-output fail-open guards, miss-recovery (expired `<<ccr:HASH>>` retrieval names the originating tool), Foreman-side TTL default raised to 1800 s, vendored-fork SYNC.md with pinned upstream SHAs.

@@ -29,4 +29,20 @@ regexes = [
   '''SCRUB_4B_JOURNAL_KEY''',
   '''SCRUB_4B_PROGRESS_KEY''',
   '''SCRUB_4B_MARKDOWN_KEY''',
+  # tests/aiderWorker.test.ts — FIXTURE_KEY_VALUE for the aider-cli transport tests
+  # (unit 2c). Obviously-fake, low-entropy, unit id embedded in the name.
+  '''fixture_key_aider2c_00001''',
+  # tests/aiderWorker.test.ts — planted secret for the outbound secret-gate tests.
+  # sk- prefix is deliberate (must LOOK like a key to exercise the gate); the
+  # sequential 0-9 digits make it self-evidently fake.
+  '''sk-fixture-0123456789''',
+  # tests/foremanEnv.test.ts — OPENROUTER_API_KEY fixture for the worker_kind axis
+  # tests. Deterministic fake; never a live credential.
+  '''fixture_key_hard001''',
+]
+paths = [
+  # dojo experiment ledger snapshots: base_file_hashes entries are sha256 content
+  # hashes of workspace files (64-char hex), which generic-api-key misreads as
+  # credentials. These files are archival experiment records, never config.
+  '''dojo/.+/ledger-snapshot/foreman-events\.jsonl''',
 ]

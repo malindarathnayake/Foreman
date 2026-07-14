@@ -16,18 +16,21 @@ Six capabilities, each rated READY / DECLARED / EXPERIMENTAL. READY means the be
 
 ### spawn-worker
 
-- **Readiness:** READY (exercised daily by the claude-code preset; cursor preset tested).
+- **Readiness:** READY (exercised by the claude-code preset; Cursor and Codex preset rendering tested).
 - **Use when:** a unit brief is fully specified and a disposable implementation seat is available.
 - **Do not use when:** the change is a one-line orchestrator-side fix or the brief cannot be isolated from spec/ledger.
 - **NOT-claims:**
   - "Foreman does not spawn processes itself for native worker seats — the host's agent mechanism does"
   - "worker seats never see the spec, ledger, or progress files"
-- **Smoke:** `worker_invoke` placeholder renders on every host with zero unresolved markers (contract, CI-required via hostContract.test.ts).
+  - "Codex currently owns per-subagent model selection — `gpt-5.6-luna` is a preferred seat, not a Foreman-enforced claim"
+- **Smoke:** `worker_invoke` and `worker_fanout` placeholders render on every host with zero unresolved markers (contract, CI-required via hostContract.test.ts / skillLoaderHost.test.ts).
+- **Codex parallel fan-out:** the `worker_fanout` placeholder instructs Codex to spawn up to `agents.max_threads` (default 6) `spawn_agent` workers with `max_depth=1`. Each unit still requires its own `s:'delegated'` ledger write before spawn. The `explorer` role is read-only mapping only (never a verdict producer). Call `codex_agents_init` once per project to write `.codex/agents/{explorer,worker}.toml` and create `.codex/config.toml` `[agents]` only when that file is absent (existing config.toml is never overwritten).
 
 ### invoke-advisor
 
 - **Readiness:** READY (invoke_advisor tool + D11 capability_check taxonomy).
 - **Use when:** phase-checkpoint deliberation or design review needs independent perspectives.
+- **Codex profile:** Advisor A is headless Claude Fable 5 at max effort; Advisor B is Gemini. Claude CLI versions are reported as telemetry and are not compatibility-pinned.
 - **Do not use when:** the CLI is not authenticated (capability_check returns a non-ok status with a corrective hint) — degrade to adversarial self-review.
 - **NOT-claims:**
   - "advisor child processes inherit the full environment — a DOCUMENTED boundary, not a filtered one (see SECURITY.md)"

@@ -16,6 +16,7 @@ import { capabilityCheck } from "./tools/capabilityCheck.js"
 import { handleWriteLedger } from "./tools/writeLedger.js"
 import { handleWriteProgress } from "./tools/writeProgress.js"
 import { handleInvokeWorker } from "./tools/invokeWorker.js"
+import { handleAiderWorker } from "./tools/aiderWorker.js"
 import { normalizeReview } from "./tools/normalizeReview.js"
 import { verifyCitations } from "./tools/verifyCitations.js"
 import { runTests } from "./tools/runTests.js"
@@ -35,6 +36,8 @@ import { renderIncludes, loadSkill } from "./lib/skillLoader.js"
 import { hostStatus } from "./tools/hostStatus.js"
 import { type HostId, resolveHost, parseHostFlag, getProfile } from "./lib/hostProfiles.js"
 import { maybeCompress, compressionEnabled, getRetrieveOriginalTool, toolNameForHash } from "./lib/compression.js"
+import { ADVISOR_CLIS } from "./lib/advisorCli.js"
+import { codexAgentsInit, CODEX_AGENT_ROLES } from "./tools/codexAgentsInit.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -221,10 +224,10 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     {
       description:
         host === "cursor"
-          ? "Returns a synthetic available response for the requested advisor — Cursor Task subagents are always reachable, so no CLI probe runs."
-          : "Checks whether the codex or gemini CLI is available and authenticated. Returns a closed auth_status taxonomy (ok|not_found|not_trusted|auth_expired|probe_timeout|error) with a corrective hint on failures.",
+          ? "Returns synthetic availability for Cursor's codex/gemini advisor seats. An explicit claude check probes the local Claude CLI."
+          : "Checks whether the claude, codex, or gemini CLI is available and authenticated. Returns a closed auth_status taxonomy (ok|not_found|not_trusted|auth_expired|probe_timeout|error) with a corrective hint on failures.",
       inputSchema: {
-        cli: z.enum(["codex", "gemini"]),
+        cli: z.enum(ADVISOR_CLIS),
       },
       annotations: {
         title: "Capability Check",
@@ -241,11 +244,13 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   server.registerTool(
     "invoke_advisor",
     {
-      description: "Invoke codex|gemini CLI via stdin. Resolves binary cross-platform, wraps .cmd shims on win32. Failed calls may be compressed; if a failed call's summary is insufficient, call retrieve_original with the <<ccr:HASH>> marker for the full diagnostic.",
+      description: "Invoke claude|codex|gemini CLI via stdin. Resolves binaries cross-platform and wraps .cmd shims on win32. Claude runs headless with Fable 5 at max effort and no tools. Failed calls may be compressed; if a failed call's summary is insufficient, call retrieve_original with the <<ccr:HASH>> marker for the full diagnostic.",
       inputSchema: {
-        cli: z.enum(["codex", "gemini"]),
+        cli: z.enum(ADVISOR_CLIS),
         prompt: z.string().max(100000),
-        timeout_ms: z.number().min(5000).max(600000).default(300000),
+        // Newer Sol-class models at xhigh reasoning effort routinely think for
+        // >5 min on large review prompts — budget 15 min by default, cap at 30.
+        timeout_ms: z.number().min(5000).max(1800000).default(900000),
       },
       annotations: {
         title: "Invoke Advisor",
@@ -330,6 +335,43 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const text = await handleInvokeWorker(args, { docsDir, ledgerPath, journalPath })
+      return { content: [{ type: "text" as const, text }] }
+    }
+  )
+
+  server.registerTool(
+    "aider_worker",
+    {
+      description: [
+        "EXPERIMENTAL. Delegates a single patch task to the local aider CLI, driven through an",
+        "external harness inside an ISOLATED, throwaway git worktree at the requested cost tier.",
+        "APPLY MODEL: aider edits the worktree; Foreman computes the git diff ITSELF and returns it",
+        "VERBATIM between -----BEGIN FOREMAN PATCH----- / -----END FOREMAN PATCH----- sentinels together",
+        "with base_file_hashes for a content-addressed staleness check — the HOST applies the patch,",
+        "never Foreman, and the worktree is torn down on every exit path. Requires the editable set to be",
+        "tracked and clean (dirty tree is refused). An outbound secret gate blocks the delegation if any",
+        "configured secret value appears in the brief or files. Every outcome is classified into a closed",
+        "failure-stage taxonomy and recorded in the hash-chained event sidecar. Requires the unit to already",
+        "be recorded as s:'delegated' in the ledger (aider_worker never writes the ledger).",
+      ].join(" "),
+      inputSchema: {
+        phase: z.string().min(1),
+        unit_id: z.string().min(1),
+        brief: z.string().min(20),
+        tier: z.enum(["cheap", "standard", "premium"]),
+        files: z.array(z.string().min(1)).min(1),
+        read_only_files: z.array(z.string().min(1)).optional(),
+        edit_format: z.enum(["whole_file", "search_replace", "unified_diff"]).optional(),
+      },
+      annotations: {
+        title: "Invoke Aider Patch Worker (EXPERIMENTAL)",
+        readOnlyHint: false,
+        destructiveHint: false,
+        openWorldHint: true,
+      },
+    },
+    async (args, _extra) => {
+      const text = await handleAiderWorker(args, { docsDir, ledgerPath, journalPath })
       return { content: [{ type: "text" as const, text }] }
     }
   )
@@ -497,6 +539,46 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
           }
         }
         return { content: [{ type: "text" as const, text: JSON.stringify(result) }], isError: true }
+      }
+    )
+  }
+
+  // Codex-only: write .codex/agents role TOMLs + optional [agents] config for parallel fan-out.
+  if (host === "codex") {
+    server.registerTool(
+      "codex_agents_init",
+      {
+        description: [
+          "Writes Codex custom-agent role definitions into the project (.codex/agents/*.toml)",
+          "and creates .codex/config.toml with [agents] max_threads/max_depth only when that file is absent.",
+          "Existing .codex/config.toml is never overwritten (may hold mcp_servers); a merge hint is returned instead.",
+          "explorer/worker TOMLs override Codex built-in roles of those names to pin sandbox_mode.",
+          "Model pins are optional — omit to let Codex choose. Call once per project before parallel fan-out.",
+        ].join(" "),
+        inputSchema: {
+          project_dir: z.string().min(1).optional().describe("Project root (default: process.cwd())"),
+          max_threads: z.number().int().min(1).max(12).optional().describe("Concurrent agent threads (default 6)"),
+          max_depth: z.number().int().min(1).max(3).optional().describe("Nesting depth (default 1; >1 warns)"),
+          roles: z.array(z.enum(CODEX_AGENT_ROLES)).min(1).optional().describe("Roles to write (default: explorer, worker)"),
+          overwrite: z.boolean().optional().describe("Overwrite existing role TOMLs (default false). Never overwrites config.toml."),
+          models: z
+            .object({
+              explorer: z.string().min(1).optional(),
+              worker: z.string().min(1).optional(),
+            })
+            .optional()
+            .describe("Optional per-role model pins; omit to let Codex choose"),
+        },
+        annotations: {
+          title: "Init Codex Agent Roles",
+          readOnlyHint: false,
+          destructiveHint: false,
+        },
+      },
+      async (args, _extra) => {
+        const text = await codexAgentsInit(args)
+        const isError = text.includes("status: error")
+        return { content: [{ type: "text" as const, text }], isError }
       }
     )
   }

@@ -1,12 +1,12 @@
 ---
 name: foreman:implementor
 version: 0.0.5
-description: Pit-boss implementation orchestrator. Opus orchestrates disposable Sonnet workers, validates against spec. Third stage of the Foreman pipeline.
+description: Pit-boss implementation orchestrator. A frontier pitboss orchestrates disposable bounded workers and validates against the spec. Third stage of the Foreman pipeline.
 ---
 
 {{include: ledger-critical}}
 
-**Model Check:** Opus required. If Sonnet/Haiku, STOP and ask user to switch (`/model opus`).
+**Seat Check:** A frontier-class pitboss is required. If the current seat is not declared `frontier`, STOP and ask the user to switch to a frontier seat. Provider and model names are host configuration, not protocol rules.
 
 {{include: engineering-ethos}}
 
@@ -35,7 +35,7 @@ Log only failures and delays. Do NOT log successes, worker spawns, or test passe
 | W_FAIL | Worker crashes or times out |
 | W_RETRY | 2nd/3rd outer-loop fix attempt |
 | GATE_FIX | Gate G1–G5 fails, requires fix |
-| CX_ERR | Codex/Gemini CLI error |
+| CX_ERR | Advisor CLI error |
 | SPEC_AMB | Stopped — spec ambiguity, asking user |
 | T_FLAKE | Flaky test detected |
 | BLD_ERR | Build/compile failure after worker |
@@ -57,6 +57,11 @@ Read the unit directive from handoff.md. Extract: files to touch, expected behav
 | N files with 2 patterns | 2 workers | Groups reduce count |
 | 1 complex file | 1 worker | Focused attention |
 
+When batching yields N>1 workers that can run concurrently:
+
+{{worker_fanout}}
+
+Parallel fan-out still requires one `s:'delegated'` ledger write per unit before that unit's spawn, and one independent validate/verdict per unit afterward.
 ### Step 3: Read Source Files
 Before building brief, read actual source. Capture:
 - BEFORE state: exact function body, class definition, or file content the worker will modify
@@ -79,7 +84,7 @@ Before building brief, read actual source. Capture:
 
 ### Step 4.5: Brief Preflight Gate
 
-Runs AFTER drafting the brief, BEFORE calling the Agent tool. Five mechanical steps:
+Runs AFTER drafting the brief, BEFORE invoking the host's worker mechanism. Five mechanical steps:
 
 1. **Extract key symbols** from the brief — type names, field names, function names, file paths, specific values (numeric caps, enum literals, magic strings). Write them down.
 2. **Grep `spec.md` for each symbol** — every occurrence across the spec, not only the Unit directive block.
@@ -92,13 +97,13 @@ Runs AFTER drafting the brief, BEFORE calling the Agent tool. Five mechanical st
 
 Anti-pattern: *"I read Unit X's directive section carefully."* The spec is a graph, not a list. Every symbol has a cross-reference footprint across multiple sections (data model, error handling, phase directives, decisions table). Grep first.
 
-### Step 5: Spawn Sonnet Worker
+### Step 5: Spawn Worker
 
 Record the delegation in the ledger BEFORE spawning. This is mechanically enforced — a `pass` verdict is rejected unless the unit was first set to `delegated` with a brief. Also record the cost `tier` the worker runs at and a short `route_reason` — audit evidence, not a gate:
 ```
 mcp__foreman__write_ledger({ operation: "set_unit_status", phase, unit_id, data: { s: "delegated", brief: "<1-3 line summary of the worker brief>", tier: "standard", route_reason: "<why this tier fits this unit>" } })
 ```
-Tiers: `cheap` (mechanical, fully-specified change), `standard` (default Sonnet worker), `premium` (subtle or high-risk unit escalated to a stronger model). Each (re-)delegation is appended to the unit's `delegations[]` history, so the tier choice and reason survive the brief overwrite on fix attempts.
+Tiers: `cheap` (mechanical, fully-specified change), `standard` (default capable worker), `premium` (subtle or high-risk unit escalated to a stronger model). Each (re-)delegation is appended to the unit's `delegations[]` history, so the tier choice and reason survive the brief overwrite on fix attempts.
 
 {{worker_invoke}}
 - Worker sees ONLY: its brief, the BEFORE/AFTER excerpts you include, and its own tool calls
@@ -158,7 +163,7 @@ After 3 outer-loop failures: STOP. Escalate to user with full rejection history 
 
 | Path | Inner loop (self-fix) | Outer loop |
 |---|---|---|
-| Native worker (Agent tool) | ≤2 compile/import/type fixes | ≤3 attempts |
+| Host-native subagent | ≤2 compile/import/type fixes | ≤3 attempts |
 | invoke_worker (EXPERIMENTAL) | NONE — one-shot; repair round is v0.6 | ≤3 attempts |
 
 `invoke_worker` protocol (EXPERIMENTAL S7 patch-worker delegation):
@@ -215,22 +220,28 @@ At phase end, after all six gates (G1–G6) pass:
 **1. Full Test Suite:** Run the complete test suite via mcp__foreman__run_tests, not Bash.
 
 **2. Review via Deliberation:**
-1. `mcp__foreman__capability_check({ cli: "codex" })` + `mcp__foreman__capability_check({ cli: "gemini" })`
+1. Check the active host's advisor seats: {{advisor_checks}}
 2. Map to tier:
 
-| Codex | Gemini | Advisor A | Advisor B | Moderator |
-|-------|--------|-----------|-----------|-----------|
-| ✓ | ✓ | Codex CLI | Gemini CLI | Opus (you) |
-| ✓ | ✗ | Codex CLI | Opus agent | Opus (you) |
-| ✗ | ✓ | Gemini CLI | Opus agent | Opus (you) |
-| ✗ | ✗ | Opus agent | Opus agent | Opus (you) |
+| Advisor A | Advisor B | Review path | Moderator |
+|-----------|-----------|-------------|-----------|
+| available | available | Invoke both independently | Pitboss (you) |
+| available | unavailable | Advisor A + recorded non-independent fallback | Pitboss (you) |
+| unavailable | available | Advisor B + recorded non-independent fallback | Pitboss (you) |
+| unavailable | unavailable | Ask the user before proceeding with pitboss-only gates | Pitboss (you) |
 
-3. Ask each advisor: "Review these phase changes against the spec. List any: (a) spec directives not implemented, (b) implementations that contradict the spec, (c) missing error handling, (d) test gaps, (e) security issues — prefix each `[CWE-###]` (closest class or `[CWE-UNMAPPED]` + reason if none fits); where a finding weakens a control or detection-evidence row in the spec's Threat Table, cite that row by component name — do NOT invent new technique mappings during code review, (f) telemetry contract violations — names, unbounded tag values, missing trace correlation, secrets/PII in signals. Be specific — file:line references required."
+3. Use the active host's invocation mappings:
 
-4. `mcp__foreman__normalize_review` — parse review output into structured findings
-5. Classify each finding: CONFIRMED / REJECTED / UNVERIFIED
-6. Persist the review durably — `mcp__foreman__write_ledger({ operation: "record_review", phase, data: { advisor, findings: [{ severity, file, line, description, classification }] } })`. Use lowercase classification (`confirmed` / `rejected` / `unverified`). Security findings keep their `[CWE-###]` prefix in `description`. Survives the session; retrievable via `read_ledger({ query: "reviews" })`.
-7. If no CLIs available: ask user "Independent review unavailable. Proceed with pit-boss gates only? [y/N]"
+{{advisor_a}}
+{{advisor_b}}
+{{advisor_fallback}}
+
+4. Ask each advisor: "Review these phase changes against the spec. List any: (a) spec directives not implemented, (b) implementations that contradict the spec, (c) missing error handling, (d) test gaps, (e) security issues — prefix each `[CWE-###]` (closest class or `[CWE-UNMAPPED]` + reason if none fits); where a finding weakens a control or detection-evidence row in the spec's Threat Table, cite that row by component name — do NOT invent new technique mappings during code review, (f) telemetry contract violations — names, unbounded tag values, missing trace correlation, secrets/PII in signals. Be specific — file:line references required."
+
+5. `mcp__foreman__normalize_review` — parse review output into structured findings
+6. Classify each finding: CONFIRMED / REJECTED / UNVERIFIED
+7. Persist the review durably — `mcp__foreman__write_ledger({ operation: "record_review", phase, data: { advisor, findings: [{ severity, file, line, description, classification }] } })`. Use lowercase classification (`confirmed` / `rejected` / `unverified`). Security findings keep their `[CWE-###]` prefix in `description`. Survives the session; retrievable via `read_ledger({ query: "reviews" })`.
+8. If no CLIs available: ask user "Independent review unavailable. Proceed with pit-boss gates only? [y/N]"
 
 **3. Persist State:**
 ```

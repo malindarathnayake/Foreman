@@ -3,343 +3,567 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/malindarathnayake/Foreman/actions/workflows/build.yml"><img src="https://github.com/malindarathnayake/Foreman/actions/workflows/build.yml/badge.svg" alt="Build & Publish" /></a>
+  <a href="https://github.com/malindarathnayake/Foreman/actions/workflows/build.yml"><img src="https://github.com/malindarathnayake/Foreman/actions/workflows/build.yml/badge.svg" alt="Build and Publish" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License: Apache-2.0" /></a>
   <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg" alt="Node.js >= 22" /></a>
 </p>
 
 # Foreman
 
-**The model can be wrong. The ledger doesn't have to be agreeable.**
+## A spec-to-code harness for AI-assisted software development
 
-Foreman is an MCP server that makes AI coding agents keep receipts. Your agent still reasons, plans, and writes code — but "done" stops being something the model *says* in chat and becomes a recorded, gated claim on disk. Like the person it's named after: a foreman doesn't lay bricks. He decides what counts as finished, keeps the record, and doesn't take anyone's word for it.
+Foreman is a local, ledger-backed coding harness that takes a real repository from clarified intent through design and executable specification to delegated implementation, recorded validation, and resumable completion.
 
-**Current release:** `v0.5.0` · **Package:** `@malindarathnayake/foreman-mcp` · **Runtime:** Node.js `>=22` · **License:** Apache-2.0
+A frontier model occupies the **pitboss** seat. It works with you on the design, converts approved decisions into bounded implementation units, delegates those units to workers, inspects and tests their output, rejects bad work, and closes phase gates. Foreman supplies the operating protocols, durable project state, and mechanical checks that keep that process coherent across models and sessions.
+
+```text
+intent / existing repository
+            |
+      design_partner
+            |
+      approved design
+            |
+       spec_generator
+            |
+ spec + handoff + tests + progress
+            |
+   pitboss_implementor
+            |
+ bounded unit -> worker -> inspect -> test -> review -> phase gate
+            |                                      |
+            +----------- ledger / journal ---------+
+```
+
+**Models generate code. Foreman controls the job.**
+
+Foreman is not another general-purpose agent framework, and it does not replace your coding host, repository tools, or CI. It controls the development lifecycle across them.
+
+**Current release:** `v0.5.10` | **Package:** `@malindarathnayake/foreman-mcp` | **Runtime:** Node.js `>=22` | **License:** Apache-2.0
+
+**Quickstart:** [Install](#install) → [Configure an MCP host](#configure-an-mcp-host) → [Start a project](#start-a-project). Already installed? Point your MCP host at `foreman-mcp` with the right `--host` flag and call `session_orient`.
 
 ---
 
-## The problem
+## Not another agent framework
 
-You hand an agent a multi-phase implementation on Friday. Tuesday you open a fresh session and ask what's done. It answers — confidently, plausibly, and from a context window that has since been compacted, summarized, or invented. Long agent coding runs fail in boring, repeatable ways:
+There are hundreds of multi-agent orchestrators, spec-driven development kits, and autonomous coding agents. Nearly all of them compete on the same axis: **more autonomy** — spawn more agents, run longer unattended, touch more of the repository per prompt.
 
-- the plan drifts, and nobody notices until a worker builds on a file that doesn't exist
-- the same agent that wrote the bad code reviews the bad code, and defends it
-- "all tests pass" is a claim in a chat log, not an observation
-- one oversized tool dump — a `curl` that returns 50 KB of JSON — floods the window; ten minutes later the model has forgotten its own edits, and compaction quietly buries the decision that mattered
-- the next session reconstructs status from conversation summaries — the least reliable source in the whole system
+Foreman competes on the opposite axis: **control and trust over the code that ships.** It exists for work where you need fine-grained control over what gets written and verifiable grounds for accepting it — not a longer leash for the model.
 
-Every one of these is a *trust* failure, not an intelligence failure. Smarter models make the claims more convincing, not more true. And none of it is a big-project problem — it is a **context** problem. A frontier model with a polluted window can perform worse than a small model with a clean one, and the pollution arrives silently in any session that runs long enough. That is the boring physics Foreman is built around: the window degrades; the record must not.
+| Typical agent tooling | Foreman |
+|---|---|
+| Discipline lives in prompts and system messages, and decays with context compaction | Non-negotiables are TypeScript checks against durable state; they cannot be compacted away or rationalized past |
+| The same agent writes, reviews, and accepts its own work | Writing, accepting, and reviewing are separate seats; a verdict without a recorded delegation is refused |
+| "All tests pass" is a sentence in the transcript | A pass requires recorded delegation and evidence, or an explicit attestation; a gate goes stale when a unit changes under it |
+| Progress state lives in the context window | State lives on disk in a validated ledger; a new session reconstructs reality from `session_orient`, not from a summary of a summary |
+| Failure handling is retry-until-plausible | Three rejected attempts freeze the unit until a human explicitly overrides |
+| Review findings are unverified prose | Advisor findings are normalized, classified, and their `file:line` citations mechanically verified before they are recorded |
+| Autonomy is the product | The human owns intent, arbitration, and final authority; autonomy is granted only inside a bounded, evidenced unit |
 
-## What Foreman does about it
+This makes Foreman deliberately demanding. It asks you to approve designs, arbitrate recorded trade-offs, and own phase acceptance. If you want an agent that runs unattended overnight and hands you a diff to skim, Foreman is the wrong tool — that workflow is precisely the failure mode it was built to prevent. It is made for engineers who read the code, understand the state of their system, and need to trust *how* "done" was reached, not just that something was produced.
 
-Foreman moves process state out of the chat and into files and gates that don't take the model's word for anything. This is real tool output (tails trimmed at `[…]`):
+### No model lock-in
+
+Because project state lives in the ledger rather than in any vendor's session memory, the pitboss seat is a replaceable slot. A project can be ground through its breadth phases by one frontier model under one host, then hand its hardest integration unit to a different vendor's model under a different host — the incoming model calls `session_orient`, receives the exact unit status, rejection history, and named open findings, and resumes mid-unit with no handoff document and no re-explanation. The same mechanism is what lets a smaller local model eventually occupy a worker or pitboss seat: the discipline lives in the harness, so the seat only has to code.
+
+Model vendors are building in the opposite direction — memory features and persistent sessions that make their model the place your project state lives. Foreman keeps that state in files no vendor owns.
+
+### Auditable down to the bottom
+
+A harness whose product is trust must itself be inspectable. All of Foreman's state — ledger, progress, journal, events — is JSON and Markdown inside your repository: you can `git diff` a verdict, grep the session history, and read every protocol as plain bundled Markdown. There is no web console, no dashboard, and no service between you and your project's record. The enforcement layer itself is small TypeScript with two production dependencies, readable in an afternoon. Nothing about how "done" was reached is stored anywhere you cannot open in an editor.
+
+## Forged in real development
+
+Foreman grew out of delivering and maintaining real systems across **Java, Go, C#, C++, Python, and React**.
+
+Those runs exposed the same failures repeatedly:
+
+- a long session drifted away from the approved design
+- a worker received too much context, solved the wrong problem, or timed out halfway through it
+- the agent that wrote a defect reviewed and defended its own work
+- "all tests pass" existed only as a sentence in chat
+- a new session reconstructed implementation status from a compacted conversation
+- cheaper models were asked to make project-level decisions they were not equipped to make
+
+Foreman turns those failures into an explicit lifecycle. A frontier model is used where judgment matters. Bounded implementation can be delegated to smaller, local, or remote workers. Recorded verdicts, review findings, failures, and evidence explicitly written to Foreman state survive outside the context window. Raw test output remains the host's responsibility unless it is recorded.
+
+In one real Java REST API delivery, Foreman carried an approved design into a seven-phase implementation. Reviews caught scope, validation-order, and database-filter defects. The run recovered from worker timeouts, reran focused Gradle validation, and resumed from recorded state instead of replaying chat history. That is the class of work Foreman exists to control.
+
+Foreman's own releases use the same pipeline. This repository contains the actual [design summary](docs/design-summary.md), [implementation spec](docs/spec.md), [handoff](docs/handoff.md), [progress record](docs/PROGRESS.md), and [testing harness](docs/testing-harness.md) used for its multi-phase development. They are working artifacts, not sample templates.
+
+## What "coding harness" means
+
+A coding model edits files. A coding harness controls the development lifecycle around those edits.
+
+| Seat | Responsibility |
+|---|---|
+| **User** | Owns product intent, scope decisions, overrides, and final authority |
+| **Pitboss** | Frontier model that grounds the plan, scopes units, delegates work, validates results, and owns acceptance |
+| **Foreman** | Supplies protocols, canonical state, evidence records, recovery, and mechanical gates |
+| **Workers** | Host-native agents or configured worker backends that implement one bounded unit |
+| **Advisors** | Separate reviewer seats used for design deliberation and checkpoint review |
+| **Repository tools** | Compilers, tests, linters, and build commands that provide observable validation evidence |
+
+During a phased implementation, the pitboss is kept out of product-code edits by protocol so its context remains available for integration and review. Workers receive a narrow brief and return a completion report or patch. The pitboss then re-reads the changed files, runs the repository's checks, compares the result with the specification, and records the verdict.
+
+Under the protocol, workers do not accept their own units; the pitboss owns the verdict. The patch-worker tools cannot write verdicts. Worker engines are replaceable, while Foreman remains the authority for project state and completion.
+
+## The development lifecycle
+
+### 1. Design with the repository in the room
+
+`design_partner` clarifies the problem, inspects the current system, exposes architectural and security decisions, records decisions and rationale, and produces `Docs/design-summary.md` for user approval.
+
+The design is collaborative. Foreman does not silently convert unresolved questions into implementation assumptions.
+
+### 2. Turn decisions into an executable spec
+
+`spec_generator` converts the approved design into:
 
 ```text
-> write_ledger { operation: "set_verdict", phase: "P2", unit_id: "U3", data: { v: "pass" } }
-Error: VERDICT BLOCKED: Cannot set verdict 'pass' without prior delegation. Unit must go
-through: set_unit_status(s:'ip') → set_unit_status(s:'delegated', brief:'...') →
-set_verdict(v:'pass'). […]
-
-> write_ledger { operation: "update_phase_gate", phase: "P2", data: { g: "pass" } }
-Error: PHASE GATE BLOCKED: phase 'P2' has units without a pass verdict: U5. Every unit
-must reach set_verdict(v:'pass') before the phase gate can pass.
-
-> write_ledger { operation: "set_verdict", phase: "P4", unit_id: "U7", data: { v: "pass" } }
-Error: ATTESTATION REQUIRED: phase 'P4' declares scope has_tests:false. set_verdict(v:'pass')
-must include a non-empty 'note' describing how the unit was validated in place of automated
-tests/build (e.g. manual smoke, artifact hash, console inspection). […]
+Docs/spec.md              behavior, contracts, phases, and bounded units
+Docs/handoff.md           session-start and recovery instructions
+Docs/PROGRESS.md          human-readable implementation state
+Docs/testing-harness.md   validation strategy and commands
 ```
 
-These refusals are enforced in TypeScript, not in prompt text. The rules don't get compacted out of context and don't soften when the model argues.
+Dependencies, ordering, unit scope, and phase checkpoints are explicit before code is written.
 
-**The honest boundary:** the gates enforce the evidence chain, not omniscience. A determined agent could still fabricate a worker brief and record a delegation that never happened — what it *cannot* do is reach a passing phase without leaving a complete, timestamped, reviewable record of every claim along the way. That changes the failure mode: models bluff freely in ephemeral chat, where claims evaporate; forging a durable ledger entry is a different act, and the record is exactly what catches it on review. The mechanism enforces ordering; honesty is left with the much smaller job of not committing fraud in writing.
+### 3. Delegate bounded implementation
 
-And the record is still there — what passed, what failed, what was tried — when you resume three days later:
+`pitboss_implementor` grounds the next unit against the live repository and creates the smallest brief that can be implemented and tested independently. The worker gets the unit, relevant source context, constraints, and expected completion-report shape. It does not need to own the project plan.
 
-```text
-> session_orient
-status: in_progress
-current_phase: P3
-last_completed_unit: U9
-next_pending_unit: U11
-blocked_on: null
-active_rejections: 1
-```
+### 4. Inspect, test, and reject
 
-That's the product. Everything else is in service of it.
+Worker claims are inputs, not verdicts. The protocol requires the pitboss to inspect the actual files, run focused validation, check specification fidelity and integration seams, and re-delegate concrete fixes when the work is wrong.
 
-## How it works
+Independent advisor output can be normalized, classified, cited, and recorded at design or phase boundaries. When an independent seat is unavailable, the protocol records that limitation instead of pretending self-review is independent.
 
-```mermaid
-flowchart LR
-    subgraph Host["Your AI coding host (Claude Code / Cursor)"]
-        Pitboss["Pitboss · your main agent<br/>orchestrates, validates, never writes code"]
-        Workers["Disposable workers<br/>write code, see one unit, then die"]
-        Pitboss -->|"scoped briefs"| Workers
-    end
+### 5. Gate the phase and resume from disk
 
-    Pitboss <-->|"MCP stdio"| Foreman["Foreman MCP server"]
+Under the protocol, a phase closes only after its units carry passing verdicts and its checkpoint is accepted. The protocol then calls for a context reset before the next phase. `session_orient` reconstructs ledger state, so a fresh session does not have to infer reality from chat history.
 
-    Foreman --> Protocols["Protocol tools<br/>design · spec · implement · docs"]
-    Foreman --> State["Ledger · progress · journal<br/>(mechanical gates)"]
-    Foreman --> Review["Tests · citation checks ·<br/>independent advisors"]
+## Protocols
 
-    State --> Files[("Docs/.foreman-*.json<br/>durable, on disk")]
-    Review --> CLIs["Codex / Gemini CLIs"]
-```
+Activate one protocol for the job in the current session:
 
-Five ideas, working together:
-
-1. **Protocols are injected, not installed.** Calling `design_partner`, `spec_generator`, or `pitboss_implementor` hands your agent a complete operating procedure — how to scope, delegate, validate, and record. The procedures are markdown you can override per-project or per-user.
-2. **Orchestration and implementation are different jobs.** The *pitboss* — Foreman's name for your main agent, the one running the floor — reads specs, writes minimal briefs, checks results, and owns the ledger. *Workers* are disposable host-native subagents that see one unit's files and nothing else — so a worker that went down a bad path never gets to defend it, and the orchestrator's context stays clean of diffs and failed attempts.
-3. **Claims are untrusted until grounded.** Workers don't self-certify. The pitboss re-reads changed files and reruns tests. Specs cite `file:line`, and `verify_citations` re-checks that those anchors still exist. Reviews from independent advisors (Codex, Gemini) are normalized into structured findings before they're allowed to create work.
-4. **State lives on disk, in one authority.** `session_orient` resumes from the ledger — never from chat memory. The ledger is externalized memory: the chat window can fill, compact, or get wrecked by one oversized tool dump, and the record of what passed, what failed, and what was tried doesn't move. Recovery from a trashed context is `/clear` + `session_orient` — not archaeology. Corrupt state reports itself instead of pretending the project is fresh.
-5. **Sessions end on purpose.** Phase checkpoints mandate a fresh session. Context degradation is invisible from inside the window, so the protocol forces the reset *before* the expensive mistakes instead of after — and the ledger makes resets free. A logic bug caught at the phase-2 gate costs one fix; the same bug excavated at phase 5, after three phases built on top of it, costs the archaeology plus the rework.
-
-## Is Foreman for you?
-
-**Use it when:** the work spans multiple phases or sessions; you need to hand a run to tomorrow-you (or a teammate) with evidence instead of a chat transcript; you're coordinating multiple models (frontier orchestrator, cheap workers, independent reviewers) and want the same gates applied to all of them; being able to *audit* what the agent did matters as much as the code; or the session will simply run long enough for context to rot — heavy tool output, many files read, a compaction or two — even when the "project" is a single feature. The dividing line is **context accumulation, not project size**: `lighttask` exists precisely so small surgical work still puts its grounding and its record on disk instead of betting them on the window.
-
-### When to skip Foreman
-
-The task fits in one sitting and one context window. A single-file fix, a prototype, a script — plan mode and a test run beat any process layer. Stated plainly, the worst cases:
-
-- **Single-sitting tasks.** If you'll finish before the context ever needs to survive a break, the process overhead exceeds the value it returns.
-- **Throwaway prototypes.** Nothing here is worth grounding if the code isn't going to outlive the week.
-- **Work nobody will ever audit.** The entire value proposition is a reviewable trail. If no one — not you, not a teammate, not future-you — will ever read the ledger, you paid for a receipt nobody wants.
-- **A pitboss seat filled by a very small model.** The protocol assumes a frontier-class orchestrator. Phases flagged `hot_path` or `security_boundary` mechanically require declaring a frontier-class agent seat before their gate can pass — a small model in that seat hits a wall the mechanism put there on purpose.
-
-Foreman's overhead is real and not hidden: a 10–17 KB procedure injection per protocol activation, plus a tool call for every state write (same numbers as the token-cost FAQ answer below). It pays for itself on work that's big enough to drift and long enough to lie about — not below that line.
-
-**What it is not:** Foreman doesn't write code (workers native to your host do). It doesn't pick models or route requests. It doesn't replace Claude Code, Cursor, your test suite, or CI — it's the control plane that makes their long-running output checkable. Foreman itself carries no telemetry — nothing about your usage leaves your machine — but it is not fully offline: the optional advisor workflow shells out to Codex/Gemini CLIs you installed, which send prompts to their own clouds (your choice, per invocation), and the EXPERIMENTAL `invoke_worker` tool sends briefs and file excerpts to the OpenAI-compatible endpoint you configure in `.foremanenv` — it does nothing until that file exists.
-
----
-
-## The protocols
-
-| Protocol | Use when | Output |
+| Protocol | Use it for | Primary output |
 |---|---|---|
-| `lighttask` | Small surgical work that still needs grounding and review | `Docs/lighttask.md` |
-| `design_partner` | Requirements are unclear or architecture decisions matter | `Docs/design-summary.md` |
-| `spec_generator` | A design summary is approved and needs implementation docs | `Docs/spec.md`, `Docs/handoff.md`, `Docs/PROGRESS.md`, `Docs/testing-harness.md` |
-| `pitboss_implementor` | Multi-unit implementation from prepared specs | Ledger-backed implementation run |
-| `spec_man` | You need intended-behavior specs for an existing repo or plan | Human spec + machine spec |
-| `doc_man` | You need grounded technical docs from specs, code, or discovery | README, architecture, data-flow, Confluence, or machine docs |
+| `lighttask` | A small, grounded change that can be completed directly | `Docs/lighttask.md` |
+| `design_partner` | New behavior, unclear requirements, or architectural decisions | `Docs/design-summary.md` |
+| `spec_generator` | Turning an approved design into implementation-ready documents | Spec, handoff, progress, and testing documents |
+| `pitboss_implementor` | Multi-unit implementation from prepared specs | Implementation plus ledger-backed validation evidence |
+| `spec_man` | Recovering or re-evaluating intended behavior in an existing repository | Human and machine-readable specifications |
+| `doc_man` | Producing grounded technical documentation | README, architecture, data-flow, or other requested docs |
 
 ```text
-small clear change       → lighttask
-unclear behavior         → spec_man
-new feature design       → design_partner → spec_generator
-phased implementation    → pitboss_implementor
-technical documentation  → doc_man
+small clear change       -> lighttask
+unclear existing system  -> spec_man
+new feature              -> design_partner -> spec_generator -> pitboss_implementor
+prepared multi-unit spec -> pitboss_implementor
+technical documentation -> doc_man
 ```
 
-The full pipeline, end to end:
+The protocols are inspectable bundled Markdown rendered for the active host. They can be overridden per project or per user.
+
+## What Foreman enforces
+
+Foreman deliberately separates **protocol obligations** from **mechanical enforcement**.
+
+The protocols direct the pitboss to ground briefs, keep implementation in worker seats, inspect changes, run the right tests, perform review, and reset context at phase boundaries. Host-native isolation and compliance with those instructions depend on the host and model.
+
+The MCP server enforces the parts that can be checked deterministically:
+
+- a unit cannot receive a passing verdict before a recorded delegation with a brief of at least 20 characters
+- a phase cannot pass while any unit lacks a passing verdict, and an empty phase cannot pass
+- a pass without tests or a build requires an attestation of at least 5 words and 32 characters
+- a fourth delegation after three distinct rejected attempts requires an explicit user override
+- a passed gate becomes stale when one of its units changes afterward
+- phases marked `hot_path` or `security_boundary` require a declared frontier-class seat or explicit override
+- external-worker sidecar outcomes cannot contradict the ledger's claimed result without blocking the gate
+- a corrupt ledger reports itself instead of silently appearing to be a fresh project
+
+Example refusals:
 
 ```text
-1. design_partner       # decide what should be built — and what shouldn't yet: scoping, threat model, telemetry contract, release split
-2. spec_generator       # turn the approved design into spec / handoff / progress / testing docs
-3. pitboss_implementor  # delegate units to workers, validate, gate, record — resumable at any point
+VERDICT BLOCKED: Cannot set verdict 'pass' without prior delegation.
+
+PHASE GATE BLOCKED: phase 'P2' has units without a pass verdict: U5.
+
+ATTESTATION REQUIRED: phase 'P4' declares has_tests:false.
 ```
 
-**Scope is a recorded decision, not a vibe.** A design session is expected to end smaller than it started: independent advisors deliberate the cut, *you* arbitrate it, and every decision lands in the design summary as a numbered, final record. What gets deferred isn't lost — it's banked in the spec's Out of Scope slate with its seams named, so the next release's design session starts from a read, not a memory. And the line holds during implementation: the handoff rule is *no scope additions — anything not in the Implementation Order is out*, so mid-run enthusiasm can't quietly re-expand what you cut. Foreman v0.5.0 itself shipped this way: the worker-repair loop, host-autonomy integration, and the full benchmark matrix were each deliberated out of this release and banked for v0.6 — the deferred list is public in the [changelog](CHANGELOG.md).
+These checks are TypeScript code, not instructions that disappear during compaction.
 
----
+What that looks like mid-session — the pitboss tries to accept its own direct edit, gets blocked, and is forced back into the delegation lane:
+
+```text
+pitboss:  write_ledger({ operation: "set_verdict", phase: "P2", unit_id: "U4",
+                         data: { v: "pass" } })
+foreman:  VERDICT BLOCKED: Cannot set verdict 'pass' without prior delegation.
+          Call mcp__foreman__pitboss_implementor to load the full protocol.
+
+pitboss:  write_ledger({ operation: "set_unit_status", phase: "P2", unit_id: "U4",
+                         data: { s: "delegated", brief: "Add cursor pagination to
+                         GET /orders; keep response shape; test: npm t -- orders",
+                         tier: "standard", route_reason: "bounded, fully specified" } })
+foreman:  ok
+          -> worker implements, pitboss re-reads files + runs tests, then records the verdict
+```
+
+The honest boundary is equally important: Foreman cannot prove that a model is truthful or that passing tests imply correct software. It proves that declared workflow transitions occurred, preserves evidence explicitly recorded in its state, and makes certain missing or contradictory records visible. A host can skip Foreman entirely; such a run simply produces no Foreman record.
+
+## Security and quality are gated in, not scanned in
+
+Foreman bundles a canonical engineering-ethos document — served by the `ethos` tool and rendered with the active stack profile — that every protocol consumes. It defines three pillars (mechanical sympathy, security, contract-first observability) and a proportionality system: each major path declares a tier (`standard`, `hot`, `extreme`), and the tier determines how much rigor a change on that path must carry. Abstractions, controls, and telemetry are treated as costs to justify, and every justification is recorded.
+
+The security pillar operates at both ends of the lifecycle:
+
+- **Design time:** any component crossing a trust boundary requires a threat table — compromise impact, attacker techniques mapped to MITRE ATT&CK/ATLAS IDs, the specific controls, and the *named telemetry event* that would evidence exploitation. Detection is declared alongside the control, not bolted on later.
+- **Review time:** every security finding carries a `[CWE-###]` classification before it can be recorded. Secrets appearing in a brief, log, span, or metric are an automatic CRITICAL. Dependency scans run at phase gates, and a new critical advisory fails the gate. Audit events are required to be a separate stream from operational logs.
+- **Always:** security-versus-performance conflicts are recorded and arbitrated by the user — never silently resolved in either direction.
+
+The observability pillar is contract-first: the spec declares span names, metric names with bounded tag cardinality, and structured log schemas before implementation, so telemetry is reviewed against a contract instead of improvised per commit.
+
+The practical consequence is that the defect classes downstream scanners hunt for — injection patterns, permission mistakes, leaked secrets, vulnerable dependencies — are being rejected at unit acceptance and phase gates, before commit. Code produced under the protocol tends to arrive at SAST/SCA already clean, and the scan becomes verification that the gates held rather than a discovery mechanism. The boundary stated above still applies: gates cover the defect classes reviews and scanners can see; design-level assurance comes from the threat table, not the scanner.
+
+## Worker backends
+
+Foreman supports multiple ways to fill a bounded worker seat:
+
+| Backend | Status | Behavior |
+|---|---|---|
+| Host-native worker | Primary | The host spawns its own subagent and returns a completion report |
+| `invoke_worker` | Experimental | Sends a brief and selected file excerpts to a configured OpenAI-compatible endpoint and returns a checked patch |
+| `aider_worker` | Temporary local bridge | Runs Aider in an isolated temporary worktree and returns the computed diff plus base-file hashes |
+
+For patch workers, the protocol requires the host to verify base-file hashes before applying the patch and to record stale bases, application failures, build failures, and review rejections. The tools block malformed patches and protected paths before returning usable output. A patch-worker tool never applies its output to the main working tree and never writes a ledger verdict.
+
+`aider_worker` is not the target worker architecture. It remains a temporary local bridge until Crucible's optional custom/local-model runner is ready. Crucible does not replace host-native Codex or Claude workers and does not own the main pitboss conversation.
+
+The ledger records cost tier, route reason, attempts, and verdicts. External-worker events additionally record the configured capability class, backend, model, and outcome. Configuration chooses the models and worker kinds. Foreman does not autonomously optimize or change that policy during a project.
+
+This is how the harness combines a strong pitboss with smaller local or remote models without giving those workers project-level authority.
+
+**Codex workers:** Codex mode uses native `spawn_agent` subagents — singly or as a parallel fan-out under `agents.max_threads` — and names `gpt-5.6-luna` as the preferred worker seat. The current Codex spawn contract does not expose per-child model selection, so Foreman records the actual model and never claims Luna unless the host confirms it. Parallel fan-out never relaxes the ledger sequence: every unit is delegated before its worker spawns and receives its own independent verdict. Crucible is planned only as an optional deterministic routing boundary for custom/local workers.
+
+## Advisor seats and deliberation
+
+Advisors are independent reviewer seats — models with no stake in the work — used for design deliberation and checkpoint review. They are deliberately drawn from a different vendor than the pitboss: same-family models share training priors and blind spots, so cross-vendor review catches classes of defects that self-review structurally cannot.
+
+When non-trivial ambiguities or checkpoint reviews need resolution, the protocol runs a fixed deliberation loop: both advisors analyze the same questions independently and in parallel; the moderator digests their positions and flags hallucination risk, over-engineering, missing evidence, and sycophancy; the advisors cross-examine each other for at most three rounds; and the result is presented as a consensus or as competing proposals with a moderator recommendation. Non-trivial deadlocks go to the user, and the run does not proceed until the user arbitrates. Advisors never see each other's raw output, never receive the moderator's position first, and never write verdicts — review findings pass through `normalize_review` and `verify_citations` before anything is recorded.
+
+Default seat assignments per host:
+
+| Host | Advisor A | Advisor B | Moderator | Degraded fallback |
+|---|---|---|---|---|
+| Claude Code | Codex CLI — GPT-5.6 Sol, reasoning `ultra`, read-only sandbox | Gemini CLI — the operator's `arch-review` model profile | The host pitboss model | Opus agents with an adversarial critic prompt |
+| Cursor | GPT-5.6 Sol `ultra`, read-only task | Gemini 3.1 Pro, read-only task | The host pitboss model | Sonnet adversarial review, recorded as non-independent |
+| Codex | Headless Claude — `claude-fable-5`, effort `max`, tools and session persistence disabled | Gemini CLI | The Codex pitboss | Adversarial self-review, recorded as non-independent |
+
+These assignments come from real project runs, not published benchmarks. In practice across those runs: the Codex/Sol seat has been the strongest reviewer of state machines and protocol invariants; the Gemini seat reads large Java codebases more reliably than the alternatives; and Claude frontier models have been most effective in the moderator seat. A moderator arbitrating two opposing, evidence-cited advisor positions produces sharper judgments than the same model asked to find issues in raw code cold — the structured deliberation transcript is better conditioning material than an unframed diff. That observation is why the protocol requires the moderator to digest and compare advisor positions instead of relaying their output verbatim.
+
+When an advisor seat is unavailable, the run continues with the documented fallback and the ledger records that independent review was unavailable — the weakness is made visible, not papered over.
+
+## Durable state and recovery
+
+State is stored relative to the MCP server's current working directory, which should be the target repository root:
+
+```text
+Docs/.foreman-ledger.json     phases, units, delegations, verdicts, gates, reviews
+Docs/.foreman-progress.json   compact progress state
+Docs/.foreman-journal.json    session history and rollups
+Docs/.foreman-events.jsonl    hash-chained external-worker events, when used
+Docs/PROGRESS.md              human run log with a ledger-synchronized checklist
+```
+
+Do not edit `.foreman-*` state files directly; use Foreman tools so validation and state invariants remain intact. `PROGRESS.md` is the human-facing, protocol-maintained run log.
+
+At the start of a session:
+
+```text
+session_orient
+read_ledger({ "query": "full" })
+read_progress
+```
+
+`session_orient` reports the current phase, last completed unit, next pending unit, blockers, stale gates, and unsupported host capabilities. Recovery starts from that state, not from a model's summary of an earlier conversation.
 
 ## Install
 
-### Option 1: GitHub Packages
+### GitHub Packages
 
-Add the package scope to `~/.npmrc` (global) or a project `.npmrc`:
+Foreman requires Node.js 22 or newer. Add the package scope to `~/.npmrc` or the project `.npmrc`:
 
 ```text
 @malindarathnayake:registry=https://npm.pkg.github.com
 //npm.pkg.github.com/:_authToken=${NPM_TOKEN}
 ```
 
+Then install the binary:
+
 ```bash
 npm install -g @malindarathnayake/foreman-mcp
+foreman-mcp --version
 ```
 
-GitHub Packages requires a token with `read:packages` scope even for public packages (`npm login --registry=https://npm.pkg.github.com` also works).
+GitHub Packages requires a token with `read:packages`, including for public packages.
 
-### Option 2: Release tarball (no auth)
+### Release tarball
 
-Grab the `.tgz` from the [latest release](https://github.com/malindarathnayake/Foreman/releases/latest) and:
+Download the `.tgz` from the [latest GitHub release](https://github.com/malindarathnayake/Foreman/releases/latest), then install it without registry authentication. As of 0.5.8 the tarball bundles all runtime dependencies, so it installs fully offline — no registry or DNS access required:
 
 ```bash
 npm install -g malindarathnayake-foreman-mcp-<version>.tgz
+foreman-mcp --version
 ```
 
-**Windows note:** long dependency paths can exceed `MAX_PATH` on Windows and cause install/build failures. If that happens, enable long paths: `git config --system core.longpaths true`, and enable the Windows `LongPathsEnabled` policy.
+`foreman-mcp --diag` prints local runtime and host diagnostics. The server itself uses MCP over stdio; it is not a daemon to launch in a separate terminal.
 
-## Configure
+On Windows, long dependency paths can exceed `MAX_PATH`. If installation fails for that reason, enable Windows long paths and run `git config --system core.longpaths true` from an elevated shell.
 
-**Claude Code**
+## Configure an MCP host
+
+### Claude Code or another Claude-style MCP host
 
 ```json
-{ "mcpServers": { "foreman": { "command": "foreman-mcp" } } }
+{
+  "mcpServers": {
+    "foreman": {
+      "command": "foreman-mcp"
+    }
+  }
+}
 ```
 
-**Cursor**
+### Cursor
 
 ```json
-{ "mcpServers": { "foreman": { "command": "foreman-mcp", "args": ["--host=cursor"] } } }
+{
+  "mcpServers": {
+    "foreman": {
+      "command": "foreman-mcp",
+      "args": ["--host=cursor"]
+    }
+  }
+}
 ```
 
-**Windows**
+### Codex
+
+Codex uses TOML configuration and must select the native Codex profile explicitly:
+
+```toml
+[mcp_servers.foreman]
+command = "foreman-mcp"
+args = ["--host=codex"]
+```
+
+**Codex mode:** Foreman uses native Codex subagents for bounded work. Independent units can run in parallel; Foreman records delegation first, then independently validates each result. Call `codex_agents_init` to create optional explorer/worker roles and concurrency settings without overwriting existing Codex config.
+
+In Codex mode, headless Claude serves as Advisor A and Gemini as Advisor B — see [Advisor seats and deliberation](#advisor-seats-and-deliberation) for the per-host seat assignments and the deliberation loop. Restart Codex after changing MCP configuration or reinstalling Foreman.
+
+<details>
+<summary>Codex parallel-worker details</summary>
+
+When a phase batches to N independent units, the pitboss delegates each unit in the ledger, spawns up to `agents.max_threads` (default 6) `spawn_agent` workers at once with `max_depth=1`, waits for all, and validates each unit independently. `codex_agents_init` writes `.codex/agents/explorer.toml` (read-only code mapper), `.codex/agents/worker.toml` (workspace-write implementer), and a `.codex/config.toml` `[agents]` block only when the configuration file is absent.
+
+</details>
+
+### Windows command shim
+
+For the default host:
 
 ```json
-{ "mcpServers": { "foreman": { "command": "cmd", "args": ["/c", "foreman-mcp"] } } }
+{
+  "mcpServers": {
+    "foreman": {
+      "command": "cmd",
+      "args": ["/c", "foreman-mcp"]
+    }
+  }
+}
 ```
 
-Host resolution: `--host=<id>` flag → `FOREMAN_HOST` env → default `claude-code`. Accepted: `claude-code`, `cursor`, `codex` (currently aliases Claude Code behavior minus autonomy), `generic` (six-capability contract — see [Host compatibility](#host-compatibility)). If the binary isn't found, use the absolute path from `which`/`where foreman-mcp`.
+For Cursor on Windows, preserve the host argument:
 
-Sanity check after connecting: call `mcp__foreman__host_status` and `mcp__foreman__bundle_status`.
+```json
+{
+  "mcpServers": {
+    "foreman": {
+      "command": "cmd",
+      "args": ["/c", "foreman-mcp", "--host=cursor"]
+    }
+  }
+}
+```
 
-## Quick start
+Host resolution order is `--host=<id>`, then `FOREMAN_HOST`, then `claude-code`. Accepted profiles are `claude-code`, `cursor`, `codex`, and `generic`.
 
-Small grounded change:
+Make sure the host starts the MCP process with the target repository as its working directory. Foreman's state paths and `.foremanenv` are resolved from that directory.
+
+After connecting, call:
 
 ```text
-Call mcp__foreman__lighttask with context:
-"Update the README installation section. Ground against package.json and current release notes. Do not change code."
+host_status
+bundle_status
+session_orient
 ```
 
-Resume any previous run:
+## Start a project
+
+Use one protocol per session. For a new feature:
 
 ```text
-mcp__foreman__session_orient
-mcp__foreman__read_ledger({ "query": "full" })
-mcp__foreman__read_progress
+Session 1:
+design_partner({ "context": "Design the requested feature against this repository. Record unresolved decisions and do not implement it." })
+
+Session 2, after approving the design:
+spec_generator({ "context": "Generate the executable implementation documents from Docs/design-summary.md." })
+
+Session 3:
+pitboss_implementor({ "context": "Implement the approved spec one bounded unit at a time. Resume from Foreman state." })
 ```
 
----
+For a surgical change:
 
-## What the ledger enforces
+```text
+lighttask({ "context": "Ground this change against the current repository, implement it, validate it, and record the result." })
+```
 
-These transitions are refused in code — intentionally mechanical, so an agreeable model meets an unagreeable record:
+Your MCP client may display tool names with a namespace such as `mcp__foreman__design_partner`.
 
-- A unit cannot receive a `pass` verdict unless it was first `delegated` with a worker brief on record.
-- A phase cannot pass while any unit's verdict isn't `pass`. Empty phases cannot pass.
-- Phases declaring `has_tests:false` or `has_build:false` require an attestation note on every pass verdict.
-- Cost-tier and delegation history are recorded per unit (`tier`, `route_reason`, attempts) — the raw material for knowing what cheap models can actually handle.
-- Durable review records (`record_review`) persist advisor findings at checkpoints, with severity and classification.
-- Corrupt state reports corruption; it never silently resets into a fresh-looking project.
-- A delegation cap: after 3 distinct rejected attempts on a unit, a 4th delegation is refused unless the write explicitly carries `user_override`.
-- An attestation floor: a no-test/no-build pass verdict's attestation note must carry real substance (at least 5 words and 32 characters), not just a non-empty string.
-- An `inconclusive` verdict state, distinct from `fail` — surfaced by name in phase-gate block messages so a reviewer non-answer never gets silently treated as a failure.
-- Gate-staleness detection: `read_ledger({ query: "phase_gates" })` marks a passed gate `STALE` if any of its units changed after the gate recorded its pass snapshot.
-- A seat minimum: phases flagged `hot_path` or `security_boundary` require a declared frontier-class agent seat (`data.agent_class: 'frontier'`, or an explicit `user_override`) before their gate can pass.
+## When Foreman pays for itself
 
-## Tool surface
+Use Foreman when any of these are true:
 
-**Protocol activation** — `design_partner`, `spec_generator`, `pitboss_implementor`, `lighttask`, `spec_man`, `doc_man`
+- the work spans multiple phases, sessions, or context windows
+- architecture and implementation need a durable connection
+- multiple models or worker tiers participate
+- smaller workers need bounded tasks and stronger supervision
+- review findings and failed attempts must survive handoff
+- implementation needs to be checked against more than a test exit code
+- future-you or another developer must be able to inspect how "done" was reached
 
-**State & metadata** — `session_orient`, `read_ledger`, `write_ledger`, `read_progress`, `write_progress`, `read_journal`, `write_journal`, `bundle_status`, `host_status`, `changelog`, `ethos`
+The dividing line is context accumulation and coordination risk, not repository size. A difficult single feature can justify the harness; a large mechanical rename might not.
 
-**Execution & review** — `capability_check`, `invoke_advisor`, `run_tests`, `normalize_review`, `verify_citations`, `retrieve_original`, `preview_diagram`, `invoke_worker`
+### When to skip it
 
-Total: **25 MCP tools**. Three deserve a note:
+Skip Foreman when the task is a one-file fix that will finish in one clean session, a throwaway prototype, or work whose history and acceptance evidence have no future value. The protocols add real overhead: procedure context, state calls, review, and phase checkpoints. Do not pay that cost where a focused edit and a test run are enough.
 
-- **Output compression (pilot):** large `run_tests` / failed-advisor output is compressed content-aware (measured 70–93% reduction on compressible log-shaped output — prose and small results pass through untouched) with a `<<ccr:HASH>>` marker; `retrieve_original` recovers the full text during the session (in-memory store, TTL-bound). On by default; kill switch `FOREMAN_COMPRESSION=0`. See [Compression Benchmarks](docs/compression-benchmarks.md).
-- **`preview_diagram`:** live Mermaid preview in your browser during design sessions — loopback-only, token-gated, client-side render, fully offline. Foreman's only network listener; see [Security model](#security-model).
-- **`invoke_worker` (EXPERIMENTAL):** delegate a unit brief to any OpenAI-compatible HTTP endpoint as a patch-generating worker (config via `.foremanenv`, `${ENV:NAME}` key indirection, refuses to run if the file is git-tracked). **Egress notice:** this is the one tool that sends your briefs and file excerpts off-machine to the endpoint YOU configure — one-time egress notice on first use, one-shot (no retry loops), returned patches are shape-checked, redaction-marker-scanned, and protected-path-rejected before your host applies them. Off by default in the sense that it does nothing until `.foremanenv` exists.
+The phased implementor also assumes a strong pitboss. A very small model should not own architecture, cross-unit integration, or security acceptance merely because it is cheap. Use small models in bounded worker seats.
+
+## Mission boundary
+
+Foreman's product is the controlled software-development loop:
+
+```text
+design -> spec -> bounded work -> delegated execution
+       -> verification -> review -> gated completion -> resume
+```
+
+Foreman owns protocol delivery, canonical run state, delegation evidence, acceptance gates, and recovery. Worker engines and host-native agents own bounded code generation. For patch-returning backends, the host owns final patch application. Repository tooling and CI own their respective checks.
+
+Model training, model serving, generic experiment tracking, prompt optimization, and automatic production routing are outside Foreman's mission. Evaluation may qualify a worker configuration, but an evaluation score never overrides tests, scope, security checks, or a Foreman gate.
 
 ## Host compatibility
 
-| Host | Status | Caveats |
+| Host | Status | Important caveat |
 |---|---|---|
-| Claude Code | Primary — dogfooded daily; Foreman v0.5.0 was built under it | none |
-| Cursor | Host profile shipped + capability-probe path smoked | no `autonomy` capability: every phase gate needs an interactive user turn |
-| codex CLI | Accepted `--host` alias (renders claude-code behavior minus autonomy) | autonomy text is DRAFT; not independently battle-tested |
-| Generic MCP host | Six-capability contract in [HOST-CONTRACT.md](foreman-mcp/HOST-CONTRACT.md); `--host=generic` smoked (`--version` boot) | support is declared-by-contract, not probed — you verify your host against the contract's readiness matrix |
+| Claude Code | Primary profile | Native workers use the host's Agent capability; advisor CLIs are optional |
+| Cursor | Rendered profile and tested capability path | No declared autonomy capability; phase progression remains interactive |
+| Codex | Native subagent profile with parallel fan-out | `spawn_agent` model selection is host-owned; Luna is preferred but only confirmed routing may be recorded. Fan-out is capped by `agents.max_threads` with `max_depth=1`. Claude Fable 5 max and Gemini provide independent review |
+| Generic MCP host | Declared six-capability contract | The operator must verify the host against [HOST-CONTRACT.md](foreman-mcp/HOST-CONTRACT.md) |
 
-Unsupported capabilities echo mechanically in `host_status`/`session_orient` as `unsupported_capabilities:` with documented degradations.
+Unsupported capabilities are reported by `host_status` and `session_orient` with their documented degradation.
 
-### Benchmark claims policy
+## Tool surface
 
-Any future performance/benchmark claim in this repo follows D9 presentation discipline: paired matched-token-budget comparisons, raw ledger-telemetry data points plus fitted trends, worst cases published alongside wins, never hand-assembled numbers.
+The default server exposes 26 MCP tools. `retrieve_original` is omitted when output compression is disabled, reducing the live surface to 25. Codex mode adds `codex_agents_init`, raising its surface to 27.
+
+**Protocol activation:** `design_partner`, `spec_generator`, `pitboss_implementor`, `lighttask`, `spec_man`, `doc_man`
+
+**State and metadata:** `session_orient`, `read_ledger`, `write_ledger`, `read_progress`, `write_progress`, `read_journal`, `write_journal`, `bundle_status`, `host_status`, `changelog`, `ethos`
+
+**Execution and review:** `capability_check`, `invoke_advisor`, `invoke_worker`, `aider_worker`, `run_tests`, `normalize_review`, `verify_citations`, `retrieve_original`, `preview_diagram`
+
+**Host-specific:** `codex_agents_init` (codex host only) — writes `.codex/agents/` role TOMLs and the `[agents]` concurrency config for parallel fan-out
+
+Notable supporting behavior:
+
+- large test or failed-advisor output can be compressed with a recoverable `<<ccr:HASH>>` marker; call `retrieve_original` before acting when the digest is insufficient
+- Codex-mode Claude review runs headless `claude-fable-5` at `max` effort, with tools and session persistence disabled; the observed CLI version is telemetry only
+- `preview_diagram` serves a token-protected Mermaid preview on loopback only
+- `run_tests` uses an allowlist; its defaults are `npm`, `pytest`, `go`, `cargo`, `dotnet`, and `make`
+- other repository commands, including Gradle, Maven, CMake, or CTest, can be executed through the host shell and recorded as validation evidence
+
+See [llms.txt](llms.txt) for the compact machine-readable tool contract.
+
+## Privacy and security boundaries
+
+Foreman's ledger, progress, journal, and metrics remain local. Foreman has no usage-telemetry service.
+
+Network and process boundaries are explicit:
+
+- `preview_diagram` is Foreman's only listener and binds to loopback
+- `invoke_worker` sends the selected brief and file excerpts to the endpoint configured by the operator
+- `invoke_advisor` launches the installed Claude, Codex, or Gemini CLI, which uses that provider's own network and authentication
+- `aider_worker` launches the installed Python/Aider process and uses the endpoint configured for that worker tier
+- the host model's own traffic never passes through Foreman and cannot be filtered by it
+
+`.foremanenv` must be gitignored and untracked. Foreman refuses both configured worker paths otherwise. Known configured secrets are blocked from outbound worker payloads and scrubbed from Foreman-owned durable artifacts. Read the full [security policy](SECURITY.md), including residual risks and reporting instructions, before enabling external worker endpoints.
 
 ## Architecture
 
 ```text
-TypeScript ESM · @modelcontextprotocol/sdk · Zod · stdio transport · 2 external production dependencies (+1 vendored first-party compression package)
+TypeScript ESM
+@modelcontextprotocol/sdk
+Zod validation
+stdio transport
+2 external production dependencies + 1 bundled first-party compression package
 ```
 
-Durable state, relative to the server working directory (mutate only through the tools — direct edits break invariants):
+Skill override precedence:
 
 ```text
-Docs/.foreman-ledger.json      # phases, units, verdicts, rejections, gates, reviews
-Docs/.foreman-progress.json    # compact progress view
-Docs/.foreman-journal.json     # session history and rollups
+.claude/skills/<skill-name>/SKILL.md     project override
+~/.claude/skills/<skill-name>/SKILL.md   user override
+bundled skill                            package default
 ```
 
-Skill override precedence — this is also the customization mechanism:
-
-```text
-.claude/skills/<skill-name>/SKILL.md     # project-local
-~/.claude/skills/<skill-name>/SKILL.md   # user-global
-bundled skills                           # package default
-```
-
-### Migrating from the Layer-1 overrides (v0.4.x users)
-
-If you installed the personal "Layer 1" ethos files some v0.4.x users kept under their home directory, this is a **manual step** — the upgrade does not touch anything outside the repo:
-
-1. Archive (rename, don't delete) `~/.claude/engineering-ethos.md` and the three Foreman skill overrides under `~/.claude/skills/` into `~/.claude/_archive/foreman-layer1-<date>/`.
-2. Update any `~/.claude/CLAUDE.md` pointer that referenced those files to use the tool-served doc instead: `mcp__foreman__ethos`.
-
-v0.5.0 bundles the ethos doc and stack profiles directly in the package. Override precedence is user-global > bundled, so a stale personal override left in place would silently *shadow* the newer bundled version instead of being replaced by it.
-
-## Security model
-
-Foreman's control plane is a stdio-only MCP server — no HTTP listener except `preview_diagram`'s loopback preview. Main controls:
-
-- Zod input validation on all tool arguments; atomic writes for all state files.
-- Path jail for citation verification under `repo_root`; test-runner allowlist for `run_tests` (`npx` and shell shims excluded).
-- Advisor prompts delivered via stdin — never shell-expanded into command arguments; absolute binary resolution; bounded output buffers.
-- `preview_diagram` listener: binds `127.0.0.1` only, per-session 128-bit token on every private route, Host-validated (DNS-rebinding defense), strict CSP, no server-side rendering, no outbound network. Kill switches: `FOREMAN_PREVIEW=0`, `FOREMAN_NO_OPEN=1`.
+The `FOREMAN_STACK_PROFILE` setting or `Docs/foreman-stack-profile.md` can supply repository-specific security-framework and telemetry-backend conventions without forking the core protocols.
 
 ## Development
 
 ```bash
 git clone https://github.com/malindarathnayake/Foreman.git
 cd Foreman/foreman-mcp
-npm install && npm run build && npm test
+npm ci
+npm run build
+npm test
+node scripts/publish-smoke.mjs
 ```
 
 ```text
-foreman-mcp/src/server.ts        # MCP server and tool registration
-foreman-mcp/src/tools/           # tool handlers
-foreman-mcp/src/lib/             # ledger, progress, journal, host, CLI helpers
-foreman-mcp/src/skills/          # bundled protocol skills
-foreman-mcp/tests/               # Vitest tests
+foreman-mcp/src/server.ts       MCP server and tool registration
+foreman-mcp/src/tools/          tool handlers
+foreman-mcp/src/lib/            ledger, state, host, worker, and CLI helpers
+foreman-mcp/src/skills/         bundled coding protocols
+foreman-mcp/tests/              Vitest suite
 ```
 
-## Documentation
+Useful references:
 
-- [llms.txt](llms.txt) — machine-readable onboarding packet for AI agents.
+- [Machine-readable onboarding](llms.txt)
+- [Host capability contract](foreman-mcp/HOST-CONTRACT.md)
+- [Security policy](SECURITY.md)
 - [Changelog](CHANGELOG.md)
-- [Compression Benchmarks](docs/compression-benchmarks.md)
-- Running Foreman on another host? See [HOST-CONTRACT.md](foreman-mcp/HOST-CONTRACT.md) — the six-capability host contract.
+- [Compression benchmarks](docs/compression-benchmarks.md)
 
-## FAQ
+## Upgrading from 0.4.x
 
-**Does Foreman write code?** No. The pitboss orchestrates; host-native workers write code; Foreman gates and records.
-
-**What makes my agent actually follow any of this?** Nothing forces it — and this README won't pretend otherwise. Protocol tools inject the procedure when called; wiring activation into your workflow (CLAUDE.md rules, slash commands, or just asking) is what makes it routine. The gates fire on every state write that *does* happen — and a run that never touches the ledger produces no evidence, which is itself visible: `session_orient` on an untracked project shows exactly nothing. The discipline can be skipped, but it can't be quietly faked.
-
-**What does it cost in tokens?** Activating a protocol injects a 10–17 KB procedure once per session; state tools return compact views; oversized test/advisor output is compressed. Publishing real overhead numbers from live ledger telemetry is a declared goal of the upcoming releases — until then: the overhead is non-zero, which is why the "When to skip Foreman" section above exists.
-
-**Why a ledger instead of trusting the agent?** Chat context is the least reliable source of truth in the system — it compacts, summarizes, and drifts. The ledger records unit status, delegations, verdicts, rejections, and gates on disk, and refuses invalid transitions.
-
-**Why independent advisors?** Single-model review means the author grades its own homework. Codex/Gemini findings are normalized into structured, citation-checked findings before they can force work — review diversity without review noise.
-
-**Why not just CI?** CI proves the build and tests pass. It cannot prove the implementation matches the spec, that the worker didn't quietly weaken a test, or that phase 3 was actually reviewed. Foreman runs tests *and* keeps the evidence chain around them.
-
-**Is it only for Claude Code?** No, but the honest matrix matters here — see [Host compatibility](#host-compatibility) above. Claude Code and Cursor are rendered host profiles with real usage behind them; `codex` is accepted as an alias. Worker spawning maps to each host's native mechanism — the Agent tool on Claude Code, the Task tool on Cursor — via rendered host profiles, not hardcodes. Any other MCP host can run Foreman against the generic six-capability contract in [HOST-CONTRACT.md](foreman-mcp/HOST-CONTRACT.md) — declared and shape-smoked, not independently battle-tested the way Claude Code is. Broader host support is the active direction of the project.
+If you installed older personal Layer-1 ethos files, archive rather than delete `~/.claude/engineering-ethos.md` and the Foreman skill overrides under `~/.claude/skills/`. Remove or update any `~/.claude/CLAUDE.md` pointers to those files, then use the bundled `ethos` tool. User overrides take precedence over bundled skills, so a stale override can silently shadow the current protocol.
 
 ## License
 
-[Apache-2.0](LICENSE) © 2026 Malinda Rathnayake
+[Apache-2.0](LICENSE) Copyright 2026 Malinda Rathnayake

@@ -44,7 +44,7 @@ import readline from "node:readline"
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-// The 25 tools the live registry (src/server.ts) is expected to expose.
+// The 26 tools the live registry (src/server.ts) is expected to expose.
 // Keep in sync manually — tests/releaseInvariants.test.ts fails the build
 // the moment this drifts from the real tool list.
 export const EXPECTED_TOOLS = [
@@ -73,6 +73,7 @@ export const EXPECTED_TOOLS = [
   "retrieve_original",
   "preview_diagram",
   "invoke_worker",
+  "aider_worker",
 ]
 
 const JSONRPC_TIMEOUT_MS = 30_000
@@ -248,12 +249,9 @@ async function main() {
     log("installing the tarball into a fresh directory")
     const installDir = await mkdtemp(path.join(os.tmpdir(), "foreman-smoke-install-"))
     tempDirs.push(installDir)
-    // The two unbundled dependencies (@modelcontextprotocol/sdk, zod) are
-    // fetched from the registry as part of this install — that's
-    // intentional, it exercises the real install path a consumer hits.
-    // context-crush ships as a bundleDependency, so it installs from
-    // inside the tarball itself, not the registry.
-    await runCommand(npmCmd, ["install", tarballPath, "--no-save", "--prefix", installDir], {
+    // All runtime dependencies are bundled. Force offline mode so this gate
+    // proves that a release tarball installs without registry/DNS access.
+    await runCommand(npmCmd, ["install", tarballPath, "--no-save", "--prefix", installDir, "--offline"], {
       cwd: installDir,
       shell: useShell,
     })

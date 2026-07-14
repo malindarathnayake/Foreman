@@ -1,0 +1,193 @@
+{
+  "model": "gold",
+  "agg": {
+    "schema_valid": 12,
+    "routing_ok": 12,
+    "params_ok": 12,
+    "outcome_ok": 12,
+    "answer_ok": 12,
+    "overall": 12
+  },
+  "n": 12,
+  "results": [
+    {
+      "id": "q1",
+      "nl": "Where is truck T123 right now?",
+      "got": [
+        "get_current_status"
+      ],
+      "outcome": "OK",
+      "rendered": "T123 is currently parked at Warehouse A (for 2 hours).",
+      "schema_valid": true,
+      "routing_ok": true,
+      "params_ok": true,
+      "outcome_ok": true,
+      "answer_ok": true,
+      "overall": true
+    },
+    {
+      "id": "q2",
+      "nl": "Show me all trucks at Warehouse A",
+      "got": [
+        "get_trucks_at_location"
+      ],
+      "outcome": "OK",
+      "rendered": "3 truck(s) at Warehouse A: T123, T124, T125.",
+      "schema_valid": true,
+      "routing_ok": true,
+      "params_ok": true,
+      "outcome_ok": true,
+      "answer_ok": true,
+      "overall": true
+    },
+    {
+      "id": "q3",
+      "nl": "What's the average time trucks spend at Warehouse A?",
+      "got": [
+        "get_avg_dwell"
+      ],
+      "outcome": "OK",
+      "rendered": "Average dwell time at Warehouse A is 45 minutes over 6 visits.",
+      "schema_valid": true,
+      "routing_ok": true,
+      "params_ok": true,
+      "outcome_ok": true,
+      "answer_ok": true,
+      "overall": true
+    },
+    {
+      "id": "q4",
+      "nl": "Show me T123's route for today",
+      "got": [
+        "get_route_history"
+      ],
+      "outcome": "OK",
+      "rendered": "T123 route on 2026-07-08: Main Depot -> Customer A -> Warehouse A -> Customer B -> Warehouse B -> Main Depot.",
+      "schema_valid": true,
+      "routing_ok": true,
+      "params_ok": true,
+      "outcome_ok": true,
+      "answer_ok": true,
+      "overall": true
+    },
+    {
+      "id": "q5",
+      "nl": "List all my trucks",
+      "got": [
+        "get_assets"
+      ],
+      "outcome": "OK",
+      "rendered": "4 trucks: T123, T124, T125, T126.",
+      "schema_valid": true,
+      "routing_ok": true,
+      "params_ok": true,
+      "outcome_ok": true,
+      "answer_ok": true,
+      "overall": true
+    },
+    {
+      "id": "q6",
+      "nl": "which trucks are sitting at warehouse a right now?",
+      "got": [
+        "get_trucks_at_location"
+      ],
+      "outcome": "OK",
+      "rendered": "3 truck(s) at Warehouse A: T123, T124, T125.",
+      "schema_valid": true,
+      "routing_ok": true,
+      "params_ok": true,
+      "outcome_ok": true,
+      "answer_ok": true,
+      "overall": true
+    },
+    {
+      "id": "q7",
+      "nl": "how long on average do our trucks hang around warehouse a?",
+      "got": [
+        "get_avg_dwell"
+      ],
+      "outcome": "OK",
+      "rendered": "Average dwell time at Warehouse A is 45 minutes over 6 visits.",
+      "schema_valid": true,
+      "routing_ok": true,
+      "params_ok": true,
+      "outcome_ok": true,
+      "answer_ok": true,
+      "overall": true
+    },
+    {
+      "id": "q8",
+      "nl": "Where is truck T500?",
+      "got": [
+        "get_current_status"
+      ],
+      "outcome": "ACCESS_DENIED",
+      "rendered": "You don't have access to T500.",
+      "schema_valid": true,
+      "routing_ok": true,
+      "params_ok": true,
+      "outcome_ok": true,
+      "answer_ok": true,
+      "overall": true
+    },
+    {
+      "id": "q9",
+      "nl": "Where is truck T126?",
+      "got": [
+        "get_current_status"
+      ],
+      "outcome": "ACCESS_DENIED",
+      "rendered": "You don't have access to T126.",
+      "schema_valid": true,
+      "routing_ok": true,
+      "params_ok": true,
+      "outcome_ok": true,
+      "answer_ok": true,
+      "overall": true
+    },
+    {
+      "id": "q10",
+      "nl": "Where is T124?",
+      "got": [
+        "get_current_status"
+      ],
+      "outcome": "OK",
+      "rendered": "T124 is currently loading at Warehouse A (for 45 minutes).",
+      "schema_valid": true,
+      "routing_ok": true,
+      "params_ok": true,
+      "outcome_ok": true,
+      "answer_ok": true,
+      "overall": true
+    },
+    {
+      "id": "q11",
+      "nl": "Calculate the fuel efficiency for all my trucks",
+      "got": [],
+      "outcome": "OUT_OF_SCOPE",
+      "rendered": "That's outside what I can answer right now (no supported data endpoint for this request).",
+      "schema_valid": true,
+      "routing_ok": true,
+      "params_ok": true,
+      "outcome_ok": true,
+      "answer_ok": true,
+      "overall": true
+    },
+    {
+      "id": "q12",
+      "nl": "Show all trucks in Fleet Alpha and their average loading time at Warehouse A",
+      "got": [
+        "get_assets",
+        "get_avg_dwell"
+      ],
+      "outcome": "OK",
+      "rendered": "3 trucks in group Alpha: T123, T124, T125. Average dwell time at Warehouse A is 45 minutes over 6 visits.",
+      "schema_valid": true,
+      "routing_ok": true,
+      "params_ok": true,
+      "outcome_ok": true,
+      "answer_ok": true,
+      "overall": true
+    }
+  ]
+}

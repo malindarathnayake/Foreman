@@ -3,6 +3,7 @@ import fs from "fs/promises"
 import os from "os"
 import path from "path"
 import { computeGateUnitsHash, readLedger, writeLedger } from "../src/lib/ledger.js"
+import { appendEvent, type SidecarEventInput } from "../src/lib/eventsSidecar.js"
 
 let tmpDir: string
 let ledgerPath: string
@@ -15,6 +16,31 @@ beforeEach(async () => {
 afterEach(async () => {
   await fs.rm(tmpDir, { recursive: true, force: true })
 })
+
+// ─── P5 discipline-adherence gate fixture helper ───────────────────────────────
+// Mirrors tests/eventsSidecar.test.ts's fixtureEvent — same required-field set.
+function fixtureEvent(overrides: Record<string, unknown> = {}): SidecarEventInput {
+  return {
+    v: 1,
+    ts: new Date().toISOString(),
+    event_id: "evt_5a000001",
+    event_type: "delegation_started",
+    phase: "p1",
+    unit_id: "u1",
+    attempt: 1,
+    delegation_id: "del_5a000001",
+    provider: "anthropic",
+    model: "claude-sonnet",
+    tier: "standard",
+    capability_class: "capable",
+    edit_format: "unified_diff",
+    repair_attempt: 0,
+    brief_hash: "hash_5a000001",
+    prompt_prefix_hash: "hash_5a000002",
+    base_file_hashes: { "src/foo.ts": "hash_5a000003" },
+    ...overrides,
+  } as SidecarEventInput
+}
 
 describe("ledger", () => {
   it("concurrent writes are serialized — no data loss", async () => {
@@ -1310,5 +1336,261 @@ describe("ledger v0.5.0 seat minimum (D13)", () => {
     expect(caught).toBeDefined()
     expect(caught!.message).toContain("scoped hot_path")
     expect(caught!.message).not.toContain("security_boundary")
+  })
+})
+
+describe("ledger P5 discipline-adherence gate", () => {
+  const brief = "worker brief long enough to clear the 20 char minimum"
+
+  // Seeds a phase with one unit that has passed set_unit_status(delegated) +
+  // set_verdict(pass) on the LEDGER side. The sidecar side is seeded separately
+  // per-test via appendEvent, exercising the real readEvents/resolveUnitDelegation
+  // path through the default-on reader (no 4th arg passed to writeLedger anywhere
+  // in this describe block).
+  async function seedPassingUnit() {
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass" },
+    })
+  }
+
+  function sidecarPathFor(): string {
+    return path.join(path.dirname(ledgerPath), ".foreman-events.jsonl")
+  }
+
+  it("native pass (no sidecar file at all) passes the gate", async () => {
+    await seedPassingUnit()
+
+    await writeLedger(ledgerPath, {
+      operation: "update_phase_gate",
+      phase: "p1",
+      data: { g: "pass" },
+    })
+
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.g).toBe("pass")
+  })
+
+  it("sidecar file exists but only has events for a different unit — target unit resolves 'none', gate passes", async () => {
+    await seedPassingUnit()
+    await appendEvent(
+      sidecarPathFor(),
+      fixtureEvent({
+        event_id: "e1",
+        unit_id: "other_unit",
+        delegation_id: "del_other",
+        event_type: "delegation_started",
+      })
+    )
+
+    await writeLedger(ledgerPath, {
+      operation: "update_phase_gate",
+      phase: "p1",
+      data: { g: "pass" },
+    })
+
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.g).toBe("pass")
+  })
+
+  it("terminal pass reconciles — gate passes", async () => {
+    await seedPassingUnit()
+    const sidecarPath = sidecarPathFor()
+    await appendEvent(
+      sidecarPath,
+      fixtureEvent({ event_id: "e1", delegation_id: "del1", event_type: "delegation_started" })
+    )
+    await appendEvent(
+      sidecarPath,
+      fixtureEvent({
+        event_id: "e2",
+        delegation_id: "del1",
+        event_type: "validation_completed",
+        outcome: "pass",
+      })
+    )
+
+    await writeLedger(ledgerPath, {
+      operation: "update_phase_gate",
+      phase: "p1",
+      data: { g: "pass" },
+    })
+
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.g).toBe("pass")
+  })
+
+  it("contradiction blocks the gate — pass verdict vs sidecar terminal 'fail'", async () => {
+    await seedPassingUnit()
+    const sidecarPath = sidecarPathFor()
+    await appendEvent(
+      sidecarPath,
+      fixtureEvent({ event_id: "e1", delegation_id: "del1", event_type: "delegation_started" })
+    )
+    await appendEvent(
+      sidecarPath,
+      fixtureEvent({
+        event_id: "e2",
+        delegation_id: "del1",
+        event_type: "validation_completed",
+        outcome: "fail",
+        failure_stage: "W_REJ",
+      })
+    )
+
+    await expect(
+      writeLedger(ledgerPath, {
+        operation: "update_phase_gate",
+        phase: "p1",
+        data: { g: "pass" },
+      })
+    ).rejects.toThrow(/DISCIPLINE ADHERENCE:.*contradicts sidecar terminal outcome 'fail'/)
+
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.g).toBe("pending")
+    expect(ledger.phases.p1.g).not.toBe("pass")
+  })
+
+  it("open delegation blocks the gate — no terminal sidecar event", async () => {
+    await seedPassingUnit()
+    const sidecarPath = sidecarPathFor()
+    await appendEvent(
+      sidecarPath,
+      fixtureEvent({ event_id: "e1", delegation_id: "del1", event_type: "delegation_started" })
+    )
+    await appendEvent(
+      sidecarPath,
+      fixtureEvent({ event_id: "e2", delegation_id: "del1", event_type: "patch_checked" })
+    )
+
+    await expect(
+      writeLedger(ledgerPath, {
+        operation: "update_phase_gate",
+        phase: "p1",
+        data: { g: "pass" },
+      })
+    ).rejects.toThrow(/DISCIPLINE ADHERENCE:.*no terminal sidecar event/)
+
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.g).not.toBe("pass")
+  })
+
+  it("user_override lets a contradiction through and records it in discipline_overrides", async () => {
+    await seedPassingUnit()
+    const sidecarPath = sidecarPathFor()
+    await appendEvent(
+      sidecarPath,
+      fixtureEvent({ event_id: "e1", delegation_id: "del1", event_type: "delegation_started" })
+    )
+    await appendEvent(
+      sidecarPath,
+      fixtureEvent({
+        event_id: "e2",
+        delegation_id: "del1",
+        event_type: "validation_completed",
+        outcome: "fail",
+        failure_stage: "W_REJ",
+      })
+    )
+
+    await writeLedger(ledgerPath, {
+      operation: "update_phase_gate",
+      phase: "p1",
+      data: { g: "pass", user_override: true },
+    })
+
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.g).toBe("pass")
+    expect(ledger.phases.p1.discipline_overrides).toEqual([
+      { discipline_override: true, unit_id: "u1", delegation_id: "del1" },
+    ])
+  })
+
+  it("refunded terminal (e.g. WORKER_AIDER_EXIT) is a contradiction under strict reconciliation — blocks without override, passes with override", async () => {
+    await seedPassingUnit()
+    const sidecarPath = sidecarPathFor()
+    await appendEvent(
+      sidecarPath,
+      fixtureEvent({ event_id: "e1", delegation_id: "del1", event_type: "delegation_started" })
+    )
+    await appendEvent(
+      sidecarPath,
+      fixtureEvent({
+        event_id: "e2",
+        delegation_id: "del1",
+        event_type: "worker_completed",
+        outcome: "fail",
+        failure_stage: "WORKER_AIDER_EXIT",
+      })
+    )
+
+    await expect(
+      writeLedger(ledgerPath, {
+        operation: "update_phase_gate",
+        phase: "p1",
+        data: { g: "pass" },
+      })
+    ).rejects.toThrow(/DISCIPLINE ADHERENCE:.*contradicts sidecar terminal outcome 'fail'/)
+
+    const blocked = await readLedger(ledgerPath)
+    expect(blocked.phases.p1.g).not.toBe("pass")
+
+    await writeLedger(ledgerPath, {
+      operation: "update_phase_gate",
+      phase: "p1",
+      data: { g: "pass", user_override: true },
+    })
+
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.g).toBe("pass")
+    expect(ledger.phases.p1.discipline_overrides).toEqual([
+      { discipline_override: true, unit_id: "u1", delegation_id: "del1" },
+    ])
+  })
+
+  it("broken/tampered sidecar hash chain throws LOUD — not absorbed by the gate", async () => {
+    await seedPassingUnit()
+    const sidecarPath = sidecarPathFor()
+    await appendEvent(
+      sidecarPath,
+      fixtureEvent({ event_id: "e1", delegation_id: "del1", event_type: "delegation_started" })
+    )
+    await appendEvent(
+      sidecarPath,
+      fixtureEvent({
+        event_id: "e2",
+        delegation_id: "del1",
+        event_type: "validation_completed",
+        outcome: "pass",
+      })
+    )
+
+    // Tamper the first line's payload — its stored event_hash no longer matches the
+    // recomputed hash. Keep the trailing newline so the line is not "torn".
+    const raw = await fs.readFile(sidecarPath, "utf-8")
+    const lines = raw.split("\n").filter((l) => l.length > 0)
+    const line1 = JSON.parse(lines[0])
+    line1.unit_id = "tampered"
+    lines[0] = JSON.stringify(line1)
+    await fs.writeFile(sidecarPath, lines.join("\n") + "\n", "utf-8")
+
+    await expect(
+      writeLedger(ledgerPath, {
+        operation: "update_phase_gate",
+        phase: "p1",
+        data: { g: "pass" },
+      })
+    ).rejects.toThrow(/hash mismatch|chain break|tamper/)
+
+    const ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.g).not.toBe("pass")
   })
 })

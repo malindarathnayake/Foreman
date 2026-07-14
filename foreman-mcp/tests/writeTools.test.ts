@@ -8,6 +8,7 @@ import { handleWriteProgress, FENCE_START, FENCE_END } from "../src/tools/writeP
 import { normalizeReview } from "../src/tools/normalizeReview.js"
 import { readLedger } from "../src/lib/ledger.js"
 import { readProgress } from "../src/lib/progress.js"
+import { appendEvent, type SidecarEventInput } from "../src/lib/eventsSidecar.js"
 import { NormalizeReviewInputSchema, WriteLedgerInputSchema, PhaseScopeSchema, WriteJournalInputSchema, JournalEventCode } from "../src/types.js"
 import { detectTestFiles } from "../src/lib/detectTestFiles.js"
 import { atomicWriteFile } from "../src/lib/atomicWrite.js"
@@ -1011,6 +1012,7 @@ describe("WriteJournalInputSchema — init_session agent_class/worker_class (R8)
         env: {
           agent: "claude",
           worker: "claude",
+          claude: "2.1.206",
           codex: null,
           gemini: null,
           agent_class: "frontier",
@@ -1019,6 +1021,7 @@ describe("WriteJournalInputSchema — init_session agent_class/worker_class (R8)
       },
     })
     expect(result.success).toBe(true)
+    if (result.success) expect(result.data.data.env.claude).toBe("2.1.206")
   })
 
   it("rejects an invalid agent_class value", () => {
@@ -1329,4 +1332,93 @@ describe("ccr_stats fold (5b)", () => {
     const freshMetrics = await handleReadLedger(freshLedgerPath, { query: "delegation_metrics" })
     expect(freshMetrics).not.toContain("ccr_savings")
   }, 30000)
+})
+
+// ─── P5 5a: discipline-adherence gate — default-on through handleWriteLedger ──
+
+describe("handleWriteLedger — P5 discipline-adherence gate (default-on)", () => {
+  const brief = "worker brief long enough to clear the 20 char minimum"
+
+  function fixtureEvent(overrides: Record<string, unknown> = {}): SidecarEventInput {
+    return {
+      v: 1,
+      ts: new Date().toISOString(),
+      event_id: "evt_5a100001",
+      event_type: "delegation_started",
+      phase: "p1",
+      unit_id: "u1",
+      attempt: 1,
+      delegation_id: "del_5a100001",
+      provider: "anthropic",
+      model: "claude-sonnet",
+      tier: "standard",
+      capability_class: "capable",
+      edit_format: "unified_diff",
+      repair_attempt: 0,
+      brief_hash: "hash_5a100001",
+      prompt_prefix_hash: "hash_5a100002",
+      base_file_hashes: { "src/foo.ts": "hash_5a100003" },
+      ...overrides,
+    } as SidecarEventInput
+  }
+
+  it("default-on: contradiction rejects through handleWriteLedger; data.user_override survives zod and lets it through, recording the override", async () => {
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief },
+    })
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass" },
+    })
+
+    // Seed a contradicting sidecar delegation AFTER the ledger writes above, so the
+    // tool's own post-write sidecar hook (which only closes an OPEN delegation) has
+    // nothing to touch — this file is purely the discipline-gate's read input.
+    const sidecarPath = path.join(path.dirname(ledgerPath), ".foreman-events.jsonl")
+    await appendEvent(
+      sidecarPath,
+      fixtureEvent({ event_id: "e1", delegation_id: "del1", event_type: "delegation_started" })
+    )
+    await appendEvent(
+      sidecarPath,
+      fixtureEvent({
+        event_id: "e2",
+        delegation_id: "del1",
+        event_type: "validation_completed",
+        outcome: "fail",
+        failure_stage: "W_REJ",
+      })
+    )
+
+    // No override: gate is default-on through the tool path — REJECTS.
+    await expect(
+      handleWriteLedger(ledgerPath, {
+        operation: "update_phase_gate",
+        phase: "p1",
+        data: { g: "pass" },
+      })
+    ).rejects.toThrow(/DISCIPLINE ADHERENCE:.*contradicts sidecar terminal outcome 'fail'/)
+
+    let ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.g).not.toBe("pass")
+
+    // Same call with data.user_override: true — zod must not strip it — SUCCEEDS.
+    const result = await handleWriteLedger(ledgerPath, {
+      operation: "update_phase_gate",
+      phase: "p1",
+      data: { g: "pass", user_override: true },
+    })
+    expect(result).toContain("status: ok")
+
+    ledger = await readLedger(ledgerPath)
+    expect(ledger.phases.p1.g).toBe("pass")
+    expect(ledger.phases.p1.discipline_overrides).toEqual([
+      { discipline_override: true, unit_id: "u1", delegation_id: "del1" },
+    ])
+  })
 })

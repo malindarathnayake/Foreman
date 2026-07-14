@@ -605,3 +605,56 @@ describe("write_ledger sidecar hook — ledger-layer errors still propagate", ()
     ).rejects.toThrow(/VERDICT BLOCKED/)
   })
 })
+
+// ── 13. Terminal hook → discipline gate compose (P5 5c integration) ──────────────────
+// The hook (this file's subject) and the P5 discipline-adherence gate (lib/ledger.ts)
+// are tested in isolation elsewhere — the gate's own tests (tests/ledger.test.ts) seed
+// sidecar events MANUALLY. This proves the two compose for real: the REAL hook produces
+// exactly the terminal event the REAL gate consumes, with no manual event seeding.
+describe("write_ledger terminal hook → discipline gate (P5 5c integration)", () => {
+  it("the real hook closes the chain with validation_completed{pass}, and the discipline gate reconciles it to a passing phase gate", async () => {
+    const mock = await startMock((_req, res) => successResponse(res, workerText(METADATA_SUCCESS, UNIFIED_DIFF_BODY)))
+    // seedDelegation defaults true: set_unit_status(s:'delegated') for phase 4g / unit u1.
+    const ws = await makeWorkspace({ port: mock.port })
+
+    const invokeText = await handleInvokeWorker(baseInput(ws), ws.deps)
+    expect(invokeText).toContain("status: ok")
+
+    let events = (await readEvents(ws.sidecarPath)).events
+    expect(events).toHaveLength(3)
+    expect(events.map((e) => e.event_type)).toEqual([
+      "delegation_started",
+      "worker_completed",
+      "patch_checked",
+    ])
+
+    // The REAL hook: set_verdict(pass) must close the chain with validation_completed{pass}.
+    const ledgerText = await handleWriteLedger(ws.ledgerPath, {
+      operation: "set_verdict",
+      phase: "4g",
+      unit_id: "u1",
+      data: { v: "pass", via: "worker", note: "worker patch applied and build passed" },
+    })
+    expect(ledgerText).toContain("status: ok")
+    expect(ledgerText).not.toContain("sidecar_warning")
+
+    events = (await readEvents(ws.sidecarPath)).events
+    expect(events).toHaveLength(4)
+    const last = events[events.length - 1]
+    expect(last.event_type).toBe("validation_completed")
+    expect(last.outcome).toBe("pass")
+
+    // The REAL discipline gate (default-on, no injected sidecarReader): resolves u1's
+    // latest delegation to the hook-written terminal 'pass' and reconciles cleanly.
+    const gateText = await handleWriteLedger(ws.ledgerPath, {
+      operation: "update_phase_gate",
+      phase: "4g",
+      data: { g: "pass" },
+    })
+    expect(gateText).toContain("status: ok")
+
+    const ledger = await readLedger(ws.ledgerPath)
+    expect(ledger.phases["4g"].g).toBe("pass")
+    expect(ledger.phases["4g"].discipline_overrides).toBeUndefined()
+  })
+})

@@ -33,6 +33,10 @@ const CLAUDE_CODE_PROFILE: HostProfile = {
     host_name: "Claude Code",
     worker_invoke:
       'Use Agent tool with `model: "sonnet"`. Pass only the worker brief — no spec, no ledger, no progress file.',
+    worker_fanout:
+      "When Step 2 batches to N workers: for each unit, `write_ledger` `s:'delegated'` with that unit's brief BEFORE spawning; spawn up to N Agent-tool workers (`model: \"sonnet\"`) in parallel; wait for all; validate and verdict each unit independently. Workers must not spawn further agents. An explorer-class Agent (`model: \"haiku\"`, read-only) may map code paths for Step 3 / preflight — it never produces a verdict.",
+    advisor_checks:
+      '`mcp__foreman__capability_check({ cli: "codex" })` and `mcp__foreman__capability_check({ cli: "gemini" })`',
     advisor_a:
       '**Codex:** `mcp__foreman__invoke_advisor({ cli: "codex", prompt: "<PROMPT>" })`',
     advisor_b:
@@ -51,8 +55,12 @@ const CURSOR_PROFILE: HostProfile = {
     host_name: "Cursor",
     worker_invoke:
       'Use the Cursor `Task` tool with `subagent_type: "generalPurpose"` and `model: "claude-4.6-sonnet-medium-thinking"`. Pass only the worker brief in the prompt — no spec, no ledger, no progress file.',
+    worker_fanout:
+      'When Step 2 batches to N workers: for each unit, `write_ledger` `s:\'delegated\'` with that unit\'s brief BEFORE spawning; spawn up to N Cursor `Task` tools (`subagent_type: "generalPurpose"`, `model: "claude-4.6-sonnet-medium-thinking"`) in parallel; wait for all; validate and verdict each unit independently. Workers must not spawn further agents. An explorer Task (`subagent_type: "explore"`, `readonly: true`) may map code paths for Step 3 / preflight — it never produces a verdict.',
+    advisor_checks:
+      '`mcp__foreman__capability_check({ cli: "codex" })` and `mcp__foreman__capability_check({ cli: "gemini" })`',
     advisor_a:
-      '**Advisor A (GPT-5.5):** Use the Cursor `Task` tool with `subagent_type: "explore"`, `readonly: true`, `model: "gpt-5.5-high"`. Pass the deliberation prompt as the task description.',
+      '**Advisor A (GPT-5.6-SOL):** Use the Cursor `Task` tool with `subagent_type: "explore"`, `readonly: true`, `model: "gpt-5.6-sol-ultra"`. Pass the deliberation prompt as the task description.',
     advisor_b:
       '**Advisor B (Gemini 3.1 Pro):** Use the Cursor `Task` tool with `subagent_type: "explore"`, `readonly: true`, `model: "gemini-3.1-pro"`. If `gemini-3.1-pro` is unavailable in the user\'s Cursor environment, fall back to `model: "composer-2-fast"`.',
     advisor_fallback:
@@ -62,15 +70,27 @@ const CURSOR_PROFILE: HostProfile = {
   },
 }
 
-// codex host is currently an alias for claude-code (placeholder for future codex-as-host work)
+// Codex has its own native collaboration and advisor surfaces. Keep this profile
+// explicit: inheriting Claude Code text silently reintroduces Agent-tool/Opus instructions.
 const CODEX_PROFILE: HostProfile = {
-  ...CLAUDE_CODE_PROFILE,
   id: "codex",
-  displayName: "Codex CLI (alias of Claude Code)",
+  displayName: "Codex",
   placeholders: {
-    ...CLAUDE_CODE_PROFILE.placeholders,
+    host_name: "Codex",
+    worker_invoke:
+      'Use Codex `spawn_agent` to create a disposable implementation subagent. Pass only the bounded worker brief — no spec, ledger, or progress file. Prefer the host-configured `gpt-5.6-luna` worker seat when Codex exposes subagent model selection; the current spawn contract may choose the model itself, so record the actual model and never attest Luna unless the host confirms it.',
+    worker_fanout:
+      "When Step 2 batches to N workers: for each unit, `write_ledger` `s:'delegated'` with that unit's brief BEFORE spawning; spawn up to `agents.max_threads` (default 6) Codex `spawn_agent` workers in parallel (`worker` role for implementation); wait for all; validate and verdict each unit independently. Keep `agents.max_depth=1` — workers must not spawn further agents. An `explorer` role subagent (read-only sandbox) may map code paths for Step 3 / preflight — it never produces a verdict. Prefer `gpt-5.6-luna` for workers when the host confirms model selection; record the actual model and never attest Luna unless confirmed. Call `codex_agents_init` once per project if `.codex/agents/` roles are missing.",
+    advisor_checks:
+      '`mcp__foreman__capability_check({ cli: "claude" })` and `mcp__foreman__capability_check({ cli: "gemini" })`',
+    advisor_a:
+      '**Advisor A (Claude Fable 5, max; headless):** `mcp__foreman__invoke_advisor({ cli: "claude", prompt: "<PROMPT>" })` (configured `model: "claude-fable-5"`, effort `max`, tools disabled).',
+    advisor_b:
+      '**Advisor B (Gemini):** `mcp__foreman__invoke_advisor({ cli: "gemini", prompt: "<PROMPT>" })`',
+    advisor_fallback:
+      "**Non-independent fallback:** Run an adversarial self-review in the Codex pitboss seat and record that independent review was unavailable.",
     autonomy:
-      "DRAFT — codex-as-host autonomy is unspecified in v0.5.0; refine with Codex directly before relying on it.",
+      "Codex continuation is host-controlled: declare budgets and scope up front, stop at every phase gate, and re-enter after context reset through `session_orient`. Do not claim unattended continuation unless the active Codex host exposes and confirms it.",
   },
 }
 
@@ -81,6 +101,10 @@ const GENERIC_PROFILE: HostProfile = {
     host_name: "Generic host",
     worker_invoke:
       "Spawn a worker at tier `{tier}` with exactly this brief; return a completion report matching the completion-report schema in HOST-CONTRACT.md. A host MAY fulfil this capability via Foreman's `invoke_worker`.",
+    worker_fanout:
+      "When Step 2 batches to N workers: for each unit, `write_ledger` `s:'delegated'` with that unit's brief BEFORE spawning; spawn up to N workers at the declared tier in parallel (see HOST-CONTRACT.md spawn-worker); wait for all; validate and verdict each unit independently. Workers must not spawn further agents. A read-only explorer seat may map code paths for Step 3 / preflight — it never produces a verdict.",
+    advisor_checks:
+      '`mcp__foreman__capability_check({ cli: "codex" })` and `mcp__foreman__capability_check({ cli: "gemini" })`',
     advisor_a:
       "**Advisor A:** invoke the host's first configured independent advisor seat with the deliberation prompt verbatim; return the advisor's full review text.",
     advisor_b:
@@ -127,6 +151,26 @@ export function resolveHost(opts: { flag?: string | null; env?: string | null })
 
 export function getProfile(host: HostId): HostProfile {
   return PROFILES[host]
+}
+
+/**
+ * Runtime mappings injected ahead of legacy/project overrides. Overrides may
+ * predate host profiles and contain provider-specific instructions that are no
+ * longer valid (for example, telling Codex to use Claude's Agent tool).
+ */
+export function hostRuntimePreamble(host: HostId): string {
+  const ph = getProfile(host).placeholders
+  return [
+    "## Active Host Runtime (authoritative)",
+    "The mappings below supersede provider, model, advisor, and host-tool instructions in this override body. Protocol workflow and project-specific rules below still apply.",
+    "",
+    `**Worker:** ${ph.worker_invoke}`,
+    `**Worker fan-out:** ${ph.worker_fanout}`,
+    `**Advisor detection:** ${ph.advisor_checks}`,
+    ph.advisor_a,
+    ph.advisor_b,
+    ph.advisor_fallback,
+  ].join("\n")
 }
 
 /**

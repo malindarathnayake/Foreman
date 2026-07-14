@@ -78,6 +78,25 @@ describe("journal", () => {
     })
   })
 
+  it("records an optional Claude advisor version without requiring it from old callers", async () => {
+    await initSession(
+      journalPath,
+      makeInitInput({
+        env: {
+          agent: "gpt-5.6-sol",
+          worker: "host-selected",
+          claude: "2.1.206",
+          codex: "0.144.1",
+          gemini: null,
+        },
+      }),
+    )
+
+    const journal = await readJournal(journalPath)
+    const session = journal.sessions[0] as JournalSession & { env: Record<string, unknown> }
+    expect(session.env.claude).toBe("2.1.206")
+  })
+
   describe("initSession", () => {
     it("creates file and auto-fills env.os/node/foreman", async () => {
       const journal = await initSession(journalPath, makeInitInput())
@@ -243,7 +262,9 @@ describe("journal", () => {
       // 3a: +SEC_BLOCK +EGRESS_NOTICE (R6)
       expect(validCodes).toContain("SEC_BLOCK")
       expect(validCodes).toContain("EGRESS_NOTICE")
-      expect(validCodes.length).toBe(25)
+      // 3a (aider_worker capability probe): +CAP_WAIVER — fail-open waiver marker
+      expect(validCodes).toContain("CAP_WAIVER")
+      expect(validCodes.length).toBe(26)
     })
   })
 
