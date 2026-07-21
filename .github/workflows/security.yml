@@ -26,7 +26,7 @@ jobs:
       # do. The `# vX.Y.Z` suffix keeps each pin human-readable, and the
       # dependabot `github-actions` ecosystem (added alongside this pin)
       # keeps the SHAs current.
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # No cache needed — `npm audit` only reads package-lock.json, it
       # never installs anything, so there is no npm cache to warm.
@@ -52,13 +52,13 @@ jobs:
       security-events: write
 
     steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       # `security-extended` over the default suite — the default query
       # pack misses lower-severity/precision queries that matter for a
       # security-tooling product; we'd rather triage more findings than
       # silently skip a class of them.
-      - uses: github/codeql-action/init@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
+      - uses: github/codeql-action/init@7188fc363630916deb702c7fdcf4e481b751f97a # v4.37.1
         with:
           languages: javascript-typescript
           queries: security-extended
@@ -68,7 +68,7 @@ jobs:
       # poisoned/silently-diverged vendored compressor). Excluding vendor
       # directories is the common "cheaper" move for cutting scan noise,
       # and exactly the wrong one here.
-      - uses: github/codeql-action/analyze@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4.36.3
+      - uses: github/codeql-action/analyze@7188fc363630916deb702c7fdcf4e481b751f97a # v4.37.1
 
   gitleaks:
     runs-on: ubuntu-latest
@@ -77,7 +77,7 @@ jobs:
       # fetch-depth: 0 — full history. The weekly cron run scans all
       # history; a shallow clone (the default) would silently reduce the
       # scan surface to the last commit only.
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
 
