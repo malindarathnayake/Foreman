@@ -61,7 +61,9 @@ Six capabilities, each rated READY / DECLARED / EXPERIMENTAL. READY means the be
 - **Use when:** multiple seats might touch the same tree.
 - **Do not use when:** single-seat sequential work on one tree (isolation is then a no-op).
 - **NOT-claims:**
-  - "Foreman never creates or destroys worktrees — it validates declarations"
+  - "For host-native seats, the Foreman capability layer validates isolation declarations; the host creates and destroys their worktrees."
+  - "`aider_worker` is the exception: that MCP tool creates and tears down its own isolated detached worktree."
+  - "Foreman does not intercept a host-native agent's Git commands; pitboss re-read/spec/test-impact validation can detect resulting divergence after the fact, but does not automatically restore it."
 - **Smoke:** seat-declaration shape validation (contract, from P3 onward).
 
 ### autonomy

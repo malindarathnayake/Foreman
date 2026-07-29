@@ -1,6 +1,6 @@
 #!/usr/bin/env node
-import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js"
+import { McpServer } from "@modelcontextprotocol/server"
+import { serveStdio, StdioServerTransport } from "@modelcontextprotocol/server/stdio"
 import { z } from "zod"
 import fs from "fs/promises"
 import path from "path"
@@ -41,6 +41,15 @@ import { codexAgentsInit, CODEX_AGENT_ROLES } from "./tools/codexAgentsInit.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
+const TextOutputSchema = z.string()
+
+function textResult(text: string, isError = false) {
+  return {
+    content: [{ type: "text" as const, text }],
+    structuredContent: text,
+    ...(isError ? { isError: true } : {}),
+  }
+}
 
 export interface ServerConfig {
   ledgerPath?: string
@@ -74,17 +83,20 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   const pkgPath = path.resolve(__dirname, "..", "package.json")
   const pkg = JSON.parse(await fs.readFile(pkgPath, "utf-8")) as { version: string }
 
-  const server = new McpServer(
-    { name: "foreman", version: pkg.version },
-    { capabilities: { resources: {}, tools: {} } }
-  )
+  // McpServer v2 installs and advertises capabilities as tools/resources are
+  // registered. Avoid declaring empty capabilities up front: that would
+  // install eager handlers and can advertise features that are not present.
+  const server = new McpServer({ name: "foreman", version: pkg.version })
 
   // ── Tools ──────────────────────────────────────────────────────────────────
 
   server.registerTool(
     "bundle_status",
     {
+      title: "Bundle Status",
       description: "Returns the Foreman bundle version and override info.",
+      inputSchema: z.strictObject({}),
+      outputSchema: TextOutputSchema,
       annotations: {
         title: "Bundle Status",
         readOnlyHint: true,
@@ -93,14 +105,17 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (_extra) => {
       const text = await bundleStatus()
-      return { content: [{ type: "text" as const, text }] }
+      return textResult(text)
     }
   )
 
   server.registerTool(
     "host_status",
     {
+      title: "Host Status",
       description: "Returns the active Foreman host and the model slugs used for worker / advisor invocation. Use to confirm whether skills are rendered for Claude Code, Cursor, or another host.",
+      inputSchema: z.strictObject({}),
+      outputSchema: TextOutputSchema,
       annotations: {
         title: "Host Status",
         readOnlyHint: true,
@@ -109,17 +124,19 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (_extra) => {
       const text = hostStatus(host)
-      return { content: [{ type: "text" as const, text }] }
+      return textResult(text)
     }
   )
 
   server.registerTool(
     "changelog",
     {
+      title: "Changelog",
       description: "Returns the Foreman changelog, optionally since a version.",
-      inputSchema: {
+      inputSchema: z.strictObject({
         since_version: z.string().max(20).optional(),
-      },
+      }),
+      outputSchema: TextOutputSchema,
       annotations: {
         title: "Changelog",
         readOnlyHint: true,
@@ -128,18 +145,20 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const text = changelog(args.since_version)
-      return { content: [{ type: "text" as const, text }] }
+      return textResult(text)
     }
   )
 
   server.registerTool(
     "ethos",
     {
+      title: "Engineering Ethos",
       description:
         "Serves the canonical engineering-ethos document consumed by the Foreman protocols (proportionality tiers, three pillars, G6 review checklist), rendered with the active stack profile. Pass section to fetch a single ## section.",
-      inputSchema: {
+      inputSchema: z.strictObject({
         section: z.enum(ETHOS_SECTIONS).optional(),
-      },
+      }),
+      outputSchema: TextOutputSchema,
       annotations: {
         title: "Engineering Ethos",
         readOnlyHint: true,
@@ -148,19 +167,21 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const text = await ethos(stackProfile, args.section)
-      return { content: [{ type: "text" as const, text }] }
+      return textResult(text)
     }
   )
 
   server.registerTool(
     "read_ledger",
     {
+      title: "Read Ledger",
       description: "Reads the Foreman ledger file. Query 'delegation_metrics' derives worker-delegation metrics from the events sidecar.",
-      inputSchema: {
+      inputSchema: z.strictObject({
         unit_id: z.string().max(10000).optional(),
         phase: z.string().max(10000).optional(),
         query: z.enum(["verdicts", "rejections", "phase_gates", "reviews", "full", "delegation_metrics"]).optional(),
-      },
+      }),
+      outputSchema: TextOutputSchema,
       annotations: {
         title: "Read Ledger",
         readOnlyHint: true,
@@ -169,17 +190,19 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const text = await handleReadLedger(ledgerPath, args)
-      return { content: [{ type: "text" as const, text }] }
+      return textResult(text)
     }
   )
 
   server.registerTool(
     "read_progress",
     {
+      title: "Read Progress",
       description: "Reads the Foreman progress file.",
-      inputSchema: {
+      inputSchema: z.strictObject({
         last_n_completed: z.number().min(1).max(100).optional(),
-      },
+      }),
+      outputSchema: TextOutputSchema,
       annotations: {
         title: "Read Progress",
         readOnlyHint: true,
@@ -188,18 +211,20 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const text = await handleReadProgress(progressPath, args.last_n_completed)
-      return { content: [{ type: "text" as const, text }] }
+      return textResult(text)
     }
   )
 
   server.registerTool(
     "read_journal",
     {
+      title: "Read Journal",
       description: "Reads the Foreman session journal. Returns session history with rollup.",
-      inputSchema: {
+      inputSchema: z.strictObject({
         last_n: z.number().min(1).max(100).optional(),
         rollup_only: z.boolean().optional(),
-      },
+      }),
+      outputSchema: TextOutputSchema,
       annotations: {
         title: "Read Journal",
         readOnlyHint: true,
@@ -209,26 +234,28 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     async (args, _extra) => {
       const journal = await readJournal(journalPath)
       if (args.rollup_only) {
-        return { content: [{ type: "text" as const, text: JSON.stringify(journal.rollup ?? null) }] }
+        return textResult(JSON.stringify(journal.rollup ?? null))
       }
       if (args.last_n) {
         const sliced = { ...journal, sessions: journal.sessions.slice(-args.last_n) }
-        return { content: [{ type: "text" as const, text: JSON.stringify(sliced) }] }
+        return textResult(JSON.stringify(sliced))
       }
-      return { content: [{ type: "text" as const, text: JSON.stringify(journal) }] }
+      return textResult(JSON.stringify(journal))
     }
   )
 
   server.registerTool(
     "capability_check",
     {
+      title: "Capability Check",
       description:
         host === "cursor"
           ? "Returns synthetic availability for Cursor's codex/gemini advisor seats. An explicit claude check probes the local Claude CLI."
           : "Checks whether the claude, codex, or gemini CLI is available and authenticated. Returns a closed auth_status taxonomy (ok|not_found|not_trusted|auth_expired|probe_timeout|error) with a corrective hint on failures.",
-      inputSchema: {
+      inputSchema: z.strictObject({
         cli: z.enum(ADVISOR_CLIS),
-      },
+      }),
+      outputSchema: TextOutputSchema,
       annotations: {
         title: "Capability Check",
         readOnlyHint: true,
@@ -237,21 +264,23 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const text = await capabilityCheck(args.cli, host)
-      return { content: [{ type: "text" as const, text }] }
+      return textResult(text)
     }
   )
 
   server.registerTool(
     "invoke_advisor",
     {
+      title: "Invoke Advisor",
       description: "Invoke claude|codex|gemini CLI via stdin. Resolves binaries cross-platform and wraps .cmd shims on win32. Claude runs headless with Fable 5 at max effort and no tools. Failed calls may be compressed; if a failed call's summary is insufficient, call retrieve_original with the <<ccr:HASH>> marker for the full diagnostic.",
-      inputSchema: {
+      inputSchema: z.strictObject({
         cli: z.enum(ADVISOR_CLIS),
         prompt: z.string().max(100000),
         // Newer Sol-class models at xhigh reasoning effort routinely think for
         // >5 min on large review prompts — budget 15 min by default, cap at 30.
         timeout_ms: z.number().min(5000).max(1800000).default(900000),
-      },
+      }),
+      outputSchema: TextOutputSchema,
       annotations: {
         title: "Invoke Advisor",
         readOnlyHint: false,
@@ -265,13 +294,14 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       // recommendations). A FAILED call is an unpredictable diagnostic dump: let the normal
       // compression path handle it; the agent sees exit_code != 0 and can retrieve_original.
       const text = result.exitCode === 0 ? formatted : maybeCompress("invoke_advisor", formatted)
-      return { content: [{ type: "text" as const, text }] }
+      return textResult(text)
     }
   )
 
   server.registerTool(
     "write_ledger",
     {
+      title: "Write Ledger",
       description: [
         "Writes an operation to the Foreman ledger file.",
         "",
@@ -283,12 +313,13 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "  set_phase_scope — Declare phase scope for gate applicability. data: { has_tests, has_api, has_build: boolean }. Requires: phase.",
         "  record_review   — Record a durable advisor review at a checkpoint. data: { advisor: string, findings: Array<{ severity, file, line, description, classification? }>, packet_hash?, tokens? }. Requires: phase.",
       ].join("\n"),
-      inputSchema: {
+      inputSchema: z.strictObject({
         operation: z.enum(["set_unit_status", "set_verdict", "add_rejection", "update_phase_gate", "set_phase_scope", "record_review"]),
         unit_id: z.string().max(10000).optional(),
         phase: z.string().max(10000).optional(),
-        data: z.record(z.unknown()),
-      },
+        data: z.record(z.string(), z.unknown()),
+      }),
+      outputSchema: TextOutputSchema,
       annotations: {
         title: "Write Ledger",
         readOnlyHint: false,
@@ -297,13 +328,14 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const text = await handleWriteLedger(ledgerPath, args)
-      return { content: [{ type: "text" as const, text }] }
+      return textResult(text)
     }
   )
 
   server.registerTool(
     "invoke_worker",
     {
+      title: "Invoke Patch Worker (EXPERIMENTAL)",
       description: [
         "EXPERIMENTAL. Delegates a single patch task to the remote OpenAI-compatible",
         "chat-completions endpoint configured in .foremanenv, at the requested cost tier.",
@@ -318,14 +350,15 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "recorded in the hash-chained event sidecar. Requires the unit to already be recorded",
         "as s:'delegated' in the ledger (invoke_worker never writes the ledger).",
       ].join(" "),
-      inputSchema: {
+      inputSchema: z.strictObject({
         phase: z.string().max(10000),
         unit_id: z.string().max(10000),
         brief: z.string(),
         tier: z.enum(["cheap", "standard", "premium"]),
         files: z.array(z.string()).max(100),
         edit_format: z.enum(["unified_diff", "search_replace", "whole_file"]).optional(),
-      },
+      }),
+      outputSchema: TextOutputSchema,
       annotations: {
         title: "Invoke Patch Worker (EXPERIMENTAL)",
         readOnlyHint: false,
@@ -335,13 +368,14 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const text = await handleInvokeWorker(args, { docsDir, ledgerPath, journalPath })
-      return { content: [{ type: "text" as const, text }] }
+      return textResult(text)
     }
   )
 
   server.registerTool(
     "aider_worker",
     {
+      title: "Invoke Aider Patch Worker (EXPERIMENTAL)",
       description: [
         "EXPERIMENTAL. Delegates a single patch task to the local aider CLI, driven through an",
         "external harness inside an ISOLATED, throwaway git worktree at the requested cost tier.",
@@ -354,7 +388,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "failure-stage taxonomy and recorded in the hash-chained event sidecar. Requires the unit to already",
         "be recorded as s:'delegated' in the ledger (aider_worker never writes the ledger).",
       ].join(" "),
-      inputSchema: {
+      inputSchema: z.strictObject({
         phase: z.string().min(1),
         unit_id: z.string().min(1),
         brief: z.string().min(20),
@@ -362,7 +396,8 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         files: z.array(z.string().min(1)).min(1),
         read_only_files: z.array(z.string().min(1)).optional(),
         edit_format: z.enum(["whole_file", "search_replace", "unified_diff"]).optional(),
-      },
+      }),
+      outputSchema: TextOutputSchema,
       annotations: {
         title: "Invoke Aider Patch Worker (EXPERIMENTAL)",
         readOnlyHint: false,
@@ -372,13 +407,14 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const text = await handleAiderWorker(args, { docsDir, ledgerPath, journalPath })
-      return { content: [{ type: "text" as const, text }] }
+      return textResult(text)
     }
   )
 
   server.registerTool(
     "write_progress",
     {
+      title: "Write Progress",
       description: [
         "Writes an operation to the Foreman progress file.",
         "",
@@ -388,10 +424,11 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "  complete_unit — Mark unit done. data: { unit_id: string, phase: string, completed_at: string, notes: string }.",
         "  log_error     — Log an error. data: { date: string, unit: string, what_failed: string, next_approach: string }.",
       ].join("\n"),
-      inputSchema: {
+      inputSchema: z.strictObject({
         operation: z.enum(["update_status", "complete_unit", "log_error", "start_phase"]),
-        data: z.record(z.unknown()),
-      },
+        data: z.record(z.string(), z.unknown()),
+      }),
+      outputSchema: TextOutputSchema,
       annotations: {
         title: "Write Progress",
         readOnlyHint: false,
@@ -400,18 +437,20 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const text = await handleWriteProgress(progressPath, args, docsDir, ledgerPath)
-      return { content: [{ type: "text" as const, text }] }
+      return textResult(text)
     }
   )
 
   server.registerTool(
     "write_journal",
     {
+      title: "Write Journal",
       description: "Writes to the Foreman session journal. Operations: init_session — start session with env; log_event — append operational event; end_session — finalize with summary.",
-      inputSchema: {
+      inputSchema: z.strictObject({
         operation: z.enum(["init_session", "log_event", "end_session"]),
-        data: z.record(z.unknown()),
-      },
+        data: z.record(z.string(), z.unknown()),
+      }),
+      outputSchema: TextOutputSchema,
       annotations: {
         title: "Write Journal",
         readOnlyHint: false,
@@ -422,13 +461,13 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       const input = { operation: args.operation, data: args.data } as any
       if (args.operation === "init_session") {
         const journal = await initSession(journalPath, input)
-        return { content: [{ type: "text" as const, text: JSON.stringify({ ok: true, session_id: journal.sessions[journal.sessions.length - 1].id }) }] }
+        return textResult(JSON.stringify({ ok: true, session_id: journal.sessions[journal.sessions.length - 1].id }))
       } else if (args.operation === "log_event") {
         const result = await logEvent(journalPath, input)
-        return { content: [{ type: "text" as const, text: result }] }
+        return textResult(result)
       } else {
         const journal = await endSession(journalPath, input)
-        return { content: [{ type: "text" as const, text: JSON.stringify({ ok: true, sessions: journal.sessions.length, rollup: !!journal.rollup }) }] }
+        return textResult(JSON.stringify({ ok: true, sessions: journal.sessions.length, rollup: !!journal.rollup }))
       }
     }
   )
@@ -436,8 +475,10 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   server.registerTool(
     "normalize_review",
     {
+      title: "Normalize Review",
       description: "Normalizes raw review text into structured findings.",
-      inputSchema: NormalizeReviewInputSchema.shape,
+      inputSchema: NormalizeReviewInputSchema,
+      outputSchema: TextOutputSchema,
       annotations: {
         title: "Normalize Review",
         readOnlyHint: true,
@@ -446,16 +487,18 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const { text } = normalizeReview(args.reviewer, args.raw_text)
-      return { content: [{ type: "text" as const, text }] }
+      return textResult(text)
     }
   )
 
   server.registerTool(
     "verify_citations",
     {
+      title: "Verify Citations",
       description:
         "Verifies that evidence citations reference real files and that any verbatim anchor appears at or near the cited line. Reports location and presence only (CONFIRMED/DRIFTED/MISSING/UNANCHORED/...); does not judge whether the line supports the claim. Reads files under repo_root; deterministic and read-only.",
-      inputSchema: VerifyCitationsInputSchema.shape,
+      inputSchema: VerifyCitationsInputSchema,
+      outputSchema: TextOutputSchema,
       annotations: {
         title: "Verify Citations",
         readOnlyHint: true,
@@ -464,20 +507,22 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const { text } = await verifyCitations(args)
-      return { content: [{ type: "text" as const, text }] }
+      return textResult(text)
     }
   )
 
   server.registerTool(
     "run_tests",
     {
+      title: "Run Tests",
       description: "Runs a test command with bounded output. Runner must be in allowlist (npm, pytest, go, cargo, dotnet, make). Use instead of Bash for test execution.",
-      inputSchema: {
+      inputSchema: z.strictObject({
         runner: z.string().min(1).max(50),
         args: z.array(z.string().max(10000)).max(100).default([]),
         timeout_ms: z.number().min(1).max(600000).optional(),
         max_output_chars: z.number().min(1).max(50000).optional(),
-      },
+      }),
+      outputSchema: TextOutputSchema,
       annotations: {
         title: "Run Tests",
         readOnlyHint: false,
@@ -486,14 +531,17 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const text = maybeCompress("run_tests", await runTests(args.runner, args.args, args.timeout_ms, args.max_output_chars))
-      return { content: [{ type: "text" as const, text }] }
+      return textResult(text)
     }
   )
 
   server.registerTool(
     "session_orient",
     {
+      title: "Session Orient",
       description: "Returns current Foreman session state: current phase, unit, next pending, blocked status. Call at session start for orientation.",
+      inputSchema: z.strictObject({}),
+      outputSchema: TextOutputSchema,
       annotations: {
         title: "Session Orient",
         readOnlyHint: true,
@@ -502,7 +550,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (_extra) => {
       const text = await sessionOrient(ledgerPath, progressPath, host)
-      return { content: [{ type: "text" as const, text }] }
+      return textResult(text)
     }
   )
 
@@ -514,10 +562,12 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     server.registerTool(
       tool.name,
       {
+        title: "Retrieve Original Output",
         description: tool.description + " Use this whenever a compressed result (it carries a <<ccr:HASH>> marker) may be missing detail you need — e.g. a failed advisor or test call whose summary looks insufficient.",
-        inputSchema: {
+        inputSchema: z.strictObject({
           hash: z.string().regex(/^[0-9a-f]{24}$/).describe("The 24 lowercase hex characters from a <<ccr:HASH>> marker."),
-        },
+        }),
+        outputSchema: TextOutputSchema,
         annotations: {
           title: "Retrieve Original Output",
           readOnlyHint: true,
@@ -527,18 +577,18 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       async (args, _extra) => {
         const result = tool.handler({ hash: args.hash })
         if ("original" in result) {
-          return { content: [{ type: "text" as const, text: result.original }] }
+          return textResult(result.original)
         }
         // Expired-but-known marker: the store dropped the entry (and its stashed toolName),
         // but the Foreman-side map still knows which tool produced it — name the recovery.
         const originTool = toolNameForHash(args.hash)
         if (originTool !== undefined) {
-          return {
-            content: [{ type: "text" as const, text: JSON.stringify({ error: "ccr_missing_or_expired", hint: `expired — re-run ${originTool} to regenerate the output` }) }],
-            isError: true,
-          }
+          return textResult(
+            JSON.stringify({ error: "ccr_missing_or_expired", hint: `expired — re-run ${originTool} to regenerate the output` }),
+            true
+          )
         }
-        return { content: [{ type: "text" as const, text: JSON.stringify(result) }], isError: true }
+        return textResult(JSON.stringify(result), true)
       }
     )
   }
@@ -548,6 +598,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     server.registerTool(
       "codex_agents_init",
       {
+        title: "Init Codex Agent Roles",
         description: [
           "Writes Codex custom-agent role definitions into the project (.codex/agents/*.toml)",
           "and creates .codex/config.toml with [agents] max_threads/max_depth only when that file is absent.",
@@ -555,20 +606,21 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
           "explorer/worker TOMLs override Codex built-in roles of those names to pin sandbox_mode.",
           "Model pins are optional — omit to let Codex choose. Call once per project before parallel fan-out.",
         ].join(" "),
-        inputSchema: {
+        inputSchema: z.strictObject({
           project_dir: z.string().min(1).optional().describe("Project root (default: process.cwd())"),
           max_threads: z.number().int().min(1).max(12).optional().describe("Concurrent agent threads (default 6)"),
           max_depth: z.number().int().min(1).max(3).optional().describe("Nesting depth (default 1; >1 warns)"),
           roles: z.array(z.enum(CODEX_AGENT_ROLES)).min(1).optional().describe("Roles to write (default: explorer, worker)"),
           overwrite: z.boolean().optional().describe("Overwrite existing role TOMLs (default false). Never overwrites config.toml."),
           models: z
-            .object({
+            .strictObject({
               explorer: z.string().min(1).optional(),
               worker: z.string().min(1).optional(),
             })
             .optional()
             .describe("Optional per-role model pins; omit to let Codex choose"),
-        },
+        }),
+        outputSchema: TextOutputSchema,
         annotations: {
           title: "Init Codex Agent Roles",
           readOnlyHint: false,
@@ -578,7 +630,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       async (args, _extra) => {
         const text = await codexAgentsInit(args)
         const isError = text.includes("status: error")
-        return { content: [{ type: "text" as const, text }], isError }
+        return textResult(text, isError)
       }
     )
   }
@@ -600,6 +652,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   server.registerTool(
     "pitboss_implementor",
     {
+      title: "Pitboss Implementor Protocol",
       description: [
         "Activates the Foreman pitboss-implementor protocol.",
         "Use for larger multi-phase implementation from prepared specs, especially",
@@ -612,9 +665,10 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "The LLM MUST follow the returned instructions to orchestrate implementation.",
         "Pass optional context to indicate resume state or handoff path.",
       ].join(" "),
-      inputSchema: {
+      inputSchema: z.strictObject({
         context: z.string().max(10000).optional(),
-      },
+      }),
+      outputSchema: TextOutputSchema,
       annotations: {
         title: "Pitboss Implementor Protocol",
         readOnlyHint: true,
@@ -623,13 +677,14 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const text = await activateImplementor(skillsDir, args.context, host)
-      return { content: [{ type: "text" as const, text }] }
+      return textResult(text)
     }
   )
 
   server.registerTool(
     "design_partner",
     {
+      title: "Design Partner Protocol",
       description: [
         "Activates the Foreman design-partner protocol.",
         "Collaborative engineering design session that pushes back on vague requirements,",
@@ -638,9 +693,10 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "The LLM MUST follow the returned instructions to run the design session.",
         "Pass optional context to describe the project or problem being designed.",
       ].join(" "),
-      inputSchema: {
+      inputSchema: z.strictObject({
         context: z.string().max(10000).optional(),
-      },
+      }),
+      outputSchema: TextOutputSchema,
       annotations: {
         title: "Design Partner Protocol",
         readOnlyHint: true,
@@ -649,13 +705,14 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const text = await activateDesignPartner(skillsDir, args.context, host)
-      return { content: [{ type: "text" as const, text }] }
+      return textResult(text)
     }
   )
 
   server.registerTool(
     "spec_generator",
     {
+      title: "Spec Generator Protocol",
       description: [
         "Activates the Foreman spec-generator protocol.",
         "Transforms a design summary into formal implementation documents:",
@@ -664,9 +721,10 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "The LLM MUST follow the returned instructions to generate spec documents.",
         "Pass optional context to indicate the design summary source.",
       ].join(" "),
-      inputSchema: {
+      inputSchema: z.strictObject({
         context: z.string().max(10000).optional(),
-      },
+      }),
+      outputSchema: TextOutputSchema,
       annotations: {
         title: "Spec Generator Protocol",
         readOnlyHint: true,
@@ -675,13 +733,14 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const text = await activateSpecGenerator(skillsDir, args.context, host)
-      return { content: [{ type: "text" as const, text }] }
+      return textResult(text)
     }
   )
 
   server.registerTool(
     "lighttask",
     {
+      title: "Lighttask Protocol",
       description: [
         "Activates the Foreman lighttask protocol.",
         "Default for small surgical work where classic Foreman is enough; avoid for",
@@ -694,9 +753,10 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "The LLM MUST follow the returned instructions to run the lighttask session.",
         "Pass optional context to describe the task or target repo.",
       ].join(" "),
-      inputSchema: {
+      inputSchema: z.strictObject({
         context: z.string().max(10000).optional(),
-      },
+      }),
+      outputSchema: TextOutputSchema,
       annotations: {
         title: "Lighttask Protocol",
         readOnlyHint: true,
@@ -705,13 +765,14 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const text = await activateLighttask(skillsDir, args.context, host)
-      return { content: [{ type: "text" as const, text }] }
+      return textResult(text)
     }
   )
 
   server.registerTool(
     "spec_man",
     {
+      title: "Spec-Man Protocol",
       description: [
         "Activates the Foreman spec-man protocol.",
         "Produces focused intended-behavior specs and machine specs from user intent,",
@@ -722,9 +783,10 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "The LLM MUST follow the returned instructions to generate grounded specs.",
         "Pass optional context to describe the feature, subsystem, or source material.",
       ].join(" "),
-      inputSchema: {
+      inputSchema: z.strictObject({
         context: z.string().max(10000).optional(),
-      },
+      }),
+      outputSchema: TextOutputSchema,
       annotations: {
         title: "Spec-Man Protocol",
         readOnlyHint: true,
@@ -733,13 +795,14 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const text = await activateSpecMan(skillsDir, args.context, host)
-      return { content: [{ type: "text" as const, text }] }
+      return textResult(text)
     }
   )
 
   server.registerTool(
     "doc_man",
     {
+      title: "Doc-Man Protocol",
       description: [
         "Activates the Foreman doc-man protocol.",
         "Generates focused technical documentation from spec-man output,",
@@ -748,9 +811,10 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "The LLM MUST follow the returned instructions to generate grounded documentation.",
         "Pass optional context to describe the document target or style needs.",
       ].join(" "),
-      inputSchema: {
+      inputSchema: z.strictObject({
         context: z.string().max(10000).optional(),
-      },
+      }),
+      outputSchema: TextOutputSchema,
       annotations: {
         title: "Doc-Man Protocol",
         readOnlyHint: true,
@@ -759,13 +823,14 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const text = await activateDocMan(skillsDir, args.context, host)
-      return { content: [{ type: "text" as const, text }] }
+      return textResult(text)
     }
   )
 
   server.registerTool(
     "preview_diagram",
     {
+      title: "Preview Diagram",
       description: [
         "Render a Mermaid diagram into a LIVE, auto-refreshing browser preview the user can watch.",
         "Writes the source to Docs/diagrams/<id>.mmd (the versioned artifact) and serves it on a",
@@ -777,7 +842,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "Pass source to create/replace the diagram; omit source to re-open an existing one.",
         "Note: architecture-beta and mindmap are not supported under the strict render policy.",
       ].join(" "),
-      inputSchema: {
+      inputSchema: z.strictObject({
         source: z.string().min(1).max(50000).optional(),
         id: z
           .string()
@@ -786,7 +851,8 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         title: z.string().max(120).optional(),
         theme: z.enum(["default", "neutral", "dark", "forest", "base"]).optional(),
         open: z.boolean().optional(),
-      },
+      }),
+      outputSchema: TextOutputSchema,
       annotations: {
         title: "Preview Diagram",
         readOnlyHint: false,
@@ -795,10 +861,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const result = await previewDiagram(args, docsDir)
-      return {
-        content: [{ type: "text" as const, text: result.text }],
-        ...(result.isError ? { isError: true } : {}),
-      }
+      return textResult(result.text, result.isError)
     }
   )
 
@@ -887,13 +950,13 @@ async function runDiag(): Promise<void> {
       "..",
       "node_modules",
       "@modelcontextprotocol",
-      "sdk",
+      "server",
       "package.json"
     )
     const sdkPkg = JSON.parse(await fs.readFile(sdkPkgPath, "utf-8"))
-    log("sdk version", sdkPkg.version)
+    log("server SDK version", sdkPkg.version)
   } catch {
-    log("sdk version", "UNKNOWN (could not read sdk package.json)")
+    log("server SDK version", "UNKNOWN (could not read server package.json)")
   }
 
   // Skills directory
@@ -1020,35 +1083,35 @@ if (isMain) {
   } else {
     // Non-TTY stdin — MCP client is connecting, start the server
     console.error(`[foreman] starting MCP server (host=${host})`)
-    createServer({ host }).then(async (server) => {
-      const transport = new StdioServerTransport()
-
-      // Graceful shutdown. The preview_diagram tool may start a loopback HTTP
-      // listener (a ref'd handle) that would otherwise keep this process alive
-      // after the MCP client disconnects. Tear it down on stdin EOF / signals so
-      // the process exits and the port is released. No-op if no preview started.
-      let shuttingDown = false
-      const shutdown = async (): Promise<void> => {
-        if (shuttingDown) return
-        shuttingDown = true
-        try {
-          await closeDiagramServer()
-        } catch {
-          /* ignore */
-        }
-        try {
-          await server.close()
-        } catch {
-          /* ignore */
-        }
-        process.exit(0)
-      }
-      process.stdin.on("end", shutdown)
-      process.stdin.on("close", shutdown)
-      process.on("SIGINT", shutdown)
-      process.on("SIGTERM", shutdown)
-
-      await server.connect(transport)
+    // serveStdio negotiates both the legacy 2025 initialize handshake and the
+    // modern 2026-07-28 server/discover era, pinning one server per connection.
+    const stdio = serveStdio(() => createServer({ host }), {
+      onerror: (error) => console.error(`[foreman] MCP stdio error: ${error.message}`),
     })
+
+    // Graceful shutdown. The preview_diagram tool may start a loopback HTTP
+    // listener (a ref'd handle) that would otherwise keep this process alive
+    // after the MCP client disconnects. Tear it down on stdin EOF / signals so
+    // the process exits and the port is released. No-op if no preview started.
+    let shuttingDown = false
+    const shutdown = async (): Promise<void> => {
+      if (shuttingDown) return
+      shuttingDown = true
+      try {
+        await closeDiagramServer()
+      } catch {
+        /* ignore */
+      }
+      try {
+        await stdio.close()
+      } catch {
+        /* ignore */
+      }
+      process.exit(0)
+    }
+    process.stdin.on("end", shutdown)
+    process.stdin.on("close", shutdown)
+    process.on("SIGINT", shutdown)
+    process.on("SIGTERM", shutdown)
   }
 }

@@ -1,8 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
-import { Client } from "@modelcontextprotocol/sdk/client/index.js"
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
+import { Client } from "@modelcontextprotocol/client"
+import { InMemoryTransport, type McpServer } from "@modelcontextprotocol/server"
 import { createServer } from "../src/server.js"
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 import { hostStatus } from "../src/tools/hostStatus.js"
 
 describe("hostStatus — direct unit", () => {

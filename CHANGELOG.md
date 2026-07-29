@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+## 0.5.11 - 2026-07-28
+
+- Migrated from the monolithic MCP TypeScript SDK v1 package to the stable split v2 packages (`@modelcontextprotocol/server` for runtime and `@modelcontextprotocol/client` for tests).
+- Upgraded to Zod 4 Standard Schema objects for every tool registration and enabled stdio negotiation for both legacy MCP clients and the 2026-07-28 protocol era.
+- Made every tool input contract strict (`additionalProperties: false`), promoted display titles to v2 top-level metadata, and added validated scalar output schemas plus `structuredContent` while retaining the existing text content for clients.
+- Added wire-level regression coverage for modern negotiation, legacy fallback and scalar-output projection, invalid arguments, unknown tools, and split-package diagnostics.
+- Fixed `--diag` to report the installed `@modelcontextprotocol/server` version instead of probing the removed v1 package.
+- Kept release tarballs offline-installable by bundling the v2 server package and its runtime dependencies.
+- Excluded the workspace-local `.tmp/` npm cache from release tarballs after package-content inspection caught it in the candidate archive.
+- Documented the evidence-backed lean-runtime boundary: Foreman composes installed host tools; `aider_worker` uses isolated Git worktrees without executing `git stash`; host-native isolation remains host-enforced and makes no user-edit recovery guarantee.
+- Bumped package to `0.5.11`.
+
 ## 0.5.10 - 2026-07-13
 
 - Codex advisor reviews now run `gpt-5.6-sol` at `xhigh` reasoning effort (was `ultra`); regression coverage updated.

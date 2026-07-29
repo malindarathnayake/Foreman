@@ -38,7 +38,7 @@ intent / existing repository
 
 Foreman is not another general-purpose agent framework, and it does not replace your coding host, repository tools, or CI. It controls the development lifecycle across them.
 
-**Current release:** `v0.5.10` | **Package:** `@malindarathnayake/foreman-mcp` | **Runtime:** Node.js `>=22` | **License:** Apache-2.0
+**Current release:** `v0.5.11` | **Package:** `@malindarathnayake/foreman-mcp` | **Runtime:** Node.js `>=22` | **License:** Apache-2.0
 
 **Quickstart:** [Install](#install) → [Configure an MCP host](#configure-an-mcp-host) → [Start a project](#start-a-project). Already installed? Point your MCP host at `foreman-mcp` with the right `--host` flag and call `session_orient`.
 
@@ -71,6 +71,14 @@ Model vendors are building in the opposite direction — memory features and per
 ### Auditable down to the bottom
 
 A harness whose product is trust must itself be inspectable. All of Foreman's state — ledger, progress, journal, events — is JSON and Markdown inside your repository: you can `git diff` a verdict, grep the session history, and read every protocol as plain bundled Markdown. There is no web console, no dashboard, and no service between you and your project's record. The enforcement layer itself is small TypeScript with two production dependencies, readable in an afternoon. Nothing about how "done" was reached is stored anywhere you cannot open in an editor.
+
+### Lean by composing the host
+
+Foreman does not bundle a second version-control system, shell, compiler, or provider runtime. It composes the tools already available in the development environment: the host's native agent/worker primitives; installed Claude, Codex, Gemini, or Aider CLIs when configured; allowlisted repository test runners; and Git for base-commit capture, tracked-file cleanliness checks, detached worker worktrees, bounded diffs, and cleanup. That keeps Foreman focused on coordination, evidence, and gates instead of duplicating mature execution engines.
+
+The `aider_worker` path does **not** execute `git stash`. It records base-file hashes, refuses untracked or dirty delegated files before creating an isolated detached worktree, captures only the bounded worker diff, and tears the worktree down after validation. Current refusal messages may tell the operator to commit or stash the affected files, but that remains an operator-controlled Git action. Crash recovery can reclaim Foreman-named orphan worktrees and prune Git metadata; neither mechanism is advertised as a backup or as a guarantee that arbitrary user edits can be restored. Keep normal commits and backups for that job.
+
+Host-native workers have a different boundary: the host, not the MCP server, enforces their filesystem isolation. Foreman's host contract requires a worktree per concurrent seat, forbids crossing seats through a shared mutable tree, and requires dirty state to be preserved. Foreman does not intercept a host agent's Git commands, but its independent validation is designed to detect resulting state loss: the pitboss re-reads actual files, compares them with the specification, and searches the full test suite for changed symbols instead of trusting the worker or a green exit code. Detection is after the fact, not automatic restoration. If a host cannot honor isolation, serialize workers.
 
 ## Forged in real development
 
@@ -481,6 +489,8 @@ Unsupported capabilities are reported by `host_status` and `session_orient` with
 
 The default server exposes 26 MCP tools. `retrieve_original` is omitted when output compression is disabled, reducing the live surface to 25. Codex mode adds `codex_agents_init`, raising its surface to 27.
 
+On MCP SDK v2, every tool advertises a top-level display title, a strict JSON Schema 2020-12 input contract, and a validated scalar output schema. Results retain their existing text content and also provide `structuredContent`; the SDK projects scalar output into the legacy object envelope automatically for 2025-era clients.
+
 **Protocol activation:** `design_partner`, `spec_generator`, `pitboss_implementor`, `lighttask`, `spec_man`, `doc_man`
 
 **State and metadata:** `session_orient`, `read_ledger`, `write_ledger`, `read_progress`, `write_progress`, `read_journal`, `write_journal`, `bundle_status`, `host_status`, `changelog`, `ethos`
@@ -517,9 +527,9 @@ Network and process boundaries are explicit:
 
 ```text
 TypeScript ESM
-@modelcontextprotocol/sdk
-Zod validation
-stdio transport
+@modelcontextprotocol/server v2
+Zod 4 Standard Schema validation
+stdio transport with legacy + 2026-07-28 protocol negotiation
 2 external production dependencies + 1 bundled first-party compression package
 ```
 

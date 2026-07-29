@@ -4,6 +4,7 @@ tsconfig.json
 vitest.config.ts
 node_modules/
 .npm-cache/
+.tmp/
 .github/
 _DOJO/
 __pycache__/

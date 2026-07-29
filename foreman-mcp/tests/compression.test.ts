@@ -6,8 +6,8 @@ vi.mock("../src/tools/invokeAdvisor.js", async (importOriginal) => ({
 }))
 
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
-import { Client } from "@modelcontextprotocol/sdk/client/index.js"
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
+import { Client } from "@modelcontextprotocol/client"
+import { InMemoryTransport, type McpServer } from "@modelcontextprotocol/server"
 import { createServer } from "../src/server.js"
 import { runTests } from "../src/tools/runTests.js"
 import { invokeAdvisor } from "../src/tools/invokeAdvisor.js"
@@ -16,8 +16,6 @@ import { dedupeMetaHead, lossyGuardsReject, getStore, ccrTtlSeconds, maybeCompre
 // Real run_tests compression of the multi-thousand-line SYNTHETIC_LOG takes a few seconds;
 // give this suite ample headroom over vitest's 5s default so it never flakes under CI/host load.
 vi.setConfig({ testTimeout: 30000 })
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
-
 // ---------------------------------------------------------------------------
 // Synthetic pytest-style failing log — fully deterministic, NO Date.now,
 // NO randomness. Must be ≥5000 lines and far exceed 2048 bytes.

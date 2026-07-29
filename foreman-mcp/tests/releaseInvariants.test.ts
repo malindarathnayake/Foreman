@@ -1,9 +1,8 @@
 import { describe, it, expect, afterEach } from "vitest"
 import fs from "fs/promises"
-import { Client } from "@modelcontextprotocol/sdk/client/index.js"
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
+import { Client } from "@modelcontextprotocol/client"
+import { InMemoryTransport, type McpServer } from "@modelcontextprotocol/server"
 import { createServer } from "../src/server.js"
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 
 // The smoke script is the single owner of the expected-tool list (1g); this
 // invariant makes drift between that list and the live registry a test failure.

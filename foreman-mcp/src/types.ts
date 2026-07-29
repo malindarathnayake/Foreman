@@ -189,7 +189,7 @@ export const ReadLedgerInputSchema = z.object({
 
 export type ReadLedgerInput = z.infer<typeof ReadLedgerInputSchema>
 
-export const NormalizeReviewInputSchema = z.object({
+export const NormalizeReviewInputSchema = z.strictObject({
   reviewer: z.string().max(200),
   raw_text: z.string().max(50000),
 })
@@ -197,7 +197,7 @@ export type NormalizeReviewInput = z.infer<typeof NormalizeReviewInputSchema>
 
 // ─── Verify Citations Types ──────────────────────────────────────────────────
 
-export const VerifyCitationsInputSchema = z.object({
+export const VerifyCitationsInputSchema = z.strictObject({
   spec_text: z.string().max(500000).optional(),
   spec_path: z.string().max(4096).optional(),
   source_format: z.enum(["markdown", "machine_json", "auto"]).default("auto"),

@@ -2,10 +2,9 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
-import { Client } from "@modelcontextprotocol/sdk/client/index.js"
-import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js"
+import { Client } from "@modelcontextprotocol/client"
+import { InMemoryTransport, type McpServer } from "@modelcontextprotocol/server"
 import { createServer } from "../src/server.js"
-import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js"
 
 let server: McpServer
 let client: Client
