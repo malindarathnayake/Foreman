@@ -11,6 +11,9 @@ Docs/
 !docs/
 docs/*
 !docs/compression-benchmarks.md
+!docs/0.5.11/
+docs/0.5.11/*
+!docs/0.5.11/DesignConcept.md
 
 # Local experiment workspace. Keep only the folder marker in git so review
 # tooling does not scan synthetic target applications or generated outputs.
