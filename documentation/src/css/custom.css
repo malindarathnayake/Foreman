@@ -1,0 +1,56 @@
+/**
+ * Foreman documentation theme.
+ *
+ * The palette is deliberately restrained: this is a harness whose product is
+ * trust and auditability, so the docs read closer to a specification than to a
+ * marketing site.
+ */
+
+:root {
+  --ifm-color-primary: #b45309;
+  --ifm-color-primary-dark: #a24b08;
+  --ifm-color-primary-darker: #994708;
+  --ifm-color-primary-darkest: #7e3a06;
+  --ifm-color-primary-light: #c6610a;
+  --ifm-color-primary-lighter: #cf650a;
+  --ifm-color-primary-lightest: #e5761a;
+
+  --ifm-code-font-size: 92%;
+  --ifm-font-family-monospace: ui-monospace, SFMono-Regular, 'SF Mono', Menlo,
+    Consolas, 'Liberation Mono', monospace;
+  --docusaurus-highlighted-code-line-bg: rgba(0, 0, 0, 0.08);
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #f0a35a;
+  --ifm-color-primary-dark: #ed9440;
+  --ifm-color-primary-darker: #eb8c32;
+  --ifm-color-primary-darkest: #d6720f;
+  --ifm-color-primary-light: #f3b274;
+  --ifm-color-primary-lighter: #f4ba82;
+  --ifm-color-primary-lightest: #f8d2ab;
+
+  --docusaurus-highlighted-code-line-bg: rgba(255, 255, 255, 0.1);
+}
+
+/* Tables carry a lot of the load in these docs (seat responsibilities, host
+   compatibility, protocol selection). Give them room to breathe. */
+.markdown table {
+  display: table;
+  width: 100%;
+}
+
+.markdown table th,
+.markdown table td {
+  vertical-align: top;
+}
+
+/* The lifecycle and refusal blocks are plain-text diagrams; keep them compact
+   so they read as a single figure rather than a wall of code. */
+.markdown pre code {
+  line-height: 1.45;
+}
+
+.navbar__logo img {
+  border-radius: 4px;
+}
