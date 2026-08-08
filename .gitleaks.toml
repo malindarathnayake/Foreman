@@ -39,6 +39,16 @@ regexes = [
   # tests/foremanEnv.test.ts — OPENROUTER_API_KEY fixture for the worker_kind axis
   # tests. Deterministic fake; never a live credential.
   '''fixture_key_hard001''',
+  # tests/invokeCouncil.test.ts — planted secret for the council outbound
+  # secret-gate test. sk_ prefix is deliberate (must LOOK like a key to exercise
+  # the gate); sequential counter suffix makes it self-evidently fake.
+  '''sk_council_secret_0001''',
+  # tests/invokeCouncil.test.ts — FOREMAN_API_KEY fixture for the council
+  # payload-ceiling test. Deterministic fake, counter-suffixed.
+  '''council_ceiling_key01''',
+  # tests/councilConfig.test.ts — COUNCIL_TEST_KEY fixture for the seat-config
+  # resolution tests (repo vs home store). Deterministic fake, counter-suffixed.
+  '''council_test_key_00001''',
 ]
 paths = [
   # dojo experiment ledger snapshots: base_file_hashes entries are sha256 content
