@@ -1001,6 +1001,28 @@ describe("JournalEventCode — v0.5.0 codes", () => {
 })
 
 describe("WriteJournalInputSchema — init_session agent_class/worker_class (R8)", () => {
+  it("accepts a canonical string phase id", () => {
+    const result = WriteJournalInputSchema.safeParse({
+      operation: "init_session",
+      data: {
+        target_version: "2.0",
+        branch: "feature/okta-migration",
+        phase: "V20-P0",
+        units: ["U0.18"],
+        env: {
+          agent: "claude",
+          worker: "claude",
+          codex: null,
+          gemini: null,
+        },
+      },
+    })
+    expect(result.success).toBe(true)
+    if (result.success && result.data.operation === "init_session") {
+      expect(result.data.data.phase).toBe("V20-P0")
+    }
+  })
+
   it("accepts env with agent_class and worker_class", () => {
     const result = WriteJournalInputSchema.safeParse({
       operation: "init_session",
@@ -1420,5 +1442,156 @@ describe("handleWriteLedger — P5 discipline-adherence gate (default-on)", () =
     expect(ledger.phases.p1.discipline_overrides).toEqual([
       { discipline_override: true, unit_id: "u1", delegation_id: "del1" },
     ])
+  })
+})
+
+// ─── declare_phase_units (field-feedback fix #1) ──────────────────────────────
+
+describe("declare_phase_units", () => {
+  async function passUnit(phase: string, unitId: string): Promise<void> {
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase,
+      unit_id: unitId,
+      data: { s: "delegated", brief: "Worker brief long enough for the delegation gate" },
+    })
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase,
+      unit_id: unitId,
+      data: { v: "pass" },
+    })
+  }
+
+  it("union-merges, dedupes, and sorts; idempotent re-declare", async () => {
+    await handleWriteLedger(ledgerPath, {
+      operation: "declare_phase_units", phase: "p1", data: { units: ["u2", "u1"] },
+    })
+    await handleWriteLedger(ledgerPath, {
+      operation: "declare_phase_units", phase: "p1", data: { units: ["u1", "u3"] },
+    })
+    const phase = (await readLedger(ledgerPath)).phases.p1
+    expect(phase.declared_units).toEqual(["u1", "u2", "u3"])
+  })
+
+  it("requires units and/or retire", async () => {
+    await expect(
+      handleWriteLedger(ledgerPath, { operation: "declare_phase_units", phase: "p1", data: {} })
+    ).rejects.toThrow("DECLARE REQUIRED")
+  })
+
+  it("rejects ids containing commas or newlines at the Zod boundary", async () => {
+    await expect(
+      handleWriteLedger(ledgerPath, {
+        operation: "declare_phase_units", phase: "p1", data: { units: ["u1,u2"] },
+      })
+    ).rejects.toThrow()
+    await expect(
+      handleWriteLedger(ledgerPath, {
+        operation: "declare_phase_units", phase: "p1", data: { units: ["u1\nu2"] },
+      })
+    ).rejects.toThrow()
+  })
+
+  it("caps the merged declared set at 200", async () => {
+    const first = Array.from({ length: 200 }, (_, i) => `u${String(i).padStart(3, "0")}`)
+    await handleWriteLedger(ledgerPath, {
+      operation: "declare_phase_units", phase: "p1", data: { units: first },
+    })
+    await expect(
+      handleWriteLedger(ledgerPath, {
+        operation: "declare_phase_units", phase: "p1", data: { units: ["u200-extra"] },
+      })
+    ).rejects.toThrow("DECLARE CAP")
+  })
+
+  it("is blocked while the phase gate is 'pass'", async () => {
+    await passUnit("p1", "u1")
+    await handleWriteLedger(ledgerPath, {
+      operation: "update_phase_gate", phase: "p1", data: { g: "pass" },
+    })
+    await expect(
+      handleWriteLedger(ledgerPath, {
+        operation: "declare_phase_units", phase: "p1", data: { units: ["u2"] },
+      })
+    ).rejects.toThrow("DECLARE BLOCKED")
+  })
+
+  it("retire requires a reason, refuses registered ids and unknown ids, tombstones the rest", async () => {
+    await handleWriteLedger(ledgerPath, {
+      operation: "declare_phase_units", phase: "p1", data: { units: ["u1", "u2x"] },
+    })
+    await handleWriteLedger(ledgerPath, {
+      operation: "set_unit_status", phase: "p1", unit_id: "u1", data: { s: "ip" },
+    })
+    await expect(
+      handleWriteLedger(ledgerPath, {
+        operation: "declare_phase_units", phase: "p1", data: { retire: ["u2x"] },
+      })
+    ).rejects.toThrow("RETIRE REQUIRES REASON")
+    await expect(
+      handleWriteLedger(ledgerPath, {
+        operation: "declare_phase_units", phase: "p1",
+        data: { retire: ["u1"], reason: "typo cleanup after handoff rename" },
+      })
+    ).rejects.toThrow("registered units, not declarations")
+    await expect(
+      handleWriteLedger(ledgerPath, {
+        operation: "declare_phase_units", phase: "p1",
+        data: { retire: ["never-declared"], reason: "typo cleanup after handoff rename" },
+      })
+    ).rejects.toThrow("not in the declared set")
+    await handleWriteLedger(ledgerPath, {
+      operation: "declare_phase_units", phase: "p1",
+      data: { retire: ["u2x"], reason: "typo: intended id was u2, seeded separately" },
+    })
+    const phase = (await readLedger(ledgerPath)).phases.p1
+    expect(phase.declared_units).toEqual(["u1"])
+    expect(phase.declared_log).toHaveLength(1)
+    expect(phase.declared_log![0].retired).toEqual(["u2x"])
+    expect(phase.declared_log![0].reason).toContain("typo")
+  })
+
+  it("retiring the last declared id returns the phase to legacy semantics", async () => {
+    await handleWriteLedger(ledgerPath, {
+      operation: "declare_phase_units", phase: "p1", data: { units: ["u9x"] },
+    })
+    await handleWriteLedger(ledgerPath, {
+      operation: "declare_phase_units", phase: "p1",
+      data: { retire: ["u9x"], reason: "declared set was speculative; phase re-scoped" },
+    })
+    const phase = (await readLedger(ledgerPath)).phases.p1
+    expect(phase.declared_units).toBeUndefined()
+    expect(phase.declared_log).toHaveLength(1)
+  })
+
+  it("gate pass is blocked while declared ids are unregistered, then passes once seeded", async () => {
+    await handleWriteLedger(ledgerPath, {
+      operation: "declare_phase_units", phase: "p1", data: { units: ["u1", "u2"] },
+    })
+    await passUnit("p1", "u1")
+    await expect(
+      handleWriteLedger(ledgerPath, {
+        operation: "update_phase_gate", phase: "p1", data: { g: "pass" },
+      })
+    ).rejects.toThrow(/declares units never registered.*u2/)
+    await passUnit("p1", "u2")
+    await handleWriteLedger(ledgerPath, {
+      operation: "update_phase_gate", phase: "p1", data: { g: "pass" },
+    })
+    expect((await readLedger(ledgerPath)).phases.p1.g).toBe("pass")
+  })
+
+  it("gate error lists the first 10 missing ids plus a remainder count", async () => {
+    const ids = Array.from({ length: 12 }, (_, i) => `m${String(i).padStart(2, "0")}`)
+    await handleWriteLedger(ledgerPath, {
+      operation: "declare_phase_units", phase: "p1", data: { units: ids },
+    })
+    await passUnit("p1", "u-registered")
+    await expect(
+      handleWriteLedger(ledgerPath, {
+        operation: "update_phase_gate", phase: "p1", data: { g: "pass" },
+      })
+    ).rejects.toThrow(/m09.*\(\+2 more\)/s)
   })
 })

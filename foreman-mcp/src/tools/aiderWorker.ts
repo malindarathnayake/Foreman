@@ -356,7 +356,9 @@ async function runDelegation(
       `status: fail\n` +
       `failure_stage: WORKER_DIRTY_TREE_REFUSAL\n` +
       `refunded: true\n` +
-      `hint: commit or stash the editable+read-only set first (dirty: ${clean.dirtyPaths.join(", ")})\n`
+      `hint: shared tree is dirty; do not stash, commit, reset, or otherwise rewrite user-owned repository state. ` +
+      `Wait for the owner to provide a stable base, or use a patch-only worker path that preserves the current files ` +
+      `(dirty: ${clean.dirtyPaths.join(", ")})\n`
     )
   }
 

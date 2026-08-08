@@ -1,5 +1,5 @@
 import { describe, test, expect, beforeAll, afterAll } from 'vitest'
-import { runTests, DEFAULT_ALLOWED_RUNNERS, planFromCandidates } from '../src/tools/runTests.js'
+import { runTests, DEFAULT_ALLOWED_RUNNERS, planFromCandidates, planGradleWrapper } from '../src/tools/runTests.js'
 
 describe('runTests', () => {
   describe('runner spawn plans', () => {
@@ -55,6 +55,46 @@ describe('runTests', () => {
       })
     })
 
+    test('runs a Windows Gradle wrapper through java without cmd.exe', () => {
+      const root = 'C:\\repo'
+      const wrapper = 'C:\\repo\\gradlew.bat'
+      const jar = 'C:\\repo\\gradle\\wrapper\\gradle-wrapper.jar'
+      const java = 'C:\\Java\\bin\\java.exe'
+      const existing = new Set([wrapper, jar, java])
+
+      const result = planGradleWrapper(root, 'win32', (candidate) => existing.has(candidate), [java])
+
+      expect(result).toEqual({
+        ok: true,
+        plan: {
+          command: java,
+          args: [
+            '-Dorg.gradle.appname=gradlew',
+            '-classpath',
+            jar,
+            'org.gradle.wrapper.GradleWrapperMain',
+          ],
+        },
+      })
+    })
+
+    test('rejects an incomplete Windows Gradle wrapper instead of invoking its batch file', () => {
+      const root = 'C:\\repo'
+      const wrapper = 'C:\\repo\\gradlew.bat'
+
+      const result = planGradleWrapper(root, 'win32', (candidate) => candidate === wrapper, [])
+
+      expect(result).toEqual({
+        ok: false,
+        error: 'gradle wrapper jar not found\npath: C:\\repo\\gradle\\wrapper\\gradle-wrapper.jar',
+      })
+    })
+
+    test('spawns a POSIX Gradle wrapper directly through its shebang', () => {
+      const result = planGradleWrapper('/repo', 'linux', (candidate) => candidate === '/repo/gradlew')
+      expect(result).toEqual({ ok: true, plan: { command: '/repo/gradlew', args: [] } })
+    })
+
     test.runIf(process.platform === 'win32')('runs npm through the Windows fallback', async () => {
       const result = await runTests('npm', ['--version'])
 
@@ -96,6 +136,8 @@ describe('runTests', () => {
       expect(DEFAULT_ALLOWED_RUNNERS).toContain('cargo')
       expect(DEFAULT_ALLOWED_RUNNERS).toContain('dotnet')
       expect(DEFAULT_ALLOWED_RUNNERS).toContain('make')
+      expect(DEFAULT_ALLOWED_RUNNERS).toContain('gradle')
+      expect(DEFAULT_ALLOWED_RUNNERS).toContain('gradlew')
     })
 
     test('npx denied from env entries (case-insensitive)', async () => {

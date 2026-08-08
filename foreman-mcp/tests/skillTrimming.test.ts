@@ -131,7 +131,9 @@ describe("skillTrimming — implementor", () => {
     // inner-loop table + redaction disclosure rule (unit 4h).
     // raised 285 -> 295 in v0.5.8: Codex multi-agent fan-out — {{worker_fanout}} + ledger
     // constraint lines under Step 2 Decide Batching.
-    expect(lines).toBeLessThanOrEqual(295)
+    // raised 295 -> 310: shared-tree ownership guard plus bounded repeated-block
+    // mutation/owner-arbitration protocol. The executable prose is safety-critical.
+    expect(lines).toBeLessThanOrEqual(310)
   })
 
   it("self-referential boilerplate and disableSlashCommand are removed", async () => {
@@ -207,6 +209,25 @@ describe("skillTrimming — implementor", () => {
     expect(content).toContain("Worker Brief")
     expect(content).toContain("BEFORE/AFTER")
     expect(content).toContain("DO NOT")
+  })
+
+  it("Worker Brief and validation preserve the shared-tree safety boundary", async () => {
+    const content = await readSkill("implementor.md")
+    expect(content).toContain("Shared-Tree Safety")
+    expect(content).toContain("NEVER run `git stash`")
+    expect(content).toContain("The worker brief MUST contain the Shared-Tree Safety paragraph")
+    expect(content).toContain("Repository-state guard")
+    expect(content).toContain("Do not attempt automatic recovery")
+  })
+
+  it("Repeated checkpoint blocks require mutation evidence and owner arbitration", async () => {
+    const content = await readSkill("implementor.md")
+    expect(content).toContain("Repeated Checkpoint Blocks")
+    expect(content).toContain("second checkpoint block")
+    expect(content).toContain("targeted mutation or fault-injection probe")
+    expect(content).toContain("third checkpoint block")
+    expect(content).toContain("`original_defect`")
+    expect(content).toContain("Owner arbitration is the termination rule")
   })
 
   it("Checkpoint Protocol tier table is advisor/provider neutral", async () => {

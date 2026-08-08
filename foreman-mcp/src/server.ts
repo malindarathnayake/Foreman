@@ -16,7 +16,9 @@ import { capabilityCheck } from "./tools/capabilityCheck.js"
 import { handleWriteLedger } from "./tools/writeLedger.js"
 import { handleWriteProgress } from "./tools/writeProgress.js"
 import { handleInvokeWorker } from "./tools/invokeWorker.js"
+import { handleInvokeCouncil } from "./tools/invokeCouncil.js"
 import { handleAiderWorker } from "./tools/aiderWorker.js"
+import { LENS_IDS, LENS_CATALOG } from "./lib/lensCatalog.js"
 import { normalizeReview } from "./tools/normalizeReview.js"
 import { verifyCitations } from "./tools/verifyCitations.js"
 import { runTests } from "./tools/runTests.js"
@@ -175,11 +177,15 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     "read_ledger",
     {
       title: "Read Ledger",
-      description: "Reads the Foreman ledger file. Query 'delegation_metrics' derives worker-delegation metrics from the events sidecar.",
+      description: "Reads the Foreman ledger with bounded output. Table queries are paged (cursor/limit, max 100), phase-filterable, and omit verdict notes unless include_notes:true. Oversized full/metrics reads return guidance instead of flooding host context. Query 'delegation_metrics' derives worker-delegation metrics from the events sidecar.",
       inputSchema: z.strictObject({
         unit_id: z.string().max(10000).optional(),
         phase: z.string().max(10000).optional(),
         query: z.enum(["verdicts", "rejections", "phase_gates", "reviews", "full", "delegation_metrics"]).optional(),
+        verdict: z.enum(["pass", "fail", "pending", "inconclusive"]).optional(),
+        include_notes: z.boolean().optional(),
+        cursor: z.number().int().min(0).max(1000000).optional(),
+        limit: z.number().int().min(1).max(100).optional(),
       }),
       outputSchema: TextOutputSchema,
       annotations: {
@@ -198,7 +204,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     "read_progress",
     {
       title: "Read Progress",
-      description: "Reads the Foreman progress file.",
+      description: "Reads the descriptive Foreman planning checklist. It is not resume authority; call session_orient to choose the next action.",
       inputSchema: z.strictObject({
         last_n_completed: z.number().min(1).max(100).optional(),
       }),
@@ -309,12 +315,13 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "  set_unit_status — Set a unit's status. data: { s: 'pending'|'ip'|'delegated'|'done'|'fail', brief?: string, tier?: 'cheap'|'standard'|'premium', route_reason?: string }. Requires: phase, unit_id. s:'delegated' requires a 'brief' (min 20 chars); tier + route_reason are optional cost-tier audit evidence recorded on the delegation (and appended to the unit's delegation history).",
         "  set_verdict     — Record pass/fail verdict. data: { v: 'pass'|'fail'|'pending', via?, note? }. Requires: phase, unit_id. v:'pass' is blocked unless the unit was first set to s:'delegated' with a brief; if phase scope declares has_tests:false or has_build:false, a non-empty attestation 'note' is also required.",
         "  add_rejection   — Log a rejection. data: { r: string, msg: string, ts: string }. Requires: phase, unit_id.",
-        "  update_phase_gate — Set phase gate result. data: { g: 'pass'|'fail'|'pending' }. Requires: phase. g:'pass' is blocked unless every unit in the phase has verdict 'pass'.",
+        "  declare_phase_units — Declare the spec's expected unit-id set for a phase. data: { units?: string[] (additive, deduped, cap 200), retire?: string[] (remove declared-only ids; requires reason), reason?: string }. Requires: phase. Blocked while the phase gate is 'pass'. Gate pass then requires every declared id to be registered.",
+        "  update_phase_gate — Set phase gate result. data: { g: 'pass'|'fail'|'pending' }. Requires: phase. g:'pass' is blocked unless every unit in the phase has verdict 'pass' and every declared unit id is registered.",
         "  set_phase_scope — Declare phase scope for gate applicability. data: { has_tests, has_api, has_build: boolean }. Requires: phase.",
         "  record_review   — Record a durable advisor review at a checkpoint. data: { advisor: string, findings: Array<{ severity, file, line, description, classification? }>, packet_hash?, tokens? }. Requires: phase.",
       ].join("\n"),
       inputSchema: z.strictObject({
-        operation: z.enum(["set_unit_status", "set_verdict", "add_rejection", "update_phase_gate", "set_phase_scope", "record_review"]),
+        operation: z.enum(["set_unit_status", "set_verdict", "add_rejection", "declare_phase_units", "update_phase_gate", "set_phase_scope", "record_review"]),
         unit_id: z.string().max(10000).optional(),
         phase: z.string().max(10000).optional(),
         data: z.record(z.string(), z.unknown()),
@@ -368,6 +375,47 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const text = await handleInvokeWorker(args, { docsDir, ledgerPath, journalPath })
+      return textResult(text)
+    }
+  )
+
+  server.registerTool(
+    "invoke_council",
+    {
+      title: "Invoke Review Council (EXPERIMENTAL)",
+      description: [
+        "EXPERIMENTAL. Convenes an adaptive review council: N remote review seats (configured as",
+        "FOREMAN_COUNCIL_SEAT_<A|B|C> in .foremanenv) x M risk lenses, run in parallel against ONE",
+        "evidence packet, each returning structured findings. READ-ONLY — seats inspect and report;",
+        "they never edit the tree, apply fixes, or write the ledger.",
+        "EGRESS BOUNDARY: sends the objective, evidence, and any listed file contents to the",
+        "configured endpoint. An outbound secret gate blocks the request if any configured secret",
+        "value appears in the payload.",
+        "This tool does NOT decide. It reports per-seat findings, cross-seat agreement COUNTS (never",
+        "a merged verdict), limitations, and failed seats; YOU moderate and the USER arbitrates.",
+        "A failed, partial, or unparseable seat is never an approval. With no seats configured it",
+        "returns status: unavailable and names the next rung of the deliberation ladder.",
+        `Lenses: ${LENS_IDS.map((id) => `${id} (${LENS_CATALOG[id].question})`).join("; ")}.`,
+      ].join(" "),
+      inputSchema: z.strictObject({
+        phase: z.string().max(10000),
+        objective: z.string().min(10).max(2000),
+        evidence: z.string().min(1),
+        lenses: z.array(z.enum(LENS_IDS)).max(LENS_IDS.length).optional(),
+        seats: z.array(z.enum(["a", "b", "c"])).max(3).optional(),
+        files: z.array(z.string()).max(50).optional(),
+        cross_examine: z.boolean().optional(),
+      }),
+      outputSchema: TextOutputSchema,
+      annotations: {
+        title: "Invoke Review Council (EXPERIMENTAL)",
+        readOnlyHint: true,
+        destructiveHint: false,
+        openWorldHint: true,
+      },
+    },
+    async (args, _extra) => {
+      const text = await handleInvokeCouncil(args, { journalPath })
       return textResult(text)
     }
   )
@@ -515,7 +563,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     "run_tests",
     {
       title: "Run Tests",
-      description: "Runs a test command with bounded output. Runner must be in allowlist (npm, pytest, go, cargo, dotnet, make). Use instead of Bash for test execution.",
+      description: "Runs a test command with bounded output. Runner must be in allowlist (npm, pytest, go, cargo, dotnet, make, gradle, gradlew). Project-local Gradle wrappers are supported without shell or cmd.exe interpolation. Use instead of Bash for test execution.",
       inputSchema: z.strictObject({
         runner: z.string().min(1).max(50),
         args: z.array(z.string().max(10000)).max(100).default([]),
@@ -539,7 +587,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     "session_orient",
     {
       title: "Session Orient",
-      description: "Returns current Foreman session state: current phase, unit, next pending, blocked status. Call at session start for orientation.",
+      description: "Returns ledger-authoritative Foreman resume state, including action, resume target, phase/unit, gate retry, blockers, and ledger/progress drift. Call first at session start.",
       inputSchema: z.strictObject({}),
       outputSchema: TextOutputSchema,
       annotations: {

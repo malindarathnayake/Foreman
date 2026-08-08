@@ -154,6 +154,16 @@ export function renderChecklist(ledger: LedgerFile): string {
       block += `${line}\n`
     }
 
+    // Declared-but-unregistered units stay visible: the checklist is the
+    // operator's view, and erasing them here would contradict the ledger fact
+    // that the gate cannot pass until they are seeded.
+    const declaredMissing = (phase.declared_units ?? [])
+      .filter((id) => !phase.units[id])
+      .sort()
+    for (const unitId of declaredMissing) {
+      block += `- [ ] ${unitId} — declared, unregistered\n`
+    }
+
     parts.push(block)
   }
 

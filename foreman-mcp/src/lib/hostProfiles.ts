@@ -26,15 +26,18 @@ export interface HostProfile {
   placeholders: Record<string, string>
 }
 
+const SHARED_TREE_SAFETY =
+  " Repository state is user-owned: the worker may use read-only Git inspection only and must never run git stash, reset, checkout, switch, clean, add, commit, merge, rebase, cherry-pick, worktree, or any command that changes the index, stash, refs, branch, HEAD, or files outside the brief. If repository state blocks the task, stop and report it unchanged."
+
 const CLAUDE_CODE_PROFILE: HostProfile = {
   id: "claude-code",
   displayName: "Claude Code",
   placeholders: {
     host_name: "Claude Code",
     worker_invoke:
-      'Use Agent tool with `model: "sonnet"`. Pass only the worker brief — no spec, no ledger, no progress file.',
+      'Use Agent tool with `model: "sonnet"`. Pass only the worker brief — no spec, no ledger, no progress file.' + SHARED_TREE_SAFETY,
     worker_fanout:
-      "When Step 2 batches to N workers: for each unit, `write_ledger` `s:'delegated'` with that unit's brief BEFORE spawning; spawn up to N Agent-tool workers (`model: \"sonnet\"`) in parallel; wait for all; validate and verdict each unit independently. Workers must not spawn further agents. An explorer-class Agent (`model: \"haiku\"`, read-only) may map code paths for Step 3 / preflight — it never produces a verdict.",
+      "When Step 2 batches to N workers: editing Agent-tool workers share repository state and MUST run sequentially by default. Record `write_ledger` `s:'delegated'` before each spawn; validate its repository-state guard and verdict before the next editing worker. Read-only explorer Agents may run in parallel. Parallel EDITING workers are permitted only under ALL of: (a) each worker is spawned with `isolation: \"worktree\"`; (b) their editable file sets are disjoint — any overlap means do not parallelize; (c) each worker returns its full `git diff` output in its completion report; (d) the pitboss applies those diffs to the main tree serially, validating each unit before applying the next; (e) any apply conflict rejects that unit for sequential re-delegation. The full worktree fan-out contract (base-commit guarantees, content-addressed patch artifacts, cleanup) is v0.6 HOST-CONTRACT scope — until then this manual procedure is the only sanctioned parallel-edit path. Workers must not spawn further agents.",
     advisor_checks:
       '`mcp__foreman__capability_check({ cli: "codex" })` and `mcp__foreman__capability_check({ cli: "gemini" })`',
     advisor_a:
@@ -42,7 +45,7 @@ const CLAUDE_CODE_PROFILE: HostProfile = {
     advisor_b:
       '**Gemini:** `mcp__foreman__invoke_advisor({ cli: "gemini", prompt: "<PROMPT>" })`',
     advisor_fallback:
-      "**Opus agent fallback:** Use Agent tool with `model: \"opus\"` and adversarial critic prompt.",
+      "**Opus agent fallback (last rung):** With no council seats AND no CLI advisor, seat BOTH reviewers on Opus — two separate Agent-tool calls with `model: \"opus\"`, each given a DIFFERENT adversarial critic prompt (e.g. one contract/correctness, one security/data-integrity), run independently and never shown each other's output. Record in the ledger note that independent review was unavailable: two seats on one model is perspective, NOT independence.",
     autonomy:
       "**/goal contract:** run autonomously only under a user-issued goal with budgets/scopes declared up front; every claim in the goal report must be evidenced in-transcript (file:line, command output); the goal ends at the phase gate — never roll into the next phase autonomously.",
   },
@@ -54,9 +57,9 @@ const CURSOR_PROFILE: HostProfile = {
   placeholders: {
     host_name: "Cursor",
     worker_invoke:
-      'Use the Cursor `Task` tool with `subagent_type: "generalPurpose"` and `model: "claude-4.6-sonnet-medium-thinking"`. Pass only the worker brief in the prompt — no spec, no ledger, no progress file.',
+      'Use the Cursor `Task` tool with `subagent_type: "generalPurpose"` and `model: "claude-4.6-sonnet-medium-thinking"`. Pass only the worker brief in the prompt — no spec, no ledger, no progress file.' + SHARED_TREE_SAFETY,
     worker_fanout:
-      'When Step 2 batches to N workers: for each unit, `write_ledger` `s:\'delegated\'` with that unit\'s brief BEFORE spawning; spawn up to N Cursor `Task` tools (`subagent_type: "generalPurpose"`, `model: "claude-4.6-sonnet-medium-thinking"`) in parallel; wait for all; validate and verdict each unit independently. Workers must not spawn further agents. An explorer Task (`subagent_type: "explore"`, `readonly: true`) may map code paths for Step 3 / preflight — it never produces a verdict.',
+      'When Step 2 batches to N workers: editing Cursor `Task` workers share repository state and MUST run sequentially unless each worker has a proven isolated worktree/sandbox. Record `write_ledger` `s:\'delegated\'` before each spawn; validate its repository-state guard and verdict before the next editing worker. Read-only explorer Tasks may run in parallel. Patch-only workers may run in parallel only for disjoint editable sets with a content-addressed apply check. Workers must not spawn further agents.',
     advisor_checks:
       '`mcp__foreman__capability_check({ cli: "codex" })` and `mcp__foreman__capability_check({ cli: "gemini" })`',
     advisor_a:
@@ -64,7 +67,7 @@ const CURSOR_PROFILE: HostProfile = {
     advisor_b:
       '**Advisor B (Gemini 3.1 Pro):** Use the Cursor `Task` tool with `subagent_type: "explore"`, `readonly: true`, `model: "gemini-3.1-pro"`. If `gemini-3.1-pro` is unavailable in the user\'s Cursor environment, fall back to `model: "composer-2-fast"`.',
     advisor_fallback:
-      '**Sonnet adversarial fallback:** Use the Cursor `Task` tool with `subagent_type: "generalPurpose"`, `model: "claude-4.6-sonnet-medium-thinking"`, and an adversarial critic prompt.',
+      '**Sonnet adversarial fallback (last rung):** With no council seats AND no CLI advisor, seat BOTH reviewers via two separate Cursor `Task` calls (`subagent_type: "generalPurpose"`, `model: "claude-4.6-sonnet-medium-thinking"`), each with a DIFFERENT adversarial critic prompt, run independently and never shown each other\'s output. Record in the ledger note that independent review was unavailable: two seats on one model is perspective, NOT independence.',
     autonomy:
       "**Background-agent surface:** a Cursor background agent may carry a Foreman goal only with budgets/scopes declared up front; evidence claims in-transcript; the goal ends at the phase gate; re-enter via `session_orient` after any context reset.",
   },
@@ -78,9 +81,9 @@ const CODEX_PROFILE: HostProfile = {
   placeholders: {
     host_name: "Codex",
     worker_invoke:
-      'Use Codex `spawn_agent` to create a disposable implementation subagent. Pass only the bounded worker brief — no spec, ledger, or progress file. Prefer the host-configured `gpt-5.6-luna` worker seat when Codex exposes subagent model selection; the current spawn contract may choose the model itself, so record the actual model and never attest Luna unless the host confirms it.',
+      'Use Codex `spawn_agent` to create a disposable implementation subagent. Pass only the bounded worker brief — no spec, ledger, or progress file. Prefer the host-configured `gpt-5.6-luna` worker seat when Codex exposes subagent model selection; the current spawn contract may choose the model itself, so record the actual model and never attest Luna unless the host confirms it.' + SHARED_TREE_SAFETY,
     worker_fanout:
-      "When Step 2 batches to N workers: for each unit, `write_ledger` `s:'delegated'` with that unit's brief BEFORE spawning; spawn up to `agents.max_threads` (default 6) Codex `spawn_agent` workers in parallel (`worker` role for implementation); wait for all; validate and verdict each unit independently. Keep `agents.max_depth=1` — workers must not spawn further agents. An `explorer` role subagent (read-only sandbox) may map code paths for Step 3 / preflight — it never produces a verdict. Prefer `gpt-5.6-luna` for workers when the host confirms model selection; record the actual model and never attest Luna unless confirmed. Call `codex_agents_init` once per project if `.codex/agents/` roles are missing.",
+      "When Step 2 batches to N workers: Codex `spawn_agent` workers share the repository and editing `worker` roles MUST run sequentially unless each has a proven isolated worktree/sandbox. Record `write_ledger` `s:'delegated'` before each spawn; validate its repository-state guard and verdict before the next editing worker. Read-only `explorer` roles may use `agents.max_threads` in parallel. Patch-only workers may run in parallel only for disjoint editable sets with a content-addressed apply check. Keep `agents.max_depth=1`; workers must not spawn further agents. Prefer `gpt-5.6-luna` only when host-confirmed, and call `codex_agents_init` if roles are missing.",
     advisor_checks:
       '`mcp__foreman__capability_check({ cli: "claude" })` and `mcp__foreman__capability_check({ cli: "gemini" })`',
     advisor_a:
@@ -88,7 +91,7 @@ const CODEX_PROFILE: HostProfile = {
     advisor_b:
       '**Advisor B (Gemini):** `mcp__foreman__invoke_advisor({ cli: "gemini", prompt: "<PROMPT>" })`',
     advisor_fallback:
-      "**Non-independent fallback:** Run an adversarial self-review in the Codex pitboss seat and record that independent review was unavailable.",
+      "**Non-independent fallback (last rung):** With no council seats AND no CLI advisor, run TWO adversarial self-review passes in the Codex pitboss seat with DIFFERENT critic framings (e.g. one contract/correctness, one security/data-integrity), and record that independent review was unavailable.",
     autonomy:
       "Codex continuation is host-controlled: declare budgets and scope up front, stop at every phase gate, and re-enter after context reset through `session_orient`. Do not claim unattended continuation unless the active Codex host exposes and confirms it.",
   },
@@ -100,9 +103,9 @@ const GENERIC_PROFILE: HostProfile = {
   placeholders: {
     host_name: "Generic host",
     worker_invoke:
-      "Spawn a worker at tier `{tier}` with exactly this brief; return a completion report matching the completion-report schema in HOST-CONTRACT.md. A host MAY fulfil this capability via Foreman's `invoke_worker`.",
+      "Spawn a worker at tier `{tier}` with exactly this brief; return a completion report matching the completion-report schema in HOST-CONTRACT.md. A host MAY fulfil this capability via Foreman's `invoke_worker`." + SHARED_TREE_SAFETY,
     worker_fanout:
-      "When Step 2 batches to N workers: for each unit, `write_ledger` `s:'delegated'` with that unit's brief BEFORE spawning; spawn up to N workers at the declared tier in parallel (see HOST-CONTRACT.md spawn-worker); wait for all; validate and verdict each unit independently. Workers must not spawn further agents. A read-only explorer seat may map code paths for Step 3 / preflight — it never produces a verdict.",
+      "When Step 2 batches to N workers: editing workers MUST run sequentially unless the host guarantees an isolated worktree/sandbox per worker. Record `write_ledger` `s:'delegated'` before each spawn; validate its repository-state guard and verdict before the next editing worker. Read-only explorers may run in parallel. Patch-only workers may run in parallel only for disjoint editable sets with a content-addressed apply check. Workers must not spawn further agents.",
     advisor_checks:
       '`mcp__foreman__capability_check({ cli: "codex" })` and `mcp__foreman__capability_check({ cli: "gemini" })`',
     advisor_a:

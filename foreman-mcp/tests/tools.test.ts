@@ -188,7 +188,9 @@ describe("handleReadLedger", () => {
     })
 
     const result = await handleReadLedger(ledgerPath, { query: "verdicts" })
-    expect(result).toContain("phase | unit | tier | verdict | via | note")
+    expect(result).toContain("total_rows: 1")
+    expect(result).toContain("phase | unit | tier | verdict | via")
+    expect(result).not.toContain(" | note")
     expect(result).toContain("p1")
     expect(result).toContain("u1")
     expect(result).toContain("pass")
@@ -209,9 +211,107 @@ describe("handleReadLedger", () => {
       data: { v: "pass", via: "worker", note: "manual smoke: ran CLI against fixture" },
     })
 
-    const result = await handleReadLedger(ledgerPath, { query: "verdicts" })
+    const result = await handleReadLedger(ledgerPath, { query: "verdicts", include_notes: true })
     expect(result).toContain("worker")
     expect(result).toContain("manual smoke: ran CLI against fixture")
+  })
+
+  it("pages and filters verdicts without emitting every ledger unit", async () => {
+    for (const [phase, unit] of [["p1", "u1"], ["p1", "u2"], ["p2", "u3"]] as const) {
+      await writeLedger(ledgerPath, {
+        operation: "set_unit_status",
+        phase,
+        unit_id: unit,
+        data: { s: "pending" },
+      })
+    }
+
+    const first = await handleReadLedger(ledgerPath, { query: "verdicts", limit: 2 })
+    expect(first).toContain("total_rows: 3")
+    expect(first).toContain("returned: 2")
+    expect(first).toContain("next_cursor: 2")
+    expect(first).not.toContain("u3")
+
+    const filtered = await handleReadLedger(ledgerPath, {
+      query: "verdicts",
+      phase: "p2",
+      verdict: "pending",
+    })
+    expect(filtered).toContain("total_rows: 1")
+    expect(filtered).toContain("p2 | u3")
+    expect(filtered).not.toContain("p1 |")
+  })
+
+  it("bounds included notes per cell and directs callers to the single-unit view", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "Worker brief: implement a bounded ledger note regression test" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass", note: "n".repeat(1000) },
+    })
+
+    const result = await handleReadLedger(ledgerPath, { query: "verdicts", include_notes: true })
+    expect(result).toContain("truncated_cells: 1")
+    expect(result).toContain("…")
+    expect(result).toContain("hint: full note: read_ledger({ phase, unit_id })")
+    expect(result.length).toBeLessThan(1100)
+  })
+
+  it("rejections truncation hint points at the phase-scoped full view, not the per-unit view", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "add_rejection",
+      phase: "p1",
+      unit_id: "u1",
+      data: { r: "pitboss", msg: "m".repeat(1000), ts: "2026-08-07T00:00:00Z" },
+    })
+
+    const result = await handleReadLedger(ledgerPath, { query: "rejections" })
+    expect(result).toContain("truncated_cells: 1")
+    expect(result).toContain('hint: full text: read_ledger({ query: "full", phase: "<phase>" })')
+    expect(result).not.toContain("phase, unit_id })")
+  })
+
+  it("emits no hint when nothing was truncated", async () => {
+    await writeLedger(ledgerPath, {
+      operation: "set_unit_status",
+      phase: "p1",
+      unit_id: "u1",
+      data: { s: "delegated", brief: "Worker brief: short note stays untruncated" },
+    })
+    await writeLedger(ledgerPath, {
+      operation: "set_verdict",
+      phase: "p1",
+      unit_id: "u1",
+      data: { v: "pass", note: "short note" },
+    })
+
+    const result = await handleReadLedger(ledgerPath, { query: "verdicts", include_notes: true })
+    expect(result).toContain("truncated_cells: 0")
+    expect(result).not.toContain("hint:")
+  })
+
+  it("refuses an oversized full-ledger payload with bounded recovery guidance", async () => {
+    const units = Object.fromEntries(Array.from({ length: 6 }, (_, i) => [
+      `u${i}`,
+      { s: "done", v: "pass", w: "brief", rej: [], note: "n".repeat(10000) },
+    ]))
+    await fs.writeFile(ledgerPath, JSON.stringify({
+      v: 1,
+      ts: "2026-08-04T00:00:00Z",
+      phases: { p1: { s: "ip", g: "pending", units } },
+    }), "utf-8")
+
+    const result = await handleReadLedger(ledgerPath, { query: "full" })
+    expect(result).toContain("error: ledger_output_too_large")
+    expect(result).toContain("max_output_chars: 50000")
+    expect(result).toContain("Use session_orient")
+    expect(result.length).toBeLessThan(1000)
   })
 
   it("single-unit view includes tier, route_reason, and delegation count", async () => {
@@ -365,36 +465,41 @@ describe("handleReadLedger", () => {
 })
 
 describe("handleReadProgress", () => {
-  it("returns SESSION_HINT section before STATUS", async () => {
+  it("marks progress as non-authoritative before STATUS", async () => {
     const result = await handleReadProgress(progressPath)
-    expect(result).toContain("SESSION_HINT")
-    const hintIdx = result.indexOf("SESSION_HINT")
+    expect(result).toContain("AUTHORITY")
+    expect(result).toContain("role: planning_checklist_only")
+    expect(result).toContain("resume: call session_orient")
+    expect(result).not.toContain("Resume at")
+    const hintIdx = result.indexOf("AUTHORITY")
     const statusIdx = result.indexOf("STATUS")
     expect(hintIdx).toBeLessThan(statusIdx)
   })
 
-  it("session_hint says call spec_generator tool when no units exist", async () => {
+  it("does not synthesize a resume instruction when no units exist", async () => {
     const result = await handleReadProgress(progressPath)
-    expect(result).toContain("mcp__foreman__spec_generator")
+    expect(result).not.toContain("mcp__foreman__spec_generator")
+    expect(result).toContain("completed: 0/0 units")
   })
 
-  it("session_hint says resume at next unit when units are pending", async () => {
+  it("shows pending units as checklist data without making them resume authority", async () => {
     await writeProgress(progressPath, {
       operation: "update_status",
       data: { unit_id: "u1", phase: "p1", status: "in_progress", notes: "working" },
     })
     const result = await handleReadProgress(progressPath)
-    expect(result).toContain("Resume at u1")
+    expect(result).toContain("u1 | p1 | in_progress | working")
+    expect(result).not.toContain("Resume at u1")
   })
 
-  it("session_hint says run checkpoint when all units complete", async () => {
+  it("shows completed checklist state without directing a phase checkpoint", async () => {
     await writeProgress(progressPath, {
       operation: "complete_unit",
       data: { unit_id: "u1", phase: "p1", completed_at: "2026-04-06T10:00:00Z", notes: "done" },
     })
     const result = await handleReadProgress(progressPath)
-    expect(result).toContain("All 1 units complete")
-    expect(result).toContain("checkpoint")
+    expect(result).toContain("completed: 1/1 units")
+    expect(result).not.toContain("Run phase checkpoint")
   })
 
   it("returns output with STATUS section on empty progress file", async () => {

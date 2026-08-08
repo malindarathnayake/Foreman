@@ -16,26 +16,27 @@ first tool call.
 
 ## 1. Public tool surface (contract)
 
-Tool count: 26
+Tool count: 27
 
 - bundle_status — Returns the Foreman bundle version and override info.
 - host_status — Returns the active Foreman host and the model slugs used for worker/advisor invocation.
 - changelog — Returns the Foreman changelog, optionally since a version.
 - ethos — Serves the canonical engineering-ethos document (proportionality tiers, three pillars, review checklist), rendered with the active stack profile.
-- read_ledger — Reads the Foreman ledger file; supports verdicts/rejections/phase_gates/reviews/full/delegation_metrics queries.
-- read_progress — Reads the Foreman progress file.
+- read_ledger — Reads bounded Foreman ledger slices; tabular queries support phase/verdict filters plus cursor/limit pagination, and oversized full reads fail with recovery guidance.
+- read_progress — Reads the planning checklist. It is descriptive only; `session_orient` is the resume authority.
 - read_journal — Reads the Foreman session journal; returns session history with rollup.
 - capability_check — Checks whether the claude, codex, or gemini CLI is available and authenticated, with a closed auth-status taxonomy. CLI versions are telemetry, not compatibility pins.
 - invoke_advisor — Invokes the claude, codex, or gemini CLI via stdin for independent review. Claude runs headless `claude-fable-5` at `max` effort with tools disabled.
 - write_ledger — Writes an operation to the Foreman ledger (unit status, verdicts, rejections, phase gates, scope, durable reviews).
 - invoke_worker — EXPERIMENTAL (egress: sends briefs + file excerpts to your configured HTTP endpoint). Delegates a single patch task to the remote OpenAI-compatible endpoint configured in `.foremanenv`; returns a shape-checked, verbatim patch for the host to apply.
+- invoke_council — EXPERIMENTAL (egress: sends the review evidence packet to your configured HTTP endpoint). Convenes an adaptive review council of remote read-only seats across risk lenses, returns structured findings for the host to moderate and the user to arbitrate. Entirely optional: with no seats configured it returns `status: unavailable` and Foreman proceeds on its normal advisor flow.
 - aider_worker — EXPERIMENTAL (local aider CLI in an isolated git worktree). Drives aider to edit a throwaway worktree, computes the git diff itself, and returns a shape-checked verbatim patch + base_file_hashes for the host to apply; never applies, never writes the ledger.
 - write_progress — Writes an operation to the Foreman progress file.
 - write_journal — Writes to the Foreman session journal (init_session / log_event / end_session).
 - normalize_review — Normalizes raw review text into structured findings.
 - verify_citations — Verifies that evidence citations reference real files and that a verbatim anchor appears at or near the cited line.
-- run_tests — Runs a test command with bounded output; runner must be in an allowlist (npm, pytest, go, cargo, dotnet, make).
-- session_orient — Returns current Foreman session state: phase, unit, next pending, blocked status. Call at session start.
+- run_tests — Runs a test command with bounded output; runner must be in an allowlist (npm, pytest, go, cargo, dotnet, make, gradle, gradlew). Project Gradle wrappers are supported without shell interpolation.
+- session_orient — Returns the ledger-authoritative action and resume target, including gate retries, blockers, and ledger/progress drift. Call first at session start.
 - retrieve_original — Recovers the exact original text behind a `<<ccr:HASH>>` compression marker, in-memory and TTL-bound.
 - pitboss_implementor — Activates the pitboss-implementor protocol for multi-phase implementation from prepared specs (worker fan-out, gates, retries, resume).
 - design_partner — Activates the design-partner protocol: a collaborative design session that produces `Docs/design-summary.md`.
@@ -77,6 +78,7 @@ specific failing assertion).
 
 - NEVER write `Docs/.foreman-*.json` or `Docs/.foreman-*.jsonl` directly. These are tool-mediated only — direct edits corrupt the ledger/progress/journal/events invariants.
 - NEVER commit `.foremanenv`. The server refuses to run `invoke_worker` if that file is git-tracked.
+- Shared repository state is user-owned. Editing workers must never stash, reset, checkout, clean, stage, commit, switch branches, or mutate Git refs/index/stash; serialize shared-tree editors unless each has a proven isolated worktree. Read-only review/explorer seats may run in parallel.
 - Do not weaken a failing test to make a gate pass. The gates exist to catch exactly that move.
 - Verdicts require the recorded sequence `set_unit_status(s:'ip') → set_unit_status(s:'delegated', brief:'...') → set_verdict(v:'pass')`. There is no shortcut to a pass verdict.
 
@@ -87,7 +89,7 @@ Run these, in order, before doing anything else:
 1. `session_orient`
 2. `bundle_status`
 3. `host_status`
-4. `read_ledger { query: "full" }`
+4. `read_ledger { query: "verdicts", phase: "<current_phase>", limit: 50 }`
 
 Then try `lighttask` on one small, grounded change to see the full loop
 (delegate → validate → record) before attempting anything larger.

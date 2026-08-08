@@ -93,7 +93,7 @@ Full documentation lives at **[malindarathnayake.github.io/Foreman](https://mali
 
 # Project
 
-**Current release:** `v0.5.11` | **Package:** `@malindarathnayake/foreman-mcp` | **Runtime:** Node.js `>=22`
+**Current release:** `v0.5.13` | **Package:** `@malindarathnayake/foreman-mcp` | **Runtime:** Node.js `>=22`
 
 - [Changelog](CHANGELOG.md)
 - [Security policy](SECURITY.md) — read before enabling external worker endpoints

@@ -339,6 +339,8 @@ describe("aider_worker — dirty tree refusal", () => {
     expect(text).toContain("status: fail")
     expect(text).toContain("failure_stage: WORKER_DIRTY_TREE_REFUSAL")
     expect(text).toContain("refunded: true")
+    expect(text).toContain("do not stash")
+    expect(text).not.toContain("commit or stash")
 
     // Pre-send gate: no delegation ever opened, so the sidecar file was never created.
     expect(await fileExists(ws.sidecarPath)).toBe(false)

@@ -62,6 +62,10 @@ export interface Phase {
   g: "pass" | "fail" | "pending"
   scope?: PhaseScope
   units: Record<string, Unit>
+  /** Spec-declared unit ids — gate pass requires every declared id to be registered in `units`. Absent on ledgers written before v0.5.11 (legacy behavior unchanged). */
+  declared_units?: string[]
+  /** Audit tombstones for retired declared ids (bounded to last 10). */
+  declared_log?: { ts: string; retired: string[]; reason: string }[]
   /** Durable advisor reviews recorded at checkpoints. Optional: absent on pre-v0.3.1 ledgers. */
   reviews?: PhaseReview[]
   /** Snapshot hash of (unit id, verdict, v_ts) taken when the gate passed (D2b staleness detection). Absent pre-v0.5.0. */
@@ -151,6 +155,23 @@ const SetPhaseScopeInput = z.object({
   data: PhaseScopeSchema,
 })
 
+// Declared ids feed unescaped TOON output (comma-joined lists) and gate error
+// messages — newlines and commas are structural there, so they are rejected here.
+const DeclaredUnitId = z.string().min(1).max(200).refine(
+  (s) => s.trim() === s && !/[\r\n,]/.test(s),
+  { message: "declared unit ids must be trimmed and contain no newlines or commas" }
+)
+
+const DeclarePhaseUnitsInput = z.object({
+  operation: z.literal("declare_phase_units"),
+  phase: z.string().max(10000),
+  data: z.object({
+    units: z.array(DeclaredUnitId).max(200).optional(),
+    retire: z.array(DeclaredUnitId).max(200).optional(),
+    reason: z.string().min(10).max(2000).optional(),
+  }),
+})
+
 const ReviewFindingSchema = z.object({
   severity: z.enum(["critical", "high", "medium", "low"]),
   file: z.string().max(4096),
@@ -174,6 +195,7 @@ export const WriteLedgerInputSchema = z.discriminatedUnion("operation", [
   SetUnitStatusInput,
   SetVerdictInput,
   AddRejectionInput,
+  DeclarePhaseUnitsInput,
   UpdatePhaseGateInput,
   SetPhaseScopeInput,
   RecordReviewInput,
@@ -185,6 +207,10 @@ export const ReadLedgerInputSchema = z.object({
   unit_id: z.string().max(10000).optional(),
   phase: z.string().max(10000).optional(),
   query: z.enum(["verdicts", "rejections", "phase_gates", "reviews", "full", "delegation_metrics"]).optional(),
+  verdict: z.enum(["pass", "fail", "pending", "inconclusive"]).optional(),
+  include_notes: z.boolean().optional(),
+  cursor: z.number().int().min(0).max(1000000).optional(),
+  limit: z.number().int().min(1).max(100).optional(),
 })
 
 export type ReadLedgerInput = z.infer<typeof ReadLedgerInputSchema>
@@ -243,7 +269,7 @@ export interface StatusSummary {
   blocked: string
   completed_count: number
   total_count: number
-  session_hint: string
+  planning_note: string
 }
 
 export interface TruncatedView {
@@ -330,7 +356,8 @@ export interface JournalSession {
   id: string
   ts: string
   branch: string
-  phase: number
+  /** String phase ids are canonical; number remains readable/writable for legacy clients. */
+  phase: string | number
   units: string[]
   dur_min?: number
   ctx_used_pct?: number
@@ -374,7 +401,10 @@ export const JournalEventCode = z.enum([
 const InitSessionData = z.object({
   target_version: z.string().max(20),
   branch: z.string().max(200),
-  phase: z.number().min(1).max(100),
+  phase: z.union([
+    z.string().min(1).max(100),
+    z.number().int().min(1).max(100),
+  ]),
   units: z.array(z.string().max(100)).max(50),
   env: z.object({
     agent: z.string().max(100),

@@ -21,6 +21,8 @@ description: Pit-boss implementation orchestrator. A frontier pitboss orchestrat
 | Ledger is durable — persisted after every verdict | State survives sessions |
 | Mandatory new session at phase checkpoints | Context accumulation degrades quality |
 
+**Proportional entry:** full implementor ceremony is for prepared multi-unit work, security/trust boundaries, migrations, and changes where a silent defect is expensive. Ordinary low-risk CRUD and one-file maintenance should use direct work or `lighttask`; do not manufacture phases merely to satisfy this protocol.
+
 {{include: session-start}}
 
 ## Journal — Friction Logging
@@ -77,6 +79,7 @@ Before building brief, read actual source. Capture:
 ## BEFORE/AFTER Pattern — excerpts from actual code showing expected delta
 ## Interface Context — relevant exports from ledger, signatures worker must satisfy
 ## DO NOT — explicit scope boundaries, files to leave alone
+## Shared-Tree Safety — The repository state is user-owned. Run only read-only Git commands (`status`, `diff`, `log`, `show`). NEVER run `git stash`, `reset`, `checkout`, `switch`, `clean`, `add`, `commit`, `merge`, `rebase`, `cherry-pick`, `worktree`, or any command that changes the index, stash, refs, branch, HEAD, or files outside the listed task. Do not "clean up" a dirty tree. If repository state blocks the task, STOP and report it to the pit-boss unchanged.
 ## Ethos — perf tier (standard/hot/extreme); budget + rationale if hot/extreme; telemetry contract excerpt if the unit emits signals
 ## Test Command — exact command to run
 ## Inner Loop Rules — compile/import/type errors: self-fix max 2. Logic/spec issues: return immediately.
@@ -99,6 +102,10 @@ Anti-pattern: *"I read Unit X's directive section carefully."* The spec is a gra
 
 ### Step 5: Spawn Worker
 
+**Shared-tree preflight (before every editing worker):** capture the current branch, HEAD, stash ref/list, staged diff, and dirty-path list. Treat that snapshot as an ownership boundary, not something to normalize. A host-native worker that edits the shared tree runs **sequentially** unless the host proves it has an isolated worktree/sandbox. Parallel read-only explorers are allowed; parallel patch-only workers are allowed only when their editable sets are disjoint and every returned patch is protected by a content-addressed staleness check.
+
+The worker brief MUST contain the Shared-Tree Safety paragraph above verbatim. If accepted uncommitted work is present and the host cannot prevent Git mutations, use a patch-only worker path or stop for owner direction. Never stash, commit, reset, checkout, clean, or move the user's work to make delegation convenient.
+
 Record the delegation in the ledger BEFORE spawning. This is mechanically enforced — a `pass` verdict is rejected unless the unit was first set to `delegated` with a brief. Also record the cost `tier` the worker runs at and a short `route_reason` — audit evidence, not a gate:
 ```
 mcp__foreman__write_ledger({ operation: "set_unit_status", phase, unit_id, data: { s: "delegated", brief: "<1-3 line summary of the worker brief>", tier: "standard", route_reason: "<why this tier fits this unit>" } })
@@ -113,12 +120,13 @@ Tiers: `cheap` (mechanical, fully-specified change), `standard` (default capable
 
 ### Step 6: Validate
 After worker returns, pit-boss validates independently — do not trust worker's self-report:
-1. Read every modified file — confirm changes match the AFTER pattern from the brief
-2. Re-run tests — call mcp__foreman__run_tests with the unit's test command; read exit_code for pass/fail, STDERR tail for failure context. Do not run tests via Bash.
-3. Spec check — read the original spec directive sentence by sentence; confirm each has a corresponding code path
-4. Export check — verify exported names and signatures match what the ledger records as interface contracts
-5. Consistency check — confirm changes integrate cleanly with prior accepted units; no regressions introduced
-6. Budget check (hot/extreme perf-tier units only) — require the unit's benchmark/profile evidence and compare against the spec's Performance Budgets row; a regression is a reject, not a note
+1. **Repository-state guard — before tests:** compare branch, HEAD, stash ref/list, staged diff, and all pre-existing dirty paths against the preflight snapshot. Changes outside the brief's allowed files, any stash/ref/branch/HEAD/index mutation, or evidence of `git stash/reset/checkout/clean` are a hard stop. Do not attempt automatic recovery and do not continue to tests; preserve evidence and escalate to the owner.
+2. Read every modified file — confirm changes match the AFTER pattern from the brief
+3. Re-run tests — call mcp__foreman__run_tests with the unit's test command; read exit_code for pass/fail, STDERR tail for failure context. Do not run tests via Bash.
+4. Spec check — read the original spec directive sentence by sentence; confirm each has a corresponding code path
+5. Export check — verify exported names and signatures match what the ledger records as interface contracts
+6. Consistency check — confirm changes integrate cleanly with prior accepted units; no regressions introduced
+7. Budget check (hot/extreme perf-tier units only) — require the unit's benchmark/profile evidence and compare against the spec's Performance Budgets row; a regression is a reject, not a note
 
 ### Step 7: Verdict
 
@@ -158,6 +166,16 @@ mcp__foreman__write_progress({ operation: "log_error", data: { date, unit, what_
 **Guarded tier escalation:** A repeated failure signals spec/brief ambiguity, not insufficient model horsepower. Do NOT bump a fix worker to a higher `tier` on an unchanged brief. Escalate the tier (e.g. `standard` → `premium`) ONLY when the re-delegation's `route_reason` cites a concrete brief refinement (missing context now added) or an advisor diagnosis of the failure. Record tier + route_reason on the `delegated` write so the escalation is auditable in `delegations[]`.
 
 After 3 outer-loop failures: STOP. Escalate to user with full rejection history from ledger.
+
+### Repeated Checkpoint Blocks
+
+A green suite plus a finding that "the suite cannot observe the production behavior" is a test-evidence failure, not a passed checkpoint.
+
+- After the **second checkpoint block of that class**, run a targeted mutation or fault-injection probe over the exact production seam before another reading-only review. The acceptance criterion is explicit: replacing/removing the control must make the focused suite fail.
+- Mutation or fault-injection workers that edit source run **serially** on the shared tree or in separate, proven worktrees. Never run two source-mutating review seats concurrently.
+- Classify every later finding as `original_defect`, `remediation_defect`, `test_gap`, or `process/tooling`. This exposes when repeated remediation is manufacturing most of the new risk.
+- After the **third checkpoint block**, STOP before writing another fix. Present the owner a decision packet: evidence gained since the prior attempt; surviving mutations/untested behavior; original-versus-remediation defect counts; remaining silent-failure impact; cost and scope of one more round; and explicit choices to continue, narrow, defer, or override.
+- Owner arbitration is the termination rule. Foreman never auto-passes because review is expensive, and an adversarial seat never creates an endless loop merely by producing a new opinion: another remediation round requires a confirmed behavior, contract, or evidence gap with a concrete acceptance test.
 
 ## Worker Invocation Paths
 
@@ -220,7 +238,7 @@ At phase end, after all six gates (G1–G6) pass:
 **1. Full Test Suite:** Run the complete test suite via mcp__foreman__run_tests, not Bash.
 
 **2. Review via Deliberation:**
-1. Check the active host's advisor seats: {{advisor_checks}}
+1. Check the active host's advisor seats — reuse the session-start probe results recorded in the `init_session` journal `env`; re-probe ({{advisor_checks}}) only if an advisor was not probed or its recorded status was a failure
 2. Map to tier:
 
 | Advisor A | Advisor B | Review path | Moderator |

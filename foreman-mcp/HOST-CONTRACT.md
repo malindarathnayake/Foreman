@@ -24,7 +24,7 @@ Six capabilities, each rated READY / DECLARED / EXPERIMENTAL. READY means the be
   - "worker seats never see the spec, ledger, or progress files"
   - "Codex currently owns per-subagent model selection — `gpt-5.6-luna` is a preferred seat, not a Foreman-enforced claim"
 - **Smoke:** `worker_invoke` and `worker_fanout` placeholders render on every host with zero unresolved markers (contract, CI-required via hostContract.test.ts / skillLoaderHost.test.ts).
-- **Codex parallel fan-out:** the `worker_fanout` placeholder instructs Codex to spawn up to `agents.max_threads` (default 6) `spawn_agent` workers with `max_depth=1`. Each unit still requires its own `s:'delegated'` ledger write before spawn. The `explorer` role is read-only mapping only (never a verdict producer). Call `codex_agents_init` once per project to write `.codex/agents/{explorer,worker}.toml` and create `.codex/config.toml` `[agents]` only when that file is absent (existing config.toml is never overwritten).
+- **Codex fan-out:** `spawn_agent` editing workers share repository state and run sequentially unless each has a proven isolated worktree/sandbox. `agents.max_threads` is for read-only explorers/reviewers, or patch-only workers with disjoint editable sets and CAS-protected apply. Each unit still requires its own `s:'delegated'` ledger write before spawn; `max_depth=1` remains mandatory. Call `codex_agents_init` once per project to write `.codex/agents/{explorer,worker}.toml` and create `.codex/config.toml` `[agents]` only when that file is absent (existing config.toml is never overwritten).
 
 ### invoke-advisor
 
@@ -63,7 +63,7 @@ Six capabilities, each rated READY / DECLARED / EXPERIMENTAL. READY means the be
 - **NOT-claims:**
   - "For host-native seats, the Foreman capability layer validates isolation declarations; the host creates and destroys their worktrees."
   - "`aider_worker` is the exception: that MCP tool creates and tears down its own isolated detached worktree."
-  - "Foreman does not intercept a host-native agent's Git commands; pitboss re-read/spec/test-impact validation can detect resulting divergence after the fact, but does not automatically restore it."
+  - "Foreman does not intercept a host-native agent's Git commands. The host/brief MUST deny Git mutations (`stash`, `reset`, `checkout`, `switch`, `clean`, staging, commits, ref/index/stash changes), and the pitboss MUST compare branch/HEAD/stash/index/dirty-path state before running tests. A mismatch is a hard stop; Foreman never performs automatic recovery."
 - **Smoke:** seat-declaration shape validation (contract, from P3 onward).
 
 ### autonomy
@@ -83,6 +83,8 @@ Six capabilities, each rated READY / DECLARED / EXPERIMENTAL. READY means the be
 - [ ] **Per-run state record** — which seat, which tree, which base commit.
 - [ ] **Orphan-reclaim rule** — a crashed seat's tree is reclaimed only after its state record is inspected.
 - [ ] **Never destroy dirty state.**
+- [ ] **Shared-tree mutation denylist** — implementation workers use read-only Git inspection only; repository/index/stash/ref changes are forbidden.
+- [ ] **Before/after state guard** — branch, HEAD, stash ref/list, staged diff, and pre-existing dirty paths are compared before tests or verdict.
 - [ ] **Artifacts, not shared trees** — work crosses seats only as well-formed artifacts (patches/reports), never shared mutable trees.
 - [ ] **State-root separation by path classification** — project tree vs Foreman state vs scratch — a write outside the declared class is a defect.
 

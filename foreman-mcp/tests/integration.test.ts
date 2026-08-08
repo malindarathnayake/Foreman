@@ -22,14 +22,14 @@ afterEach(async () => {
   await server?.close()
 })
 
-describe("list tools — verify all 26 present, update_bundle absent", () => {
+describe("list tools — verify all 27 present, update_bundle absent", () => {
   beforeEach(async () => {
     await setupServer()
   })
 
-  it("lists exactly 26 tools", async () => {
+  it("lists exactly 27 tools", async () => {
     const result = await client.listTools()
-    expect(result.tools).toHaveLength(26)
+    expect(result.tools).toHaveLength(27)
   })
 
   it("includes all required tool names", async () => {
@@ -127,7 +127,7 @@ describe("list tools — verify all 26 present, update_bundle absent", () => {
     const tool = result.tools.find((t) => t.name === "session_orient")
     expect(tool).toBeDefined()
     expect(tool!.description).toBe(
-      "Returns current Foreman session state: current phase, unit, next pending, blocked status. Call at session start for orientation."
+      "Returns ledger-authoritative Foreman resume state, including action, resume target, phase/unit, gate retry, blockers, and ledger/progress drift. Call first at session start."
     )
   })
 
@@ -192,7 +192,7 @@ describe("Codex-only tool registration", () => {
   it("registers codex_agents_init only for the codex host", async () => {
     const result = await client.listTools()
     const tool = result.tools.find((entry) => entry.name === "codex_agents_init")
-    expect(result.tools).toHaveLength(27)
+    expect(result.tools).toHaveLength(28)
     expect(tool).toBeDefined()
     expect(tool?.annotations?.title).toBe("Init Codex Agent Roles")
     expect(tool?.annotations?.readOnlyHint).toBe(false)
@@ -637,7 +637,86 @@ describe("set_phase_scope round-trip via MCP", () => {
     expect(operationSchema.enum).toContain("set_unit_status")
     expect(operationSchema.enum).toContain("set_verdict")
     expect(operationSchema.enum).toContain("add_rejection")
+    expect(operationSchema.enum).toContain("declare_phase_units")
     expect(operationSchema.enum).toContain("update_phase_gate")
     expect(operationSchema.enum).toContain("record_review")
+  })
+})
+
+describe("declare_phase_units round-trip via MCP", () => {
+  let tmpDir: string
+  let ledgerPath: string
+  let progressPath: string
+  let originalCwd: string
+
+  beforeEach(async () => {
+    tmpDir = await fs.mkdtemp(path.join(os.tmpdir(), "integration-declare-"))
+    ledgerPath = path.join(tmpDir, "ledger.json")
+    progressPath = path.join(tmpDir, "progress.json")
+    originalCwd = process.cwd()
+    process.chdir(tmpDir)
+    await setupServer({ ledgerPath, progressPath })
+  })
+
+  afterEach(async () => {
+    process.chdir(originalCwd)
+    await fs.rm(tmpDir, { recursive: true, force: true })
+  })
+
+  async function writeLedgerTool(args: Record<string, unknown>) {
+    return client.callTool({ name: "write_ledger", arguments: args })
+  }
+
+  async function passUnit(phase: string, unitId: string) {
+    await writeLedgerTool({
+      operation: "set_unit_status", phase, unit_id: unitId,
+      data: { s: "delegated", brief: "Worker brief long enough for the delegation gate" },
+    })
+    await writeLedgerTool({
+      operation: "set_verdict", phase, unit_id: unitId, data: { v: "pass" },
+    })
+  }
+
+  it("declares, blocks the gate on the missing id, passes once seeded, then freezes behind the gate", async () => {
+    const declare = await writeLedgerTool({
+      operation: "declare_phase_units", phase: "p1", data: { units: ["u1", "u2"] },
+    })
+    expect(declare.isError).not.toBe(true)
+    expect((declare.content as Array<{ text: string }>)[0].text).toContain("ok")
+
+    await passUnit("p1", "u1")
+
+    const blocked = await writeLedgerTool({
+      operation: "update_phase_gate", phase: "p1", data: { g: "pass" },
+    })
+    expect(blocked.isError).toBe(true)
+    const blockedText = (blocked.content as Array<{ text: string }>)[0].text
+    expect(blockedText).toContain("declares units never registered")
+    expect(blockedText).toContain("u2")
+
+    await passUnit("p1", "u2")
+    const pass = await writeLedgerTool({
+      operation: "update_phase_gate", phase: "p1", data: { g: "pass" },
+    })
+    expect(pass.isError).not.toBe(true)
+
+    const declareAfterPass = await writeLedgerTool({
+      operation: "declare_phase_units", phase: "p1", data: { units: ["u3"] },
+    })
+    expect(declareAfterPass.isError).toBe(true)
+    expect((declareAfterPass.content as Array<{ text: string }>)[0].text).toContain("DECLARE BLOCKED")
+  })
+
+  it("session_orient surfaces the missing declared unit as the resume target", async () => {
+    await writeLedgerTool({
+      operation: "declare_phase_units", phase: "p1", data: { units: ["u1", "u2"] },
+    })
+    await passUnit("p1", "u1")
+
+    const orient = await client.callTool({ name: "session_orient", arguments: {} })
+    const text = (orient.content as Array<{ text: string }>)[0].text
+    expect(text).toContain("action: implement_unit")
+    expect(text).toContain("resume_target: p1/u2")
+    expect(text).toContain("missing_declared_units: p1/u2")
   })
 })
