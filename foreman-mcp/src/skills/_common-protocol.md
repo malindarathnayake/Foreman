@@ -8,21 +8,23 @@ CRITICAL: Never write `.foreman-ledger.json` directly — all mutations go throu
 ## Session Start
 
 1. `mcp__foreman__bundle_status` — verify version, log warnings
-2. `mcp__foreman__read_ledger` with query "full" — get current state
-3. `mcp__foreman__read_progress` — truncated view
-4. `mcp__foreman__write_journal({ operation: "init_session", data: { target_version: "<version>", branch: "<branch>", phase: <N>, units: ["<unit ids>"], env: { agent: "frontier-pitboss", worker: "configured-worker", claude: null, codex: null, gemini: null } } })`
-5. Find handoff.md in `Docs/` or `docs/`
-6. Answer the five questions:
+2. `mcp__foreman__session_orient` — the ONLY resume authority. Follow its `action` and `resume_target`.
+3. If `state_drift` is not `none`, STOP and reconcile ledger/progress before delegation. Never choose the progress target over the ledger target. If `missing_declared_units` is not `none`, seed those units (`set_unit_status s:'pending'`) before delegation — they are declared spec scope the ledger doesn't track yet.
+4. `mcp__foreman__read_progress` — descriptive planning checklist only; it never tells you where to resume.
+5. `mcp__foreman__read_ledger` — read only the bounded slice needed for the current action, e.g. `read_ledger({ query: "verdicts", phase: "<current-phase>", limit: 50 })` or `read_ledger({ phase, unit_id })`. Never start a session with `query:"full"`. Table cells clip at 240 chars — a unit's full verdict note comes from `read_ledger({ phase, unit_id })`; full rejection/review text from `read_ledger({ query: "full", phase })`.
+6. `mcp__foreman__write_journal({ operation: "init_session", data: { target_version: "<version>", branch: "<branch>", phase: "<phase-id>", units: ["<unit ids>"], env: { agent: "frontier-pitboss", worker: "configured-worker", claude: null, codex: null, gemini: null } } })` — in a session that will run phase checkpoints (implementor), run the host's advisor probes first and record each advisor as `"<version>/<auth_status>"` (e.g. `"0.47.0/ok"`, `"0.47.0/auth_expired"`) instead of `null`; `null` means exactly "not probed" and is correct for sessions that never review. If the handoff declares units for the current (not-yet-passed) phase that the ledger doesn't know, `declare_phase_units` + seed them before delegation; if such units surface for a phase whose gate already passed, STOP and escalate — reopening a gate is a user decision.
+7. Find handoff.md in `Docs/` or `docs/`
+8. Answer the five questions:
 
 | Question | Source |
 |----------|--------|
-| Where am I? | Ledger current phase/unit status |
+| Where am I? | `session_orient` ledger-derived `action` + `resume_target` |
 | Where am I going? | Progress checklist |
 | What is the goal? | spec.md Intent |
 | What has been tried? | Ledger unit history |
 | What failed? | Ledger rejection history |
 
-7. Do NOT rely on host plan/task state — ledger is the single authority
+9. Do NOT rely on host plan/task state or `read_progress` hints — the ledger through `session_orient` is the single authority
 
 **Resume handling:**
 
@@ -41,18 +43,38 @@ CRITICAL: Never write `.foreman-ledger.json` directly — all mutations go throu
 
 When non-trivial ambiguities need resolution — escalate to multi-model deliberation.
 
-### Detection
-Check the two independent advisor seats configured for the active host:
+### Choosing the seat kind
 
-{{advisor_checks}}
+| Deliberation shape | Seat kind | Why |
+|---|---|---|
+| Review of a **concrete change or plan** (diff, checklist, patch, grounding report) | `invoke_council` — remote lens seats | Packet-bound, parallel, lens-scoped, structured findings, cheap enough to run at every checkpoint |
+| **Open design question** with no artifact yet ("which approach?") | CLI advisor seats | Council seats are stateless and see ONLY the packet — they cannot explore the codebase to form a design position |
+
+Both kinds feed the same 6-phase protocol below, and both stop at user arbitration.
+
+### Detection
+
+**The council is entirely optional.** Foreman with no council configured behaves exactly as it always has — this is the normal flow, not a degraded one. There is nothing to install, no probe to run, and no warning to surface.
+
+- Council: `mcp__foreman__invoke_council` returns `status: unavailable` when no seats are configured. That response names the next rung itself, so no separate capability check exists or is needed.
+- Advisors: {{advisor_checks}}
 
 ### Tier Mapping
-| Advisor A | Advisor B | Review path | Moderator |
-|-----------|-----------|-------------|-----------|
-| available | available | Invoke both independently | Pitboss (you) |
-| available | unavailable | Advisor A + recorded non-independent fallback | Pitboss (you) |
-| unavailable | available | Advisor B + recorded non-independent fallback | Pitboss (you) |
-| unavailable | unavailable | Two adversarial self-review passes, recorded as non-independent | Pitboss (you) |
+Take the highest available rung. Every rung below the first is RECORDED, not silent.
+
+| Rung | Available | Review path | Independence |
+|---|---|---|---|
+| 1 | ≥2 council seats | `invoke_council` across the selected lenses; add a CLI advisor for open design questions | Independent — disclose vendor correlation |
+| 2 | 1 council seat | `invoke_council` with the single seat; note single-seat coverage in the review record | Independent, single perspective |
+| 3 | No council, both advisors | Invoke both advisors independently | Independent |
+| 4 | No council, one advisor | That advisor + recorded non-independent fallback | Partial — record it |
+| 5 | Nothing available | {{advisor_fallback}} | NOT independent — say so in the ledger |
+
+Rules that hold at every rung:
+
+- `status: unavailable` is **not** a failed review and **not** a passed one. Drop to the next rung and carry on with the normal Foreman flow.
+- A council returning `status: fail` (every seat failed) does not promote the review to "passed" either — same rule, drop a rung.
+- Two seats on one model is **perspective, not independence**. Whenever rung 5 is used, or two council seats share a vendor, say so in the review record.
 
 ### Advisor Invocation
 Advisor invocation is host-specific. The active host is resolved at server start (default: Claude Code; set `FOREMAN_HOST=cursor` or pass `--host=cursor` for Cursor mode).

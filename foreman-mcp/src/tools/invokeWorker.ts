@@ -28,6 +28,15 @@ import {
 } from "../lib/workerResponse.js"
 import { readLedger } from "../lib/ledger.js"
 import { logEvent } from "../lib/journal.js"
+import {
+  postChat,
+  classifyHttpError,
+  isReasoningParamRejection,
+  readTransportBudgets,
+  envInt,
+  tryJson,
+  type NetResult,
+} from "../lib/chatTransport.js"
 
 // The closed 21-value failure taxonomy is owned by the sidecar envelope — reuse it
 // verbatim so telemetry and this tool can never drift apart.
@@ -77,7 +86,7 @@ export const PLAYBOOK: Record<FailureStage, string> = {
   WORKER_BINARY_NOT_FOUND:
     "aider or its python interpreter was not found (capability probe failed). Install aider (pip install aider-chat) or set FOREMAN_AIDER_PYTHON; until resolved this tier fails open with a recorded waiver.",
   WORKER_DIRTY_TREE_REFUSAL:
-    "The editable/read-only set was not tracked-and-clean at delegation (incoherent base for the host CAS). Commit or stash the set, then re-delegate; this one counts.",
+    "The editable/read-only set was not tracked-and-clean at delegation (incoherent base for the host CAS). Do not stash, commit, reset, or rewrite user-owned repository state. Wait for an owner-approved stable base or use a patch-only path that preserves the current files; this one counts.",
   WORKER_AIDER_EXIT:
     "aider (or the Python harness) exited non-zero with no parseable result — a crash or opaque exit (exit code / traceback class in detail). Re-delegate; if it recurs on one model, raise FOREMAN_WORKER_ACTIVITY_TIMEOUT_MS or switch tier.",
   WORKER_AIDER_LLM_ERROR:
@@ -109,20 +118,9 @@ interface ParamDowngrade {
 }
 
 // ─── Env knobs (read per call; invalid value → documented default) ───────────────
+// The three TRANSPORT budgets (connect / activity / response cap) and `envInt` now live
+// in lib/chatTransport.ts, shared byte-for-byte with the review-council path.
 const DEFAULT_BRIEF_MAX_BYTES = 262144
-const DEFAULT_RESPONSE_MAX_BYTES = 2097152
-const DEFAULT_CONNECT_TIMEOUT_MS = 10000
-const DEFAULT_ACTIVITY_TIMEOUT_MS = 180000
-
-function envInt(name: string, def: number): number {
-  const raw = process.env[name]
-  if (raw === undefined || raw.trim() === "") return def
-  const n = Number(raw)
-  // Fallback rule: any non-finite, non-integer, or non-positive value silently falls
-  // back to the documented default — a malformed knob must never break a delegation.
-  if (!Number.isFinite(n) || !Number.isInteger(n) || n <= 0) return def
-  return n
-}
 
 // ─── Small helpers ───────────────────────────────────────────────────────────────
 function sha256hex(text: string): string {
@@ -131,14 +129,6 @@ function sha256hex(text: string): string {
 
 function bounded(text: string, max: number): string {
   return text.length > max ? text.slice(0, max) : text
-}
-
-function tryJson(text: string): any {
-  try {
-    return JSON.parse(text)
-  } catch {
-    return undefined
-  }
 }
 
 /**
@@ -262,21 +252,6 @@ async function maybeEgressNotice(hostname: string, journalPath: string, unitId: 
     // Best-effort only — journalling must never throw into the serve path.
   }
   return notice + "\n\n"
-}
-
-// ─── Network attempt result ──────────────────────────────────────────────────────
-type NetResult =
-  | { kind: "neterror"; stage: FailureStage; refunded: boolean; detail?: string }
-  | { kind: "http"; status: number; bodyText: string }
-
-/** True only for a genuine reasoning_effort parameter rejection (structured fields only). */
-function isReasoningParamRejection(parsedErr: any): boolean {
-  const err = parsedErr?.error
-  if (!err || typeof err !== "object") return false
-  if (err.param === "reasoning_effort") return true
-  // "structured message field contains the literal token" — never a free-text regex.
-  if (typeof err.message === "string" && err.message.includes("reasoning_effort")) return true
-  return false
 }
 
 // ─── Main handler ─────────────────────────────────────────────────────────────────
@@ -497,9 +472,7 @@ async function runDelegation(
   }
 
   // ── Steps 9–12: request + two-phase timeout + bounded streaming. ──
-  const connectTimeoutMs = envInt("FOREMAN_WORKER_CONNECT_TIMEOUT_MS", DEFAULT_CONNECT_TIMEOUT_MS)
-  const activityTimeoutMs = envInt("FOREMAN_WORKER_ACTIVITY_TIMEOUT_MS", DEFAULT_ACTIVITY_TIMEOUT_MS)
-  const responseMaxBytes = envInt("FOREMAN_WORKER_RESPONSE_MAX_BYTES", DEFAULT_RESPONSE_MAX_BYTES)
+  const budgets = readTransportBudgets()
   const url = `${config.apiBase}/chat/completions`
   const headers: Record<string, string> = {
     "content-type": "application/json",
@@ -507,88 +480,10 @@ async function runDelegation(
     authorization: `Bearer ${process.env[config.apiKeyRef] ?? ""}`,
   }
 
+  // The two-phase timeout + byte-capped read lives in lib/chatTransport.ts (shared with
+  // invoke_council). This wrapper only supplies the per-attempt body.
   async function doRequest(includeReasoning: boolean): Promise<NetResult> {
-    const controller = new AbortController()
-    let connectFired = false
-    let activityFired = false
-
-    // (a) CONNECT budget: time-to-response-headers.
-    const connectTimer = setTimeout(() => {
-      connectFired = true
-      controller.abort()
-    }, connectTimeoutMs)
-
-    let response: Response
-    try {
-      response = await fetch(url, {
-        method: "POST",
-        headers,
-        body: buildBody(includeReasoning),
-        signal: controller.signal,
-      })
-    } catch {
-      clearTimeout(connectTimer)
-      // Connect-timeout abort OR a connection error (ECONNREFUSED etc.) → WORKER_UNREACHABLE.
-      return {
-        kind: "neterror",
-        stage: "WORKER_UNREACHABLE",
-        refunded: true,
-        detail: connectFired ? `connect timeout after ${connectTimeoutMs}ms` : "endpoint unreachable",
-      }
-    }
-    clearTimeout(connectTimer)
-
-    // (b) ACTIVITY budget: inter-chunk stall while reading the body stream.
-    const buffers: Buffer[] = []
-    let total = 0
-    let tooLarge = false
-    const reader = response.body?.getReader()
-    if (reader) {
-      let activityTimer = setTimeout(() => {
-        activityFired = true
-        controller.abort()
-      }, activityTimeoutMs)
-      try {
-        while (true) {
-          const { done, value } = await reader.read()
-          if (done) break
-          clearTimeout(activityTimer)
-          if (value && value.byteLength > 0) {
-            total += value.byteLength
-            if (total > responseMaxBytes) {
-              tooLarge = true
-              controller.abort()
-              try {
-                await reader.cancel()
-              } catch {
-                /* stream already errored by abort */
-              }
-              break
-            }
-            buffers.push(Buffer.from(value))
-          }
-          activityTimer = setTimeout(() => {
-            activityFired = true
-            controller.abort()
-          }, activityTimeoutMs)
-        }
-        clearTimeout(activityTimer)
-      } catch {
-        clearTimeout(activityTimer)
-        if (tooLarge) {
-          // Stage-0 model-output discipline: NOT refunded.
-          return { kind: "neterror", stage: "WORKER_RESPONSE_TOO_LARGE", refunded: false, detail: `response exceeded ${responseMaxBytes} bytes` }
-        }
-        if (activityFired) {
-          return { kind: "neterror", stage: "WORKER_TIMEOUT", refunded: true, detail: `activity timeout after ${activityTimeoutMs}ms` }
-        }
-        return { kind: "neterror", stage: "WORKER_UNREACHABLE", refunded: true, detail: "response stream error" }
-      }
-    }
-    if (tooLarge) {
-      return { kind: "neterror", stage: "WORKER_RESPONSE_TOO_LARGE", refunded: false, detail: `response exceeded ${responseMaxBytes} bytes` }
-    }
-    return { kind: "http", status: response.status, bodyText: Buffer.concat(buffers).toString("utf-8") }
+    return postChat(url, headers, buildBody(includeReasoning), budgets)
   }
 
   // ── Step 9: clean → append delegation_started already done; POST now. ──
@@ -768,23 +663,6 @@ async function runDelegation(
       return failureText("MODEL_SCHEMA_FAIL", false, `unclassified worker response: ${String(_exhaustive)}`, paramDowngrade)
     }
   }
-}
-
-// ─── Non-2xx status mapping (status-code-FIRST; structured 400 fields only) ───────
-function classifyHttpError(status: number, bodyText: string): { stage: FailureStage; refunded: boolean; detail?: string } {
-  if (status === 401 || status === 403) return { stage: "WORKER_AUTH_FAIL", refunded: true }
-  if (status === 429) return { stage: "WORKER_QUOTA_FAIL", refunded: true }
-  if (status === 404) return { stage: "WORKER_MODEL_NOT_FOUND", refunded: true }
-  if (status === 400) {
-    const parsed = tryJson(bodyText)
-    const code = parsed?.error?.code
-    if (code === "context_length_exceeded") return { stage: "BRIEF_TOO_LARGE", refunded: true }
-    if (code === "model_not_found") return { stage: "WORKER_MODEL_NOT_FOUND", refunded: true }
-    // Unclassifiable 400 → conservative WORKER_UNREACHABLE bucket with the numeric status.
-    return { stage: "WORKER_UNREACHABLE", refunded: true, detail: "HTTP 400" }
-  }
-  // Any other non-2xx (incl. 5xx) → conservative WORKER_UNREACHABLE bucket, numeric status in detail.
-  return { stage: "WORKER_UNREACHABLE", refunded: true, detail: `HTTP ${status}` }
 }
 
 // ─── Success return builder ──────────────────────────────────────────────────────

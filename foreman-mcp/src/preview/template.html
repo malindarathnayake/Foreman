@@ -10,9 +10,21 @@
   <body data-id="{{ID}}" data-token="{{TOKEN}}" data-theme="{{THEME}}">
     <header>
       <span class="title">{{TITLE}}</span>
+      <div class="controls">
+        <button id="zoom-out" type="button" title="Zoom out (-)">&minus;</button>
+        <button id="zoom-reset" type="button" class="pct" title="Reset to 100% (0)">100%</button>
+        <button id="zoom-in" type="button" title="Zoom in (+)">+</button>
+        <button id="zoom-fit" type="button" title="Fit to window (f)">Fit</button>
+        <span class="sep"></span>
+        <button id="export-png" type="button" title="Export as PNG (2x)">PNG</button>
+        <button id="export-svg" type="button" title="Export as SVG">SVG</button>
+        <button id="export-mmd" type="button" title="Download mermaid source">.mmd</button>
+      </div>
       <span class="meta" id="meta">connecting…</span>
     </header>
-    <main id="diagram" class="diagram"></main>
+    <main id="diagram" class="diagram">
+      <div id="canvas" class="canvas"></div>
+    </main>
     <pre id="error" class="error" hidden></pre>
     <!-- No inline script (CSP script-src 'self'). Both scripts are same-origin assets. -->
     <script src="/assets/mermaid.min.js"></script>

@@ -33,17 +33,60 @@ header .meta {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
-.diagram {
-  flex: 1;
+.controls {
   display: flex;
   align-items: center;
-  justify-content: center;
-  padding: 20px;
-  overflow: auto;
+  gap: 4px;
+  flex-shrink: 0;
 }
-.diagram svg {
-  max-width: 100%;
-  height: auto;
+.controls button {
+  appearance: none;
+  border: 1px solid #d1d5db;
+  border-radius: 4px;
+  background: #ffffff;
+  color: #374151;
+  font: inherit;
+  font-size: 12px;
+  line-height: 1;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+.controls button:hover {
+  background: #f3f4f6;
+}
+.controls button:active {
+  background: #e5e7eb;
+}
+.controls .pct {
+  min-width: 52px;
+  font-variant-numeric: tabular-nums;
+}
+.controls .sep {
+  width: 1px;
+  height: 18px;
+  background: #e5e7eb;
+  margin: 0 4px;
+}
+.diagram {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  cursor: grab;
+  /* subtle dot grid so panning has visible feedback */
+  background-image: radial-gradient(#e5e7eb 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+.diagram.panning {
+  cursor: grabbing;
+}
+.canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  transform-origin: 0 0;
+}
+.canvas svg {
+  display: block;
 }
 .error {
   margin: 0;

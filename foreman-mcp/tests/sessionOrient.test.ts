@@ -303,4 +303,220 @@ describe("sessionOrient", () => {
 
     expect(result).toContain("stale_gates: p1")
   })
+
+  it("all unit verdicts pass but gate does not → retry_phase_gate", async () => {
+    await seedLedger({
+      v: 1,
+      ts: "2026-08-04T00:00:00Z",
+      phases: {
+        "V20-P0": {
+          s: "ip",
+          g: "fail",
+          units: {
+            "U0.17": { s: "done", v: "pass", w: "brief", rej: [] },
+            "U0.18": { s: "done", v: "pass", w: "brief", rej: [] },
+          },
+        },
+      },
+    })
+    await seedProgress()
+
+    const result = await sessionOrient(ledgerPath, progressPath)
+
+    expect(result).toContain("action: retry_phase_gate")
+    expect(result).toContain("resume_target: V20-P0/phase_gate")
+    expect(result).toContain("current_unit: null")
+  })
+
+  it("reports explicit ledger/progress drift instead of trusting stale progress", async () => {
+    await seedLedger({
+      v: 1,
+      ts: "2026-08-04T00:00:00Z",
+      phases: {
+        "V20-P0": {
+          s: "ip",
+          g: "fail",
+          units: {
+            "U0.18": { s: "done", v: "pass", w: "brief", rej: [] },
+          },
+        },
+      },
+    })
+    await fs.writeFile(progressPath, JSON.stringify({
+      phases: {
+        P4: {
+          name: "legacy v1 phase",
+          units: {
+            "U4.2": { id: "U4.2", phase: "P4", status: "in_progress", notes: "stale" },
+          },
+        },
+      },
+      error_log: [],
+    }), "utf-8")
+
+    const result = await sessionOrient(ledgerPath, progressPath)
+
+    expect(result).toContain("action: retry_phase_gate")
+    expect(result).toContain("resume_target: V20-P0/phase_gate")
+    expect(result).toContain("state_drift: progress:P4/U4.2;ledger:V20-P0/phase_gate")
+  })
+
+  it("uses verdict timestamps rather than lexical unit ids for last_completed_unit", async () => {
+    await seedLedger({
+      v: 1,
+      ts: "2026-08-04T00:00:00Z",
+      phases: {
+        p1: {
+          s: "done",
+          g: "pass",
+          units: {
+            "U0.9": { s: "done", v: "pass", v_ts: "2026-08-04T10:00:00Z", w: "brief", rej: [] },
+            "U0.18": { s: "done", v: "pass", v_ts: "2026-08-04T12:00:00Z", w: "brief", rej: [] },
+          },
+        },
+      },
+    })
+    await seedProgress()
+
+    const result = await sessionOrient(ledgerPath, progressPath)
+
+    expect(result).toContain("last_completed_unit: p1/U0.18")
+  })
+})
+
+// ─── declared units + bidirectional drift (field-feedback fixes #1/#3) ───────
+
+describe("sessionOrient — declared units", () => {
+  it("declared-but-unregistered unit → implement_unit, not retry_phase_gate", async () => {
+    await seedLedger({
+      v: 1,
+      ts: "2026-08-07T00:00:00Z",
+      phases: {
+        p1: {
+          s: "ip",
+          g: "pending",
+          declared_units: ["u1", "u2"],
+          units: {
+            u1: { s: "done", v: "pass", v_ts: "2026-08-07T00:01:00Z", w: "brief", rej: [] },
+          },
+        },
+      },
+    })
+    await seedProgress()
+
+    const result = await sessionOrient(ledgerPath, progressPath)
+
+    expect(result).toContain("action: implement_unit")
+    expect(result).toContain("resume_target: p1/u2")
+    expect(result).toContain("current_unit: u2")
+    expect(result).toContain("next_pending_unit: p1/u2")
+    expect(result).toContain("missing_declared_units: p1/u2")
+    expect(result).not.toContain("retry_phase_gate")
+  })
+
+  it("all declared units registered and passing → retry_phase_gate as before", async () => {
+    await seedLedger({
+      v: 1,
+      ts: "2026-08-07T00:00:00Z",
+      phases: {
+        p1: {
+          s: "ip",
+          g: "pending",
+          declared_units: ["u1"],
+          units: {
+            u1: { s: "done", v: "pass", v_ts: "2026-08-07T00:01:00Z", w: "brief", rej: [] },
+          },
+        },
+      },
+    })
+    await seedProgress()
+
+    const result = await sessionOrient(ledgerPath, progressPath)
+
+    expect(result).toContain("action: retry_phase_gate")
+    expect(result).toContain("missing_declared_units: none")
+  })
+
+  it("legacy ledger without declared_units is unchanged and reports none", async () => {
+    await seedLedger({
+      v: 1,
+      ts: "2026-08-07T00:00:00Z",
+      phases: {
+        p1: {
+          s: "ip",
+          g: "pending",
+          units: {
+            u1: { s: "pending", v: "pending", w: null, rej: [] },
+          },
+        },
+      },
+    })
+    await seedProgress()
+
+    const result = await sessionOrient(ledgerPath, progressPath)
+
+    expect(result).toContain("action: implement_unit")
+    expect(result).toContain("missing_declared_units: none")
+  })
+})
+
+describe("sessionOrient — bidirectional state drift", () => {
+  async function seedProgressWith(units: Record<string, { phase: string; status: string }>): Promise<void> {
+    const phases: Record<string, { name: string; units: Record<string, object> }> = {}
+    for (const [unitId, u] of Object.entries(units)) {
+      phases[u.phase] ??= { name: u.phase, units: {} }
+      phases[u.phase].units[unitId] = { id: unitId, phase: u.phase, status: u.status, notes: "" }
+    }
+    await fs.writeFile(progressPath, JSON.stringify({ phases, error_log: [] }), "utf-8")
+  }
+
+  it("progress marks the ledger resume unit complete → drift flagged", async () => {
+    await seedLedger({
+      v: 1,
+      ts: "2026-08-07T00:00:00Z",
+      phases: {
+        p1: {
+          s: "ip",
+          g: "pending",
+          units: {
+            u1: { s: "pending", v: "pending", w: null, rej: [] },
+          },
+        },
+      },
+    })
+    await seedProgressWith({ u1: { phase: "p1", status: "complete" } })
+
+    const result = await sessionOrient(ledgerPath, progressPath)
+
+    expect(result).toContain("state_drift: progress:complete(p1/u1);ledger:p1/u1")
+  })
+
+  it("partial progress file (earlier phase only) is NOT drift on a later-phase resume", async () => {
+    await seedLedger({
+      v: 1,
+      ts: "2026-08-07T00:00:00Z",
+      phases: {
+        p1: {
+          s: "ip",
+          g: "pass",
+          units: {
+            u1: { s: "done", v: "pass", v_ts: "2026-08-07T00:01:00Z", w: "brief", rej: [] },
+          },
+        },
+        p2: {
+          s: "ip",
+          g: "pending",
+          units: {
+            u2: { s: "pending", v: "pending", w: null, rej: [] },
+          },
+        },
+      },
+    })
+    await seedProgressWith({ u1: { phase: "p1", status: "complete" } })
+
+    const result = await sessionOrient(ledgerPath, progressPath)
+
+    expect(result).toContain("resume_target: p2/u2")
+    expect(result).toContain("state_drift: none")
+  })
 })

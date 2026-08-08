@@ -724,6 +724,11 @@ describe("PLAYBOOK", () => {
       expect(PLAYBOOK[stage].length).toBeGreaterThan(0)
     }
   })
+
+  it("never recommends stashing user-owned work after a dirty-tree refusal", () => {
+    expect(PLAYBOOK.WORKER_DIRTY_TREE_REFUSAL).toContain("Do not stash")
+    expect(PLAYBOOK.WORKER_DIRTY_TREE_REFUSAL).not.toContain("Commit or stash")
+  })
 })
 
 // ── 21. Listed-files enforcement [CWE-73] ─────────────────────────────────────────────

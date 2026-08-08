@@ -5,9 +5,14 @@ export async function handleReadProgress(filePath: string, lastNCompleted?: numb
   const progress = await readProgress(filePath)
   const view = truncateProgress(progress, lastNCompleted)
 
-  // Format as TOON sections
-  let output = "SESSION_HINT\n"
-  output += toKeyValue({ hint: view.status.session_hint })
+  // Progress is deliberately non-authoritative. Resume directives come only from
+  // session_orient, which can compare this checklist with the ledger and report drift.
+  let output = "AUTHORITY\n"
+  output += toKeyValue({
+    role: "planning_checklist_only",
+    resume: "call session_orient",
+    note: view.status.planning_note,
+  })
 
   output += "\nSTATUS\n"
   output += toKeyValue({

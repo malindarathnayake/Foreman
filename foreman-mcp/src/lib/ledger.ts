@@ -104,11 +104,18 @@ function ensurePhase(ledger: LedgerFile, phase: string): void {
 // Hash of the phase's unit ids + verdicts + verdict timestamps at gate-pass time.
 // Recomputed on read: a mismatch means units changed after the gate passed.
 // Legacy units without v_ts (pre-v0.5.0) hash as empty string (R1).
-export function computeGateUnitsHash(units: Record<string, Unit>): string {
-  const material = Object.keys(units)
+// The declared-unit set joins the material ONLY when the field exists — legacy
+// phases keep the pre-v0.5.11 material so recorded hashes never flag false STALE.
+// declare_phase_units is rejected on passed gates, so a post-pass declared change
+// can only come from a manual edit — which this correctly surfaces as STALE.
+export function computeGateUnitsHash(units: Record<string, Unit>, declaredUnits?: string[]): string {
+  const unitMaterial = Object.keys(units)
     .sort()
     .map((id) => `${id}:${units[id].v}:${units[id].v_ts ?? ""}`)
     .join("\n")
+  const material = declaredUnits === undefined
+    ? unitMaterial
+    : `${unitMaterial}\ndeclared:${[...declaredUnits].sort().join(",")}`
   return createHash("sha256").update(material, "utf-8").digest("hex")
 }
 
@@ -284,6 +291,67 @@ async function applyOperation(
       if (unit.rej.length > 20) unit.rej = unit.rej.slice(-20)
       break
     }
+    case "declare_phase_units": {
+      const { phase, data } = operation
+      ensurePhase(ledger, phase)
+      const phaseObj = ledger.phases[phase]
+      if (!data.units?.length && !data.retire?.length) {
+        throw new Error(
+          "DECLARE REQUIRED: declare_phase_units needs data.units (add declared ids) and/or data.retire (remove declared-only ids)."
+        )
+      }
+      // Declaring against a passed gate would leave session_orient reporting
+      // status:complete while missing_declared_units contradicts it. Reopening
+      // the gate IS the auditable action — no override.
+      if (phaseObj.g === "pass") {
+        throw new Error(
+          `DECLARE BLOCKED: phase '${phase}' gate is 'pass'. Reopen the gate first ` +
+          "(update_phase_gate g:'pending') before changing its declared unit set."
+        )
+      }
+      if (data.retire?.length) {
+        if (!data.reason) {
+          throw new Error(
+            "RETIRE REQUIRES REASON: data.reason is mandatory when retiring declared ids — the tombstone is the audit trail."
+          )
+        }
+        const registered = data.retire.filter((id) => phaseObj.units[id]).sort()
+        if (registered.length > 0) {
+          throw new Error(
+            `RETIRE BLOCKED: ids are registered units, not declarations: ${registered.join(", ")}. ` +
+            "Registered units are facts — only declared-but-unregistered ids can be retired."
+          )
+        }
+        const declared = phaseObj.declared_units ?? []
+        const notDeclared = data.retire.filter((id) => !declared.includes(id)).sort()
+        if (notDeclared.length > 0) {
+          throw new Error(
+            `RETIRE BLOCKED: ids are not in the declared set: ${notDeclared.join(", ")}.`
+          )
+        }
+        const retireSet = new Set(data.retire)
+        phaseObj.declared_units = declared.filter((id) => !retireSet.has(id))
+        phaseObj.declared_log ??= []
+        phaseObj.declared_log.push({
+          ts: new Date().toISOString(),
+          retired: [...data.retire].sort(),
+          reason: data.reason,
+        })
+        if (phaseObj.declared_log.length > 10) phaseObj.declared_log = phaseObj.declared_log.slice(-10)
+        // Retiring the last declared id returns the phase to legacy (undeclared) semantics.
+        if (phaseObj.declared_units.length === 0 && !data.units?.length) delete phaseObj.declared_units
+      }
+      if (data.units?.length) {
+        const merged = new Set([...(phaseObj.declared_units ?? []), ...data.units])
+        if (merged.size > 200) {
+          throw new Error(
+            `DECLARE CAP: merged declared set for phase '${phase}' would be ${merged.size} ids (cap 200).`
+          )
+        }
+        phaseObj.declared_units = [...merged].sort()
+      }
+      break
+    }
     case "update_phase_gate": {
       const { phase, data } = operation
       ensurePhase(ledger, phase)
@@ -291,6 +359,21 @@ async function applyOperation(
       if (data.g === "pass") {
         const units = ledger.phases[phase].units
         const unitIds = Object.keys(units)
+        // Declared-unit coverage first: a declared id with no registered unit is a
+        // partially-implemented phase, not a passable one. Sequenced before the
+        // empty-phase check so the error names the missing ids.
+        const declared = ledger.phases[phase].declared_units
+        if (declared !== undefined && declared.length > 0) {
+          const missing = declared.filter((id) => !units[id]).sort()
+          if (missing.length > 0) {
+            const shown = missing.slice(0, 10).join(", ")
+            const more = missing.length > 10 ? ` (+${missing.length - 10} more)` : ""
+            throw new Error(
+              `PHASE GATE BLOCKED: phase '${phase}' declares units never registered in the ledger: ` +
+              `${shown}${more}. Seed them via set_unit_status and bring them to pass verdicts before the gate can pass.`
+            )
+          }
+        }
         if (unitIds.length === 0) {
           throw new Error(
             `PHASE GATE BLOCKED: phase '${phase}' has no units recorded. ` +
@@ -342,7 +425,7 @@ async function applyOperation(
       // Read paths recompute and flag STALE; nothing is ever blocked on staleness.
       if (data.g === "pass") {
         ledger.phases[phase].gate_units_hash = {
-          hash: computeGateUnitsHash(ledger.phases[phase].units),
+          hash: computeGateUnitsHash(ledger.phases[phase].units, ledger.phases[phase].declared_units),
           ts: new Date().toISOString(),
         }
       }

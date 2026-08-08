@@ -222,12 +222,83 @@ describe("loadForemanEnv", () => {
           "FOREMAN_API_BASE=https://openrouter.ai/api/v1\n" +
           "FOREMAN_API_KEY=${ENV:FOREMANENV_TEST_UNSET_VAR}\n"
       )
-      const result = await loadForemanEnv({ dir, env: {} })
+      // credentialsPath is pinned to a non-existent file so the message is deterministic:
+      // unpinned it would name the real ~/.foreman-mcp/.env and vary per machine.
+      const credentialsPath = path.join(dir, "absent-credentials.env")
+      const result = await loadForemanEnv({ dir, env: {}, credentialsPath })
       expect(result.status).toBe("config_error")
       if (result.status !== "config_error") return
       expect(result.message).toBe(
-        "environment variable 'FOREMANENV_TEST_UNSET_VAR' is not set — export it before starting the server"
+        "environment variable 'FOREMANENV_TEST_UNSET_VAR' is not set.\n\n" +
+          "Define it in EITHER place:\n" +
+          "  1. export it in the environment that starts the server, or\n" +
+          `  2. add this line to ${credentialsPath}:\n` +
+          "       FOREMANENV_TEST_UNSET_VAR=<your key>\n\n" +
+          "The exported value wins when both are present.\n"
       )
+    })
+
+    it("[CWE-522] home store does NOT satisfy a repo ${ENV:NAME} ref when it names a different endpoint", async () => {
+      const dir = await makeTempDir()
+      // Name collision on the likeliest variable anyone would pick, across two DIFFERENT services.
+      await writeForemanEnv(
+        dir,
+        "schema_version=1\n" +
+          "FOREMAN_API_BASE=http://192.168.1.10:31081/v1\n" +
+          "FOREMAN_API_KEY=${ENV:FOREMAN_API_KEY}\n"
+      )
+      const credentialsPath = path.join(dir, "home.env")
+      await fs.writeFile(
+        credentialsPath,
+        "FOREMAN_API_BASE=https://openrouter.ai/api/v1\nFOREMAN_API_KEY=sk_or_hosted_00001\n",
+        "utf-8"
+      )
+
+      const result = await loadForemanEnv({ dir, env: {}, credentialsPath })
+
+      // The hosted key must NOT be handed to the LAN endpoint. Failing closed is the point.
+      expect(result.status).toBe("config_error")
+      if (result.status !== "config_error") return
+      expect(result.message).toContain("'FOREMAN_API_KEY' is not set")
+      expect(result.message).not.toContain("sk_or_hosted_00001")
+    })
+
+    it("home store DOES satisfy a repo ${ENV:NAME} ref when it declares no endpoint of its own", async () => {
+      const dir = await makeTempDir()
+      await writeForemanEnv(
+        dir,
+        "schema_version=1\n" +
+          "FOREMAN_API_BASE=https://openrouter.ai/api/v1\n" +
+          "FOREMAN_API_KEY=${ENV:SHARED_PROVIDER_KEY}\n"
+      )
+      const credentialsPath = path.join(dir, "home.env")
+      await fs.writeFile(credentialsPath, "SHARED_PROVIDER_KEY=pure_store_key_0001\n", "utf-8")
+
+      const result = await loadForemanEnv({ dir, env: {}, credentialsPath })
+
+      expect(result.status).toBe("ok")
+      if (result.status !== "ok") return
+      expect(result.config.apiKeyRef).toBe("SHARED_PROVIDER_KEY")
+      // Registered for redaction, and the value never appears in the returned config.
+      expect(scrub("leaked pure_store_key_0001")).toBe("leaked [REDACTED:env:SHARED_PROVIDER_KEY]")
+    })
+
+    it("rejects a resolved value that is itself an unresolved ${ENV:...} token", async () => {
+      const dir = await makeTempDir()
+      await writeForemanEnv(
+        dir,
+        "schema_version=1\n" +
+          "FOREMAN_API_BASE=https://openrouter.ai/api/v1\n" +
+          "FOREMAN_API_KEY=${ENV:SELF_REF_KEY}\n"
+      )
+      const credentialsPath = path.join(dir, "home.env")
+      await fs.writeFile(credentialsPath, "SELF_REF_KEY=${ENV:SELF_REF_KEY}\n", "utf-8")
+
+      const result = await loadForemanEnv({ dir, env: {}, credentialsPath })
+
+      expect(result.status).toBe("config_error")
+      if (result.status !== "config_error") return
+      expect(result.message).toContain("unresolved indirection token")
     })
 
     it("configured tier missing its worker class names the exact line AND which tiers ARE configured", async () => {

@@ -130,14 +130,25 @@ describe("hostProfiles — getProfile", () => {
     }
   })
 
-  it("codex worker_fanout describes parallel spawn_agent with explorer/worker roles", () => {
+  it("codex worker_fanout serializes shared-tree editors and allows parallel explorers", () => {
     const fanout = getProfile("codex").placeholders.worker_fanout
     expect(fanout).toContain("spawn_agent")
     expect(fanout).toContain("explorer")
+    expect(fanout).toContain("MUST run sequentially")
     expect(fanout).toContain("max_threads")
+    expect(fanout).toContain("isolated worktree/sandbox")
     expect(fanout).toContain("max_depth=1")
     expect(fanout).toContain("codex_agents_init")
     expect(fanout).toContain("write_ledger")
+  })
+
+  it("every host worker prompt forbids repository-state mutation", () => {
+    for (const id of KNOWN_HOSTS) {
+      const invoke = getProfile(id as HostId).placeholders.worker_invoke
+      expect(invoke, `${id}.worker_invoke`).toContain("Repository state is user-owned")
+      expect(invoke, `${id}.worker_invoke`).toContain("git stash")
+      expect(invoke, `${id}.worker_invoke`).toContain("must never")
+    }
   })
 
   it("hostRuntimePreamble includes worker_fanout for every host", async () => {

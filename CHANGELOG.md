@@ -1,6 +1,40 @@
 # Changelog
 
-## Unreleased
+## 0.5.14 - 2026-08-08
+
+- Diagram preview viewer gained interaction controls: cursor-centered wheel zoom, drag panning, toolbar (zoom in/out, 100%, fit) with `+`/`-`/`0`/`f` keyboard shortcuts, and client-side export as PNG (2x, white background, canvas-limit capped), SVG, or the raw `.mmd` source. All rendering and export stay client-side under the existing strict CSP (PNG rasterizes through a `data:` URL; a tainted-canvas edge case falls back to SVG export). First render auto-fits oversized diagrams; live-reload preserves the current zoom/pan.
+
+- Declared units are now a ledger fact: new `write_ledger` operation `declare_phase_units` records each phase's expected unit-id set (additive union-merge, cap 200, ids validated against TOON-structural characters). The phase gate blocks `g:'pass'` while any declared id is unregistered, and `session_orient` resumes at the first declared-but-unseeded unit (`action: implement_unit`, new `missing_declared_units` field) instead of misreporting `retry_phase_gate` on a partially-seeded phase — closes the field-reported hole where a quarter-implemented phase passed its gate mechanically.
+- Declared sets are frozen behind a passed gate (reopen the gate first — no override), participate in the D2b gate-staleness hash when present (legacy hashes unaffected), and support auditable correction: `retire` removes declared-only ids with a mandatory reason tombstoned in `declared_log`. The progress checklist renders declared-but-unregistered units as unchecked `declared, unregistered` rows instead of erasing them.
+- `session_orient` state-drift detection is now bidirectional: progress marking the ledger's resume unit itself complete is flagged as `progress:complete(<unit>);ledger:<target>`. Partial progress files (earlier phases only) remain non-drift, so later-phase resumes are not blocked.
+- `read_ledger` paged queries emit a query-specific recovery `hint` when cells were truncated (verdict notes → per-unit read; rejections/reviews → phase-scoped `full`); untruncated output is byte-identical.
+- Session-start protocol: implementor sessions probe advisors once and record `<version>/<auth_status>` in the `init_session` env (`null` now explicitly means "not probed"); checkpoints reuse the probe instead of re-running it.
+- The claude-code worker fan-out rule replaces its vague isolation exception with a concrete procedure: parallel editing workers require `isolation: "worktree"`, disjoint editable sets, full `git diff` in each completion report, and serial per-unit application; the full worktree fan-out contract remains v0.6 HOST-CONTRACT scope.
+- Bumped package to `0.5.14`.
+
+## 0.5.13 - 2026-08-05
+
+- Hardened shared-tree delegation after a production migration exposed a destructive `git stash` hazard: editing workers receive an explicit Git-mutation denylist, run sequentially unless isolated, and require a before/after branch, HEAD, stash, index, and dirty-path guard before tests or verdict. Foreman never performs automatic repository recovery.
+- Made ledger reads safe on mature projects with phase/verdict filters, cursor pagination, bounded cells, notes omitted by default, and recovery guidance instead of oversized `full` output.
+- Made `session_orient` the ledger-authoritative resume path, with explicit action and resume target, phase-gate retry detection, timestamp-based last-completed selection, and ledger/progress drift reporting. `read_progress` is now explicitly descriptive only.
+- Added shell-free Gradle wrapper support to `run_tests`, including Windows execution through `GradleWrapperMain`, and allowed canonical string journal phase ids such as `V20-P0` while retaining legacy numeric input.
+- Added a repeated-checkpoint termination protocol: targeted mutation or fault injection after a second green-but-unobservable block, defect-source classification, and mandatory owner arbitration after a third block.
+- Bumped package to `0.5.13`.
+
+## 0.5.12 - 2026-08-03
+
+- Added `invoke_council` (EXPERIMENTAL): an adaptive review council that runs N remote read-only review seats across M risk lenses over one evidence packet, in parallel, and returns structured findings for the host to moderate and the user to arbitrate. Read-only by design — seats never edit the tree, apply fixes, or write the ledger, and findings come back ledger-shaped for `write_ledger record_review`.
+- The council is entirely optional and its absence is a supported state, not an error: with no seats configured the tool returns `status: unavailable`, names the next rung of the deliberation ladder, and every other tool, skill, and ledger flow behaves exactly as before.
+- Added a versioned 7-lens catalog (contract, architecture, state, security, data, tests, operability). Each seat receives the evidence packet plus ONE compact lens card; the catalog, other lenses, and provider details never enter a reviewer's context.
+- Seats are configurable from the repo `.foremanenv` or from a new operator-owned store at `~/.foreman-mcp/.env`, with the home store overriding per seat so a model can be swapped without editing a shared repo file. Each seat reports which file configured it.
+- `~/.foreman-mcp/.env` also serves as a credential store: an API key may live there instead of the process environment. For the API key the process environment wins; for council seats the home store wins.
+- [CWE-522] The council resolves its API key from the same store that supplied its endpoint. A repo `.foremanenv` pointing at a local serving box while the home store seats the council on a hosted provider is the expected setup, and resolving those independently would misdeliver a credential in one direction or the other.
+- [CWE-532] Every value in the home credential store that clears the redaction harvest guards is now registered for redaction. Previously only the single resolved `FOREMAN_API_KEY` was registered, so a second credential in that file was invisible to both `scrub()` and the outbound secret gate.
+- Extracted the remote chat transport into `lib/chatTransport.ts`, shared byte-for-byte between `invoke_worker` and `invoke_council`: two-phase connect/activity timeouts, byte-capped streaming reads, and the closed status-to-failure-stage mapping now have one implementation. `invoke_worker` behavior is unchanged.
+- Council requests stream (`stream: true`) so the connect budget measures the endpoint rather than a multi-minute reasoning generation, and the activity budget detects a genuine mid-generation stall. OpenRouter-native provider routing is sent only when the endpoint is actually OpenRouter.
+- Deliberation protocol extended to a recorded 5-rung ladder (council → single seat → both CLI advisors → one advisor → two adversarial passes). `status: unavailable` and `status: fail` both drop a rung; neither is ever a passed review. Two seats on one model is disclosed as perspective, not independence.
+- Added optional Langfuse tracing for council runs, vendored zero-dependency from crucible. Off unless `FOREMAN_LANGFUSE_*` is configured; content capture is separately gated and off by default; a tracing failure degrades to silence and never alters a review.
+- Bumped package to `0.5.12`.
 
 ## 0.5.11 - 2026-07-28
 

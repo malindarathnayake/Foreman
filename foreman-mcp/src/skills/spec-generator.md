@@ -202,7 +202,16 @@ When a unit includes "check endpoint X for Y":
 
 ## Ledger Seeding
 
-For each phase and unit in the implementation order:
+First, declare each phase's expected unit set — this is what lets the gate and `session_orient` mechanically catch a unit that was declared in the handoff but never seeded:
+```
+mcp__foreman__write_ledger({
+  operation: "declare_phase_units",
+  phase: "<phase-id>",
+  data: { units: ["<unit-id>", ...] }
+})
+```
+
+Then, for each phase and unit in the implementation order:
 ```
 mcp__foreman__write_ledger({
   operation: "set_unit_status",
@@ -250,6 +259,7 @@ Run before delivering documents to user:
 - [ ] File structure matches implementation order
 - [ ] G1-G9 grounding checks all completed
 - [ ] Ethos sections present (Performance Budgets / Threat Table / Telemetry Contract) or all-standard declared with rationale
+- [ ] Declared-unit sets registered for every phase (`declare_phase_units`)
 - [ ] Ledger seeding calls issued for all phases and units
 - [ ] Progress seeding calls issued for phase 1
 - [ ] No ambiguities remain open (all resolved or explicitly deferred with user sign-off)

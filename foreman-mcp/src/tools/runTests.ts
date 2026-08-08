@@ -3,7 +3,7 @@ import { existsSync } from 'fs'
 import { runExternalCli, RESOLVE_CMD, parseResolutionOutput, type SpawnPlan } from '../lib/externalCli.js'
 import path from 'path'
 
-export const DEFAULT_ALLOWED_RUNNERS = ["npm", "pytest", "go", "cargo", "dotnet", "make"]
+export const DEFAULT_ALLOWED_RUNNERS = ["npm", "pytest", "go", "cargo", "dotnet", "make", "gradle", "gradlew"]
 const BUFFER_CAP_MULTIPLIER = 4
 const resolvedRunners = new Map<string, SpawnPlan>()
 
@@ -84,22 +84,89 @@ export function planFromCandidates(
   }
 }
 
+/**
+ * Resolve a project-local Gradle wrapper without executing a shell or batch file.
+ * POSIX can spawn the wrapper script directly through its shebang. Windows runs
+ * GradleWrapperMain with java so user-controlled test args never cross cmd.exe.
+ */
+export function planGradleWrapper(
+  projectRoot: string,
+  platform: NodeJS.Platform,
+  fileExists: (candidate: string) => boolean,
+  javaCandidates: string[] = [],
+): RunnerResolution | null {
+  if (platform !== 'win32') {
+    const wrapper = path.posix.join(projectRoot, 'gradlew')
+    return fileExists(wrapper) ? { ok: true, plan: { command: wrapper, args: [] } } : null
+  }
+
+  const windowsPath = path.win32
+  const wrapper = windowsPath.join(projectRoot, 'gradlew.bat')
+  if (!fileExists(wrapper)) return null
+
+  const wrapperJar = windowsPath.join(projectRoot, 'gradle', 'wrapper', 'gradle-wrapper.jar')
+  if (!fileExists(wrapperJar)) {
+    return { ok: false, error: `gradle wrapper jar not found\npath: ${wrapperJar}` }
+  }
+
+  const java = planFromCandidates('java', javaCandidates, platform, fileExists)
+  if (!java.ok) {
+    return { ok: false, error: `java required for safe Windows gradlew execution\n${java.error}` }
+  }
+
+  return {
+    ok: true,
+    plan: {
+      command: java.plan.command,
+      args: [
+        ...java.plan.args,
+        '-Dorg.gradle.appname=gradlew',
+        '-classpath',
+        wrapperJar,
+        'org.gradle.wrapper.GradleWrapperMain',
+      ],
+    },
+  }
+}
+
+async function commandCandidates(command: string): Promise<string[]> {
+  const result = await runExternalCli(RESOLVE_CMD, [command], 3000)
+  if (result.exitCode !== 0 || !result.stdout.trim()) return []
+  return parseResolutionOutput(result.stdout)
+}
+
 async function resolveRunner(runner: string): Promise<RunnerResolution> {
-  const cached = resolvedRunners.get(runner)
+  const lower = runner.toLowerCase()
+  const projectRoot = process.cwd()
+  const cacheKey = lower === 'gradle' || lower === 'gradlew' ? `${lower}\0${projectRoot}` : runner
+  const cached = resolvedRunners.get(cacheKey)
   if (cached) return { ok: true, plan: cached }
-  const result = await runExternalCli(RESOLVE_CMD, [runner], 3000)
-  if (result.exitCode !== 0 || !result.stdout.trim()) {
+
+  if (lower === 'gradle' || lower === 'gradlew') {
+    const javaCandidates = process.platform === 'win32' ? await commandCandidates('java') : []
+    const wrapper = planGradleWrapper(projectRoot, process.platform, existsSync, javaCandidates)
+    if (wrapper !== null) {
+      if (wrapper.ok) resolvedRunners.set(cacheKey, wrapper.plan)
+      return wrapper
+    }
+    if (lower === 'gradlew') {
+      return { ok: false, error: `project-local gradle wrapper not found\npath: ${projectRoot}` }
+    }
+  }
+
+  const candidates = await commandCandidates(runner)
+  if (candidates.length === 0) {
     return { ok: false, error: `runner not found\nrunner: ${runner}` }
   }
 
   const resolution = planFromCandidates(
     runner,
-    parseResolutionOutput(result.stdout),
+    candidates,
     process.platform,
     existsSync,
   )
   if (resolution.ok) {
-    resolvedRunners.set(runner, resolution.plan)
+    resolvedRunners.set(cacheKey, resolution.plan)
   }
   return resolution
 }

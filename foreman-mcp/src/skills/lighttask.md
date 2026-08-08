@@ -286,7 +286,20 @@ Run advisor review before execution unless explicitly waived.
 
 {{include: deliberation-protocol}}
 
-Lighttask advisor prompt:
+The grounding report plus the plan checklist IS the evidence packet — that is exactly what a council seat needs, so rung 1 is usually available here without extra assembly:
+
+```text
+mcp__foreman__invoke_council({
+  phase: "lighttask",
+  objective: "<one line: what this change does>",
+  evidence: "<grounding report + plan checklist + relevant diff or file excerpts>",
+  lenses: ["contract"]          // add "state" / "security" / "data" only for a distinct risk
+})
+```
+
+If it returns `status: unavailable`, nothing is wrong — continue to the CLI advisor rung below.
+
+Lighttask advisor prompt (CLI rung, and the basis for the lens objective above):
 
 ```text
 Review this lighttask grounding report and plan against the actual codebase.

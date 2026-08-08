@@ -342,6 +342,27 @@ describe("renderChecklist", () => {
     expect(renderChecklist(ledger)).toBe("_No phases yet._\n")
   })
 
+  it("renders declared-but-unregistered units as unchecked rows", () => {
+    const ledger: LedgerFile = {
+      v: 1,
+      ts: "2026-08-07T00:00:00Z",
+      phases: {
+        p1: {
+          s: "ip",
+          g: "pending",
+          declared_units: ["u1", "u3", "u2"],
+          units: {
+            u1: { s: "done", v: "pass", w: null, rej: [] },
+          },
+        },
+      },
+    }
+    const output = renderChecklist(ledger)
+    expect(output).toContain("- [x] u1 — pass")
+    expect(output).toContain("- [ ] u2 — declared, unregistered")
+    expect(output).toContain("- [ ] u3 — declared, unregistered")
+  })
+
   it("renders phases in lexicographic order", () => {
     // Insert v75-p2 before v75-p1 in object-literal order
     const ledger: LedgerFile = {
