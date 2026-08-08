@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.5.14 - 2026-08-08
 
 - Diagram preview viewer gained interaction controls: cursor-centered wheel zoom, drag panning, toolbar (zoom in/out, 100%, fit) with `+`/`-`/`0`/`f` keyboard shortcuts, and client-side export as PNG (2x, white background, canvas-limit capped), SVG, or the raw `.mmd` source. All rendering and export stay client-side under the existing strict CSP (PNG rasterizes through a `data:` URL; a tainted-canvas edge case falls back to SVG export). First render auto-fits oversized diagrams; live-reload preserves the current zoom/pan.
 
@@ -10,6 +10,7 @@
 - `read_ledger` paged queries emit a query-specific recovery `hint` when cells were truncated (verdict notes → per-unit read; rejections/reviews → phase-scoped `full`); untruncated output is byte-identical.
 - Session-start protocol: implementor sessions probe advisors once and record `<version>/<auth_status>` in the `init_session` env (`null` now explicitly means "not probed"); checkpoints reuse the probe instead of re-running it.
 - The claude-code worker fan-out rule replaces its vague isolation exception with a concrete procedure: parallel editing workers require `isolation: "worktree"`, disjoint editable sets, full `git diff` in each completion report, and serial per-unit application; the full worktree fan-out contract remains v0.6 HOST-CONTRACT scope.
+- Bumped package to `0.5.14`.
 
 ## 0.5.13 - 2026-08-05
 
