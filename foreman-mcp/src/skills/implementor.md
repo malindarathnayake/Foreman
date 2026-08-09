@@ -254,7 +254,7 @@ At phase end, after all six gates (G1–G6) pass:
 {{advisor_b}}
 {{advisor_fallback}}
 
-4. Ask each advisor: "Review these phase changes against the spec. List any: (a) spec directives not implemented, (b) implementations that contradict the spec, (c) missing error handling, (d) test gaps, (e) security issues — prefix each `[CWE-###]` (closest class or `[CWE-UNMAPPED]` + reason if none fits); where a finding weakens a control or detection-evidence row in the spec's Threat Table, cite that row by component name — do NOT invent new technique mappings during code review, (f) telemetry contract violations — names, unbounded tag values, missing trace correlation, secrets/PII in signals. Be specific — file:line references required."
+4. Ask each advisor (append the Advisor Grounding Protocol's efficiency instruction verbatim — selective reading, no file dumps): "Review these phase changes against the spec. List any: (a) spec directives not implemented, (b) implementations that contradict the spec, (c) missing error handling, (d) test gaps, (e) security issues — prefix each `[CWE-###]` (closest class or `[CWE-UNMAPPED]` + reason if none fits); where a finding weakens a control or detection-evidence row in the spec's Threat Table, cite that row by component name — do NOT invent new technique mappings during code review, (f) telemetry contract violations — names, unbounded tag values, missing trace correlation, secrets/PII in signals. Be specific — file:line references required."
 
 5. `mcp__foreman__normalize_review` — parse review output into structured findings
 6. Classify each finding: CONFIRMED / REJECTED / UNVERIFIED
