@@ -68,6 +68,10 @@ interface RunningServer {
   server: http.Server
   port: number
   token: string
+  /** Per-boot cache-buster stamped into asset URLs — NOT derived from the token
+   * (asset routes are tokenless; the version must not leak token bits). A server
+   * restart with updated assets automatically invalidates browser caches. */
+  assetVersion: string
   heartbeat: NodeJS.Timeout
   watchers: Map<string, FSWatcher> // dir -> watcher
   diagrams: Map<string, DiagramState> // id -> state
@@ -243,6 +247,7 @@ async function handleViewPage(
     .replaceAll("{{TOKEN}}", escapeHtml(rs.token))
     .replaceAll("{{THEME}}", escapeHtml(theme))
     .replaceAll("{{TITLE}}", escapeHtml(title))
+    .replaceAll("{{V}}", rs.assetVersion)
   setSecurityHeaders(res, "text/html; charset=utf-8")
   res.writeHead(200)
   res.end(html)
@@ -370,6 +375,7 @@ export async function ensureDiagramServer(): Promise<{ port: number; token: stri
     server,
     port,
     token,
+    assetVersion: crypto.randomBytes(4).toString("hex"),
     heartbeat: setInterval(() => {
       for (const state of rs.diagrams.values()) {
         for (const res of state.clients) res.write(": heartbeat\n\n")
