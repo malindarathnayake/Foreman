@@ -30,7 +30,13 @@ import { activateSpecMan } from "./tools/activateSpecMan.js"
 import { activateDocMan } from "./tools/activateDocMan.js"
 import { previewDiagram } from "./tools/previewDiagram.js"
 import { closeDiagramServer } from "./lib/diagramServer.js"
-import { NormalizeReviewInputSchema, VerifyCitationsInputSchema } from "./types.js"
+import {
+  NormalizeReviewInputSchema,
+  VerifyCitationsInputSchema,
+  JournalOperationDataSchemas,
+  LedgerOperationDataSchemas,
+} from "./types.js"
+import { renderShape } from "./lib/schemaDoc.js"
 import { readJournal, initSession, logEvent, endSession } from "./lib/journal.js"
 import { invokeAdvisor, formatAdvisorResult } from "./tools/invokeAdvisor.js"
 import { sessionOrient } from "./tools/sessionOrient.js"
@@ -313,12 +319,15 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "",
         "Operations:",
         "  set_unit_status — Set a unit's status. data: { s: 'pending'|'ip'|'delegated'|'done'|'fail', brief?: string, tier?: 'cheap'|'standard'|'premium', route_reason?: string }. Requires: phase, unit_id. s:'delegated' requires a 'brief' (min 20 chars); tier + route_reason are optional cost-tier audit evidence recorded on the delegation (and appended to the unit's delegation history).",
-        "  set_verdict     — Record pass/fail verdict. data: { v: 'pass'|'fail'|'pending', via?, note? }. Requires: phase, unit_id. v:'pass' is blocked unless the unit was first set to s:'delegated' with a brief; if phase scope declares has_tests:false or has_build:false, a non-empty attestation 'note' is also required.",
-        "  add_rejection   — Log a rejection. data: { r: string, msg: string, ts: string }. Requires: phase, unit_id.",
+        "  set_verdict     — Record the verdict. data: { v: 'pass'|'fail'|'pending'|'inconclusive', via?: 'worker'|'pitboss-direct'|'n/a', note? }. Requires: phase, unit_id. v:'pass' is blocked unless the unit was first set to s:'delegated' with a brief; if phase scope declares has_tests:false or has_build:false, a non-empty attestation 'note' is also required. The first pass verdict stamps first_pass_ts (never overwritten) — the completion frontier session_orient reports.",
+        "  add_rejection   — Log a rejection. data: { r: string, msg: string, ts: string }. Requires: phase, unit_id. Rejecting a unit whose verdict is 'pass' reopens it to 'pending' (returned as a warning) — re-run set_verdict after the fix.",
         "  declare_phase_units — Declare the spec's expected unit-id set for a phase. data: { units?: string[] (additive, deduped, cap 200), retire?: string[] (remove declared-only ids; requires reason), reason?: string }. Requires: phase. Blocked while the phase gate is 'pass'. Gate pass then requires every declared id to be registered.",
-        "  update_phase_gate — Set phase gate result. data: { g: 'pass'|'fail'|'pending' }. Requires: phase. g:'pass' is blocked unless every unit in the phase has verdict 'pass' and every declared unit id is registered.",
-        "  set_phase_scope — Declare phase scope for gate applicability. data: { has_tests, has_api, has_build: boolean }. Requires: phase.",
-        "  record_review   — Record a durable advisor review at a checkpoint. data: { advisor: string, findings: Array<{ severity, file, line, description, classification? }>, packet_hash?, tokens? }. Requires: phase.",
+        "  update_phase_gate — Set phase gate result. data: { g: 'pass'|'fail'|'pending', agent_class?, user_override? }. Requires: phase. g:'pass' is blocked unless every unit in the phase has verdict 'pass', every declared unit id is registered, and at least one record_review exists for the phase (user_override:true passes without a review and is recorded on the phase).",
+        "  set_phase_scope — Declare phase scope for gate applicability. data: { has_tests, has_api, has_build: boolean, hot_path?, security_boundary? }. Requires: phase.",
+        "  record_review   — Record a durable advisor review at a checkpoint. Requires: phase. 'line' is a string. Zero findings are only a clean result when 'checked' lists what the seat examined; otherwise record completion:'partial'. stage:'cross_exam' marks a re-prompt informed by another seat's claims — it never counts as a second independent seat.",
+        "",
+        "Exact data shapes (generated from the validation schema — every key, enum value, and limit):",
+        ...Object.entries(LedgerOperationDataSchemas).map(([op, schema]) => `  ${op}: ${renderShape(schema)}`),
       ].join("\n"),
       inputSchema: z.strictObject({
         operation: z.enum(["set_unit_status", "set_verdict", "add_rejection", "declare_phase_units", "update_phase_gate", "set_phase_scope", "record_review"]),
@@ -471,6 +480,8 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "  update_status — Set unit status. data: { unit_id: string, phase: string, status: string, notes: string }.",
         "  complete_unit — Mark unit done. data: { unit_id: string, phase: string, completed_at: string, notes: string }.",
         "  log_error     — Log an error. data: { date: string, unit: string, what_failed: string, next_approach: string }.",
+        "",
+        "Markdown side effect: when Docs/PROGRESS.md exists, the block between <!-- foreman:checklist-start --> and <!-- foreman:checklist-end --> is REPLACED with a checklist rendered from the LEDGER (unit ids, verdicts, notes; natural order). Content outside the fences is preserved verbatim; with no fences the block is appended at EOF. Keep hand-written unit plans (files, checkpoint commands) outside the fences — they do not survive inside. Seed the ledger before the first call or the block renders '_No phases yet._'.",
       ].join("\n"),
       inputSchema: z.strictObject({
         operation: z.enum(["update_status", "complete_unit", "log_error", "start_phase"]),
@@ -493,7 +504,15 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     "write_journal",
     {
       title: "Write Journal",
-      description: "Writes to the Foreman session journal. Operations: init_session — start session with env; log_event — append operational event; end_session — finalize with summary.",
+      description: [
+        "Writes to the Foreman session journal — a friction log, not a diary.",
+        "",
+        "Sequence per session: init_session (once, at session start) → log_event (0–200 entries, anomalies only) → end_session (once, at checkpoint or handoff).",
+        "The event-code enum is anomaly-only by design: log failures, delays, and degraded tooling; never successes, worker spawns, or test passes. Host tooling that is broken or unusable (e.g. run_tests cannot spawn) is TOOL_ERR. There is no informational code.",
+        "",
+        "Operations and exact data shapes (generated from the validation schema — every key, enum value, and limit):",
+        ...Object.entries(JournalOperationDataSchemas).map(([op, schema]) => `  ${op} — data: ${renderShape(schema)}`),
+      ].join("\n"),
       inputSchema: z.strictObject({
         operation: z.enum(["init_session", "log_event", "end_session"]),
         data: z.record(z.string(), z.unknown()),
@@ -587,7 +606,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     "session_orient",
     {
       title: "Session Orient",
-      description: "Returns ledger-authoritative Foreman resume state, including action, resume target, phase/unit, gate retry, blockers, and ledger/progress drift. Call first at session start.",
+      description: "Returns ledger-authoritative Foreman resume state, including action, resume target, phase/unit, gate retry, blockers, and ledger/progress drift. Phase and unit ids order naturally (p2 before p10). last_completed_unit is the completion frontier (newest first-pass timestamp; re-verdicts do not move it); latest_pass_verdict_unit/ts is the newest pass verdict by timestamp. Call first at session start.",
       inputSchema: z.strictObject({}),
       outputSchema: TextOutputSchema,
       annotations: {

@@ -127,7 +127,7 @@ describe("list tools — verify all 27 present, update_bundle absent", () => {
     const tool = result.tools.find((t) => t.name === "session_orient")
     expect(tool).toBeDefined()
     expect(tool!.description).toBe(
-      "Returns ledger-authoritative Foreman resume state, including action, resume target, phase/unit, gate retry, blockers, and ledger/progress drift. Call first at session start."
+      "Returns ledger-authoritative Foreman resume state, including action, resume target, phase/unit, gate retry, blockers, and ledger/progress drift. Phase and unit ids order naturally (p2 before p10). last_completed_unit is the completion frontier (newest first-pass timestamp; re-verdicts do not move it); latest_pass_verdict_unit/ts is the newest pass verdict by timestamp. Call first at session start."
     )
   })
 
@@ -695,6 +695,8 @@ describe("declare_phase_units round-trip via MCP", () => {
     expect(blockedText).toContain("u2")
 
     await passUnit("p1", "u2")
+    // gate requires ≥1 review (2026-09 R2)
+    await writeLedgerTool({ operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [] } })
     const pass = await writeLedgerTool({
       operation: "update_phase_gate", phase: "p1", data: { g: "pass" },
     })

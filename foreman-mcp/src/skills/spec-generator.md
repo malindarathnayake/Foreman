@@ -125,7 +125,8 @@ Write `Docs/spec.md`, `Docs/handoff.md`, `Docs/PROGRESS.md`, `Docs/testing-harne
 
 ### Document 3: `Docs/PROGRESS.md`
 - **Current Status** — phase, last completed unit, next up, blocked (if any)
-- **Checklist** — per-phase checkboxes with file names and checkpoint commands
+- **Ledger Status** — machine-owned: emit exactly `<!-- foreman:checklist-start -->` and `<!-- foreman:checklist-end -->` on their own lines with nothing between; `write_progress` renders the ledger checklist there and replaces the block on every call — never hand-write inside the fences (it does not survive)
+- **Unit Plan** — per-phase table: unit id | files | checkpoint command — no checkboxes; the checkbox view is Ledger Status
 - **Decisions & Notes** — table: Decision | Value | Source (populated from spec)
 - **Session Log** — table: Date | Phase | Unit | Outcome | Notes
 - **Error Recovery Log** — table: Date | Error | Fix | Status; plus recovery protocol
@@ -200,6 +201,11 @@ When a unit includes "check endpoint X for Y":
 - The Threat Table covers every trust boundary named in the design summary; each row's technique names concrete detection evidence from the Telemetry Contract, or explicitly states no in-app detection with a compensating control — never a fabricated telemetry event.
 *Catches: hot paths speced without budgets; unbounded metric tags; trust boundaries with no threat row.*
 
+### G10: Directive self-consistency + telemetry names
+- Every test expectation in a unit directive (status, value, error, log key) is consistent with that directive's implementation instruction and the error-handling matrix.
+- Every telemetry field a directive introduces is labelled core or custom; custom names are checked against the active stack profile's reserved-name rule (`ethos` telemetry section). If the profile resolved by fallback or the transport is unstated, mark it UNKNOWN — never lint against the reference backend by guess.
+*Catches: directives that ask for 400 and assert 404; log keys that collide with the backend's reserved fields.*
+
 ## Ledger Seeding
 
 First, declare each phase's expected unit set — this is what lets the gate and `session_orient` mechanically catch a unit that was declared in the handoff but never seeded:
@@ -240,6 +246,8 @@ mcp__foreman__write_progress({
 
 `mcp__foreman__write_journal({ operation: "end_session", data: { dur_min: <estimate>, ctx_used_pct: <estimate>, summary: { units_ok: 1, units_rej: 0, w_spawned: 0, w_wasted: 0, tok_wasted: 0, delay_min: 0, blockers: [], friction: <1-100> } } })`
 
+**State tracking (read-only check — never a `.gitignore` edit):** run `git check-ignore -q` on `Docs/.foreman-ledger.json`, `.foreman-progress.json`, `.foreman-journal.json`, `.foreman-events.jsonl` and record the result in handoff.md's Start section as `state_tracking_policy: tracked | local | undecided`. If the handoff tells the implementor to commit Foreman state but the paths are ignored (or the reverse), that is a grounding failure: ask the owner which policy holds. Never create or rewrite `.gitignore` to resolve it.
+
 Save four documents to `Docs/`. Tell the user:
 
 > Four documents generated in `Docs/`. Review `spec.md` first. To start implementation, call `mcp__foreman__pitboss_implementor`.
@@ -257,7 +265,8 @@ Run before delivering documents to user:
 - [ ] Out of scope explicit and complete
 - [ ] Dependency versions real or marked UNKNOWN
 - [ ] File structure matches implementation order
-- [ ] G1-G9 grounding checks all completed
+- [ ] G1-G10 grounding checks all completed
+- [ ] `state_tracking_policy` recorded in handoff.md (check-ignore result, no `.gitignore` written)
 - [ ] Ethos sections present (Performance Budgets / Threat Table / Telemetry Contract) or all-standard declared with rationale
 - [ ] Declared-unit sets registered for every phase (`declare_phase_units`)
 - [ ] Ledger seeding calls issued for all phases and units

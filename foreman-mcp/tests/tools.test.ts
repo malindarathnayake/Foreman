@@ -373,6 +373,7 @@ describe("handleReadLedger", () => {
       unit_id: "u1",
       data: { v: "pass" },
     })
+    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [] } })  // gate requires ≥1 review (2026-09 R2)
     await writeLedger(ledgerPath, {
       operation: "update_phase_gate",
       phase: "p1",
@@ -398,6 +399,7 @@ describe("handleReadLedger", () => {
       unit_id: "u1",
       data: { v: "pass" },
     })
+    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [] } })  // gate requires ≥1 review (2026-09 R2)
     await writeLedger(ledgerPath, {
       operation: "update_phase_gate",
       phase: "p1",
@@ -421,6 +423,7 @@ describe("handleReadLedger", () => {
       unit_id: "u1",
       data: { v: "pass" },
     })
+    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [] } })  // gate requires ≥1 review (2026-09 R2)
     await writeLedger(ledgerPath, {
       operation: "update_phase_gate",
       phase: "p1",

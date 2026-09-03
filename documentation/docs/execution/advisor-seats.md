@@ -15,6 +15,8 @@ When non-trivial ambiguities or checkpoint reviews need resolution, the protocol
 
 Non-trivial deadlocks go to the user, and the run does not proceed until the user arbitrates. Advisors never see each other's raw output, never receive the moderator's position first, and never write verdicts — review findings pass through `normalize_review` and `verify_citations` before anything is recorded.
 
+Silence is not approval. Every advisor must list what it examined per category; a seat that reports zero findings with no such list is recorded as `partial`, never as clean. When one seat has confirmed findings and another reported nothing, the silent seat may be re-prompted once with only the file names involved — that pass is recorded as `cross_exam` and never counts as a second independent seat. The phase gate refuses to pass with no review recorded at all.
+
 ## Default seat assignments per host
 
 | Host | Advisor A | Advisor B | Moderator | Degraded fallback |

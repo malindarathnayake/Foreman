@@ -142,7 +142,13 @@ export async function handleReadLedger(filePath: string, input: ReadLedgerInput)
       for (const [phaseId, phase] of phaseEntries) {
         for (const review of phase.reviews ?? []) {
           if (review.findings.length === 0) {
-            rows.push([phaseId, review.advisor, "", "", "(no findings)"])
+            // Silence is only approval when the seat says what it examined.
+            const meta = [
+              review.completion ? `completion=${review.completion}` : null,
+              review.checked ? `checked=${review.checked.length}` : null,
+              review.stage ? `stage=${review.stage}` : null,
+            ].filter(Boolean).join("; ")
+            rows.push([phaseId, review.advisor, "", "", meta ? `(no findings; ${meta})` : "(no findings)"])
             continue
           }
           for (const f of review.findings) {

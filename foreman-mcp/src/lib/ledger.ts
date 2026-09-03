@@ -264,6 +264,9 @@ async function applyOperation(
       unit.v = data.v
       // R1: verdict timestamp — consumed by the D2b gate-staleness snapshot (3d).
       unit.v_ts = new Date().toISOString()
+      // Completion frontier: the FIRST pass sticks. Re-verdicting an old unit after a
+      // checkpoint fix must not move session_orient's last_completed_unit backwards.
+      if (data.v === "pass") unit.first_pass_ts ??= unit.v_ts
       if (data.via !== undefined) {
         unit.via = data.via
       } else {
@@ -289,6 +292,17 @@ async function applyOperation(
         attempt: unit.delegations?.length ?? 0,
       })
       if (unit.rej.length > 20) unit.rej = unit.rej.slice(-20)
+      // Field feedback 2026-09 (Codex R1): a rejection contradicts a standing pass verdict.
+      // Leaving v:'pass' in place let a rejected unit stay gate-passable and hid it from
+      // session_orient's active_rejections. Reopen to 'pending'; the fix must re-verdict.
+      if (unit.v === "pass") {
+        unit.v = "pending"
+        unit.v_ts = new Date().toISOString()
+        return (
+          `verdict reopened: unit '${unit_id}' was 'pass'; this rejection reset it to 'pending' — ` +
+          "re-run set_verdict after the fix (the phase gate is blocked until then)"
+        )
+      }
       break
     }
     case "declare_phase_units": {
@@ -420,6 +434,22 @@ async function applyOperation(
         if (sidecarReader) {
           await disciplineAdherenceGate(phase, ledger.phases[phase], data, sidecarReader)
         }
+        // Field feedback 2026-09 (Codex R2): a gate is a reviewed checkpoint. Zero
+        // record_review entries means the deliberation step never ran or was never
+        // persisted. Sequenced LAST so every earlier block message is unchanged; the
+        // override is durable and auditable on the phase.
+        const gatePhase = ledger.phases[phase]
+        if ((gatePhase.reviews ?? []).length === 0) {
+          if (data.user_override !== true) {
+            throw new Error(
+              `REVIEW REQUIRED: phase '${phase}' has no record_review entries. ` +
+              "Run the checkpoint deliberation and persist at least one advisor review " +
+              "(write_ledger record_review) before the gate can pass, or set data.user_override: true " +
+              "to pass without independent review — the override is recorded on the phase."
+            )
+          }
+          gatePhase.review_override = { ts: new Date().toISOString() }
+        }
       }
       // D2b: snapshot only on a passing gate — never on fail/pending, never cleared.
       // Read paths recompute and flag STALE; nothing is ever blocked on staleness.
@@ -468,6 +498,10 @@ async function applyOperation(
         findings: data.findings,
         packet_hash: data.packet_hash,
         tokens: data.tokens,
+        completion: data.completion,
+        checked: data.checked,
+        limitations: data.limitations,
+        stage: data.stage,
       })
       if (p.reviews.length > 20) p.reviews = p.reviews.slice(-20)
       break

@@ -28,6 +28,8 @@ export interface Unit {
   v: "pass" | "fail" | "pending" | "inconclusive"
   /** ISO timestamp of the latest set_verdict (R1). Absent on ledgers written before v0.5.0. */
   v_ts?: string
+  /** ISO timestamp of the FIRST pass verdict — set once, never overwritten by re-verdicts. Completion-frontier signal for session_orient. Absent before v0.6.0. */
+  first_pass_ts?: string
   via?: "worker" | "pitboss-direct" | "n/a"
   note?: string
   w: string | null
@@ -55,6 +57,14 @@ export interface PhaseReview {
   findings: ReviewFinding[]
   packet_hash?: string
   tokens?: number
+  /** Seat completion as judged by the moderator. 'partial' = zero findings with no account of what was examined. Absent before v0.6.0. */
+  completion?: "complete" | "partial" | "failed"
+  /** What the seat says it examined (files/functions/categories). Silence without this list is not approval. */
+  checked?: string[]
+  /** Seat-reported limitations (timeouts, unread files, refused categories). */
+  limitations?: string
+  /** 'independent' = first, blind pass (counts toward seat independence); 'cross_exam' = re-prompt informed by another seat's claims (never a second independent vote). */
+  stage?: "independent" | "cross_exam"
 }
 
 export interface Phase {
@@ -72,6 +82,8 @@ export interface Phase {
   gate_units_hash?: { hash: string; ts: string }
   /** Units whose discipline-adherence contradiction was overridden at gate-pass via data.user_override (durable, auditable — P5 5a). Absent when no override occurred. */
   discipline_overrides?: { discipline_override: true; unit_id: string; delegation_id: string }[]
+  /** Gate passed with zero record_review entries via data.user_override (durable, auditable). Absent when at least one review was recorded. */
+  review_override?: { ts: string }
 }
 
 export interface PhaseScope {
@@ -188,6 +200,10 @@ const RecordReviewInput = z.object({
     findings: z.array(ReviewFindingSchema).max(100),
     packet_hash: z.string().max(200).optional(),
     tokens: z.number().min(0).optional(),
+    completion: z.enum(["complete", "partial", "failed"]).optional(),
+    checked: z.array(z.string().max(200)).max(50).optional(),
+    limitations: z.string().max(2000).optional(),
+    stage: z.enum(["independent", "cross_exam"]).optional(),
   }),
 })
 
@@ -449,6 +465,27 @@ export const WriteJournalInputSchema = z.discriminatedUnion("operation", [
 ])
 
 export type WriteJournalInput = z.infer<typeof WriteJournalInputSchema>
+
+/**
+ * Per-operation `data` schemas, keyed by operation name. The MCP tool inputSchema
+ * cannot express "data depends on operation", so server.ts renders these into the
+ * tool descriptions (lib/schemaDoc.ts) and a contract test keeps them in sync.
+ */
+export const JournalOperationDataSchemas = {
+  init_session: InitSessionData,
+  log_event: LogEventData,
+  end_session: EndSessionData,
+} as const
+
+export const LedgerOperationDataSchemas = {
+  set_unit_status: SetUnitStatusInput.shape.data,
+  set_verdict: SetVerdictInput.shape.data,
+  add_rejection: AddRejectionInput.shape.data,
+  declare_phase_units: DeclarePhaseUnitsInput.shape.data,
+  update_phase_gate: UpdatePhaseGateInput.shape.data,
+  set_phase_scope: SetPhaseScopeInput.shape.data,
+  record_review: RecordReviewInput.shape.data,
+} as const
 
 export const ReadJournalInputSchema = z.object({
   last_n: z.number().min(1).max(100).optional(),

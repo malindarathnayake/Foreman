@@ -15,6 +15,8 @@ The MCP server enforces the parts that can be checked deterministically:
 
 - a unit cannot receive a passing verdict before a recorded delegation with a brief of at least 20 characters
 - a phase cannot pass while any unit lacks a passing verdict, and an empty phase cannot pass
+- a phase cannot pass with zero recorded advisor reviews; an explicit user override is recorded on the phase
+- rejecting a unit that already passed reopens it to `pending` — a passed unit cannot stay gate-passable while under remediation
 - a pass without tests or a build requires an attestation of at least 5 words and 32 characters
 - a fourth delegation after three distinct rejected attempts requires an explicit user override
 - a passed gate becomes stale when one of its units changes afterward

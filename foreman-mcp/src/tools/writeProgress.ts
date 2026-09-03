@@ -2,6 +2,7 @@ import { WriteProgressInputSchema } from "../types.js"
 import { writeProgress } from "../lib/progress.js"
 import { toKeyValue } from "../lib/toon.js"
 import { readLedger } from "../lib/ledger.js"
+import { naturalSort } from "../lib/naturalSort.js"
 import { scrub } from "../lib/redaction.js"
 import fs from "fs/promises"
 import path from "path"
@@ -115,13 +116,13 @@ export async function handleWriteProgress(
  * Pure function. Renders a stable, deterministic markdown checklist from a
  * Foreman ledger. No I/O, no Date.now(), no randomness.
  *
- * Phases are sorted lexicographically by phase key.
- * Units within each phase are sorted lexicographically by unit id.
+ * Phases are sorted in natural order by phase key (p2 before p10).
+ * Units within each phase are sorted in natural order by unit id.
  *
  * Returns "_No phases yet._\n" when the ledger has no phases.
  */
 export function renderChecklist(ledger: LedgerFile): string {
-  const phaseKeys = Object.keys(ledger.phases).sort()
+  const phaseKeys = naturalSort(Object.keys(ledger.phases))
 
   if (phaseKeys.length === 0) {
     return "_No phases yet._\n"
@@ -131,7 +132,7 @@ export function renderChecklist(ledger: LedgerFile): string {
 
   for (const phaseKey of phaseKeys) {
     const phase = ledger.phases[phaseKey]
-    const unitKeys = Object.keys(phase.units).sort()
+    const unitKeys = naturalSort(Object.keys(phase.units))
 
     let block = `### ${phaseKey}\n\n`
 
@@ -157,9 +158,9 @@ export function renderChecklist(ledger: LedgerFile): string {
     // Declared-but-unregistered units stay visible: the checklist is the
     // operator's view, and erasing them here would contradict the ledger fact
     // that the gate cannot pass until they are seeded.
-    const declaredMissing = (phase.declared_units ?? [])
-      .filter((id) => !phase.units[id])
-      .sort()
+    const declaredMissing = naturalSort(
+      (phase.declared_units ?? []).filter((id) => !phase.units[id])
+    )
     for (const unitId of declaredMissing) {
       block += `- [ ] ${unitId} — declared, unregistered\n`
     }

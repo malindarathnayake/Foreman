@@ -133,7 +133,10 @@ describe("skillTrimming — implementor", () => {
     // constraint lines under Step 2 Decide Batching.
     // raised 295 -> 310: shared-tree ownership guard plus bounded repeated-block
     // mutation/owner-arbitration protocol. The executable prose is safety-critical.
-    expect(lines).toBeLessThanOrEqual(310)
+    // raised 310 -> 325 (field feedback 2026-09): brief self-consistency + telemetry
+    // reserved-name preflight steps, the Direct Fix eligibility rule, and the
+    // checked-list / cross-exam contract at the checkpoint.
+    expect(lines).toBeLessThanOrEqual(325)
   })
 
   it("self-referential boilerplate and disableSlashCommand are removed", async () => {
@@ -554,7 +557,7 @@ describe("skillTrimming — spec-generator", () => {
   it("Quality Checks checklist is preserved", async () => {
     const content = await readSkill("spec-generator.md")
     expect(content).toContain("## Quality Checks")
-    expect(content).toContain("G1-G9 grounding checks all completed")
+    expect(content).toContain("G1-G10 grounding checks all completed")
   })
 
   it("write_journal init_session call is preserved in Session Start (via include)", async () => {

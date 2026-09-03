@@ -38,7 +38,7 @@ Foreman is not another general-purpose agent framework, and it does not replace 
 
 | | |
 |---|---|
-| **Current release** | `v0.5.14` |
+| **Current release** | `v0.6.0` |
 | **Package** | `@malindarathnayake/foreman-mcp` |
 | **Runtime** | Node.js `>=22` |
 | **License** | Apache-2.0 |

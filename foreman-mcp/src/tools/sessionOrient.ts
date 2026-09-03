@@ -1,6 +1,7 @@
 import { computeGateUnitsHash, readLedgerWithStatus } from "../lib/ledger.js"
 import { readProgress } from "../lib/progress.js"
 import { toKeyValue } from "../lib/toon.js"
+import { naturalSort } from "../lib/naturalSort.js"
 import type { Phase, ProgressFile, Unit } from "../types.js"
 import type { HostId } from "../lib/hostProfiles.js"
 import { unsupportedCapabilities } from "../lib/capabilitySet.js"
@@ -28,6 +29,11 @@ function firstIncompleteProgressTarget(progress: ProgressFile): string | null {
   return null
 }
 
+/** Registered ∪ declared unit ids for a phase, in natural order. */
+function unitUniverse(phase: Phase): string[] {
+  return naturalSort(new Set([...Object.keys(phase.units), ...(phase.declared_units ?? [])]))
+}
+
 // ─── sessionOrient ─────────────────────────────────────────────────────────────
 
 export async function sessionOrient(
@@ -50,7 +56,9 @@ export async function sessionOrient(
     })
   }
 
-  const phaseKeys = Object.keys(ledger.phases).sort()
+  // Natural order: p2 before p10, U0.9 before U0.18. Plain lexicographic sort resumed
+  // the wrong phase on any project with ten or more phases (field feedback 2026-09).
+  const phaseKeys = naturalSort(Object.keys(ledger.phases))
   const phases_total = phaseKeys.length
 
   // Empty ledger special case
@@ -62,6 +70,8 @@ export async function sessionOrient(
       current_phase: "null",
       current_unit: "null",
       last_completed_unit: "null",
+      latest_pass_verdict_unit: "null",
+      latest_pass_verdict_ts: "null",
       next_pending_unit: "null",
       blocked_on: "null",
       active_rejections: 0,
@@ -100,8 +110,7 @@ export async function sessionOrient(
   let current_unit = "null"
   if (current_phase !== "null") {
     const phase = ledger.phases[current_phase]
-    const universe = [...new Set([...Object.keys(phase.units), ...(phase.declared_units ?? [])])].sort()
-    for (const unitId of universe) {
+    for (const unitId of unitUniverse(phase)) {
       const unit = phase.units[unitId]
       if (!unit || unit.v !== "pass") {
         current_unit = unitId
@@ -110,26 +119,36 @@ export async function sessionOrient(
     }
   }
 
-  // ── last_completed_unit: newest verdict timestamp, with lexicographic fallback
-  // Legacy ledgers may lack v_ts; once timestamped pass verdicts exist they are the
-  // only reliable completion ordering signal.
+  // ── last_completed_unit: the completion FRONTIER ─────────────────────────────
+  // Newest first-pass timestamp wins (first_pass_ts sticks across re-verdicts; v_ts
+  // is the fallback for ledgers written before first_pass_ts existed). A checkpoint
+  // fix that re-verdicts p0.1 therefore does not move the frontier back from p0.3.
+  // Legacy ledgers with no timestamps at all fall back to the last pass in natural order.
+  // ── latest_pass_verdict_unit/ts: the newest pass VERDICT by timestamp ────────
+  // This is the temporal fact (re-verdicts DO move it) — named for what it is.
   let last_completed_unit = "null"
-  let last_completed_ts = ""
+  let frontier_ts = ""
   let legacy_last_completed = "null"
+  let latest_pass_verdict_unit = "null"
+  let latest_pass_verdict_ts = ""
   for (const phaseKey of phaseKeys) {
     const phase = ledger.phases[phaseKey]
-    for (const unitId of Object.keys(phase.units).sort()) {
+    for (const unitId of naturalSort(Object.keys(phase.units))) {
       const unit = phase.units[unitId]
-      if (unit.v === "pass") {
-        legacy_last_completed = `${phaseKey}/${unitId}`
-        if (unit.v_ts && unit.v_ts >= last_completed_ts) {
-          last_completed_ts = unit.v_ts
-          last_completed_unit = `${phaseKey}/${unitId}`
-        }
+      if (unit.v !== "pass") continue
+      legacy_last_completed = `${phaseKey}/${unitId}`
+      const completedAt = unit.first_pass_ts ?? unit.v_ts
+      if (completedAt && completedAt >= frontier_ts) {
+        frontier_ts = completedAt
+        last_completed_unit = `${phaseKey}/${unitId}`
+      }
+      if (unit.v_ts && unit.v_ts >= latest_pass_verdict_ts) {
+        latest_pass_verdict_ts = unit.v_ts
+        latest_pass_verdict_unit = `${phaseKey}/${unitId}`
       }
     }
   }
-  if (last_completed_ts === "") last_completed_unit = legacy_last_completed
+  if (frontier_ts === "") last_completed_unit = legacy_last_completed
 
   // ── next_pending_unit: first unit with s==="pending" starting from current_phase ──
   let next_pending_unit = "null"
@@ -140,8 +159,7 @@ export async function sessionOrient(
       else continue
     }
     const phase = ledger.phases[phaseKey]
-    const universe = [...new Set([...Object.keys(phase.units), ...(phase.declared_units ?? [])])].sort()
-    for (const unitId of universe) {
+    for (const unitId of unitUniverse(phase)) {
       const unit = phase.units[unitId]
       if (!unit || unit.s === "pending") {
         next_pending_unit = `${phaseKey}/${unitId}`
@@ -188,7 +206,7 @@ export async function sessionOrient(
   const missingDeclared: string[] = []
   for (const phaseKey of phaseKeys) {
     const phase = ledger.phases[phaseKey]
-    for (const id of [...(phase.declared_units ?? [])].sort()) {
+    for (const id of naturalSort(phase.declared_units ?? [])) {
       if (!phase.units[id]) missingDeclared.push(`${phaseKey}/${id}`)
     }
   }
@@ -202,7 +220,7 @@ export async function sessionOrient(
   let active_rejections = 0
   for (const phaseKey of phaseKeys) {
     const phase = ledger.phases[phaseKey]
-    for (const unitId of Object.keys(phase.units).sort()) {
+    for (const unitId of naturalSort(Object.keys(phase.units))) {
       const unit = phase.units[unitId]
       if (unitHasActiveRejections(unit)) {
         if (blocked_on === "null") {
@@ -227,6 +245,8 @@ export async function sessionOrient(
     current_phase,
     current_unit,
     last_completed_unit,
+    latest_pass_verdict_unit,
+    latest_pass_verdict_ts: latest_pass_verdict_ts || "null",
     next_pending_unit,
     blocked_on,
     active_rejections,
