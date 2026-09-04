@@ -14,6 +14,8 @@ The protocols direct the pitboss to ground briefs, keep implementation in worker
 The MCP server enforces the parts that can be checked deterministically:
 
 - a unit cannot receive a passing verdict before a recorded delegation with a brief of at least 20 characters
+- a delegation cannot be recorded without the brief-preflight attestation (`symbols_grepped`, `self_consistent: true`), which is stored on the delegation entry
+- a rejected write returns one hint per field plus the operation's expected data shape, never a raw validator dump
 - a phase cannot pass while any unit lacks a passing verdict, and an empty phase cannot pass
 - a phase cannot pass with zero recorded advisor reviews; an explicit user override is recorded on the phase
 - rejecting a unit that already passed reopens it to `pending` — a passed unit cannot stay gate-passable while under remediation

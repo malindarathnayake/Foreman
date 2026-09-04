@@ -172,7 +172,7 @@ describe("ledger", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "Worker brief: implement unit u1 types and constants per handoff spec section 1a" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "Worker brief: implement unit u1 types and constants per handoff spec section 1a" },
     })
 
     await writeLedger(ledgerPath, {
@@ -193,7 +193,7 @@ describe("ledger", () => {
         operation: "set_unit_status",
         phase: "p1",
         unit_id: "u1",
-        data: { s: "delegated", brief: "short" },
+        data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "short" },
       })
     ).rejects.toThrow("DELEGATION REQUIRED")
   })
@@ -215,7 +215,7 @@ describe("ledger", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "worker brief long enough to clear the 20 char minimum" },
     })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",
@@ -240,7 +240,7 @@ describe("ledger", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "worker brief long enough to clear the 20 char minimum" },
     })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",
@@ -305,7 +305,7 @@ describe("ledger", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "worker brief long enough to clear the 20 char minimum" },
     })
 
     await expect(
@@ -338,7 +338,7 @@ describe("ledger", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "worker brief long enough to clear the 20 char minimum" },
     })
 
     await writeLedger(ledgerPath, {
@@ -379,7 +379,7 @@ describe("ledger v0.3.1 tier telemetry + reviews", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief, tier: "premium", route_reason: "subtle concurrency unit" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief, tier: "premium", route_reason: "subtle concurrency unit" },
     })
     const unit = (await readLedger(ledgerPath)).phases.p1.units.u1
     expect(unit.tier).toBe("premium")
@@ -397,7 +397,7 @@ describe("ledger v0.3.1 tier telemetry + reviews", () => {
         operation: "set_unit_status",
         phase: "p1",
         unit_id: "u1",
-        data: { s: "delegated", brief: `${brief} attempt ${i}`, tier: i < 2 ? "standard" : "premium" },
+        data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: `${brief} attempt ${i}`, tier: i < 2 ? "standard" : "premium" },
       })
     }
     const unit = (await readLedger(ledgerPath)).phases.p1.units.u1
@@ -412,7 +412,7 @@ describe("ledger v0.3.1 tier telemetry + reviews", () => {
         operation: "set_unit_status",
         phase: "p1",
         unit_id: "u1",
-        data: { s: "delegated", brief: `${brief} #${i}`, tier: "cheap" },
+        data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: `${brief} #${i}`, tier: "cheap" },
       })
     }
     const dels = (await readLedger(ledgerPath)).phases.p1.units.u1.delegations!
@@ -432,7 +432,7 @@ describe("ledger v0.3.1 tier telemetry + reviews", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief, tier: "standard" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief, tier: "standard" },
     })
     const unit = (await readLedger(ledgerPath)).phases.p1.units.u1
     expect(unit.delegations).toHaveLength(1)
@@ -529,7 +529,7 @@ describe("ledger v0.0.7.5 backward compat", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "worker brief long enough to pass the 20-char minimum check here" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "worker brief long enough to pass the 20-char minimum check here" },
     })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",
@@ -549,7 +549,7 @@ describe("ledger v0.0.7.5 backward compat", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "worker brief long enough to pass the minimum length check" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "worker brief long enough to pass the minimum length check" },
     })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",
@@ -571,7 +571,7 @@ describe("ledger v0.0.7.5 backward compat", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "worker brief long enough to pass the minimum length check" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "worker brief long enough to pass the minimum length check" },
     })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",
@@ -608,7 +608,7 @@ describe("ledger v0.5.0 delegation cap (D2a)", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief },
     })
 
     // Post-delegation rejection stamps attempt 1
@@ -631,7 +631,7 @@ describe("ledger v0.5.0 delegation cap (D2a)", () => {
         operation: "set_unit_status",
         phase: "p1",
         unit_id: "u1",
-        data: { s: "delegated", brief: `${brief} #${i}` },
+        data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: `${brief} #${i}` },
       })
       await writeLedger(ledgerPath, {
         operation: "add_rejection",
@@ -646,7 +646,7 @@ describe("ledger v0.5.0 delegation cap (D2a)", () => {
         operation: "set_unit_status",
         phase: "p1",
         unit_id: "u1",
-        data: { s: "delegated", brief: `${brief} #3` },
+        data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: `${brief} #3` },
       })
     ).rejects.toThrow(/DELEGATION CAP: unit 'u1' has 3 distinct rejected attempts \(cap 3\)/)
   })
@@ -657,7 +657,7 @@ describe("ledger v0.5.0 delegation cap (D2a)", () => {
         operation: "set_unit_status",
         phase: "p1",
         unit_id: "u1",
-        data: { s: "delegated", brief: `${brief} #${i}` },
+        data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: `${brief} #${i}` },
       })
       await writeLedger(ledgerPath, {
         operation: "add_rejection",
@@ -671,7 +671,7 @@ describe("ledger v0.5.0 delegation cap (D2a)", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief, user_override: true },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief, user_override: true },
     })
 
     const unit = (await readLedger(ledgerPath)).phases.p1.units.u1
@@ -688,7 +688,7 @@ describe("ledger v0.5.0 delegation cap (D2a)", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief },
     })
     await writeLedger(ledgerPath, {
       operation: "add_rejection",
@@ -707,7 +707,7 @@ describe("ledger v0.5.0 delegation cap (D2a)", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: `${brief} retry` },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: `${brief} retry` },
     })
 
     const unit = (await readLedger(ledgerPath)).phases.p1.units.u1
@@ -745,7 +745,7 @@ describe("ledger v0.5.0 delegation cap (D2a)", () => {
         operation: "set_unit_status",
         phase: "p1",
         unit_id: "u1",
-        data: { s: "delegated", brief },
+        data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief },
       })
     ).rejects.toThrow(/DELEGATION CAP/)
   })
@@ -778,7 +778,7 @@ describe("ledger v0.5.0 delegation cap (D2a)", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief },
     })
 
     const unit = (await readLedger(ledgerPath)).phases.p1.units.u1
@@ -814,7 +814,7 @@ describe("ledger v0.5.0 delegation cap (D2a)", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief },
     })
 
     const raw = await fs.readFile(ledgerPath, "utf-8")
@@ -868,7 +868,7 @@ describe("ledger v0.5.0 inconclusive + attestation floor (D2d/D2e)", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "worker brief long enough to clear the 20 char minimum" },
     })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",
@@ -904,7 +904,7 @@ describe("ledger v0.5.0 inconclusive + attestation floor (D2d/D2e)", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "worker brief long enough to clear the 20 char minimum" },
     })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",
@@ -944,7 +944,7 @@ describe("ledger v0.5.0 inconclusive + attestation floor (D2d/D2e)", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "worker brief long enough to clear the 20 char minimum" },
     })
 
     const note = "abcdef abcdef abcdef abcdef abcd"
@@ -973,7 +973,7 @@ describe("ledger v0.5.0 inconclusive + attestation floor (D2d/D2e)", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "worker brief long enough to clear the 20 char minimum" },
     })
 
     const note = "aaaaaaaaaa bbbbbbbbbb cccccccccc dd"
@@ -1008,7 +1008,7 @@ describe("ledger v0.5.0 inconclusive + attestation floor (D2d/D2e)", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "worker brief long enough to clear the 20 char minimum" },
     })
 
     const note = "aaaaa bbbbb ccccc ddddd eeeeeee"
@@ -1030,7 +1030,7 @@ describe("ledger v0.5.0 inconclusive + attestation floor (D2d/D2e)", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "worker brief long enough to clear the 20 char minimum" },
     })
 
     await writeLedger(ledgerPath, {
@@ -1052,7 +1052,7 @@ describe("ledger v0.5.0 gate staleness hash (D2b)", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "worker brief long enough to clear the 20 char minimum" },
     })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",
@@ -1097,7 +1097,7 @@ describe("ledger v0.5.0 gate staleness hash (D2b)", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "worker brief long enough to clear the 20 char minimum" },
     })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",
@@ -1147,7 +1147,7 @@ describe("ledger v0.5.0 seat minimum (D13)", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief },
     })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",
@@ -1227,7 +1227,7 @@ describe("ledger v0.5.0 seat minimum (D13)", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief },
     })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",
@@ -1291,7 +1291,7 @@ describe("ledger v0.5.0 seat minimum (D13)", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief },
     })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",
@@ -1319,7 +1319,7 @@ describe("ledger v0.5.0 seat minimum (D13)", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief },
     })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",
@@ -1357,7 +1357,7 @@ describe("ledger P5 discipline-adherence gate", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief },
     })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",

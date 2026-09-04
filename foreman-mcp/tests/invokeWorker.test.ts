@@ -190,7 +190,7 @@ async function makeWorkspace(opts: { port?: number; writeEnv?: boolean; seedDele
       operation: "set_unit_status",
       phase: "4f",
       unit_id: "u1",
-      data: { s: "delegated", brief: "seed brief for delegated unit ok", tier: "standard" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "seed brief for delegated unit ok", tier: "standard" },
     })
   }
   return {
@@ -776,7 +776,7 @@ describe("invoke_worker — identifier bounding", () => {
       operation: "set_unit_status",
       phase: "4f",
       unit_id: longUnitId,
-      data: { s: "delegated", brief: "seed brief for delegated unit ok", tier: "standard" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "seed brief for delegated unit ok", tier: "standard" },
     })
 
     const text = await handleInvokeWorker(baseInput(ws, { unit_id: longUnitId }), ws.deps)

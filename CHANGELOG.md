@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.1 - 2026-09-03
+
+Field-feedback round 2 (2026-09-03): six items from a second pit-boss run on a large project.
+
+- Schema errors from `write_ledger`, `write_journal`, and `write_progress` are no longer raw Zod issue dumps. Each rejected call now returns one line per field (`data.via: Invalid option: expected one of "worker"|"pitboss-direct"|"n/a"`) followed by the expected data shape for that operation, rendered from the same schema constants the descriptions use.
+- The Brief Preflight (Step 4.5) is now attested on the delegated write: `set_unit_status s:'delegated'` requires `data.preflight: { symbols_grepped: ≥1, self_consistent: true, telemetry?: 'checked'|'n/a' }` (checked after the brief rule, so existing messages are unchanged) and the attestation is stored on the delegation entry. The preflight is as mechanical as the pass rule instead of a mental checklist.
+- Two journal event codes, both anomalies: `SPEC_GAP` (a spec gap resolved by pit-boss decision, recorded, run continued — `SPEC_AMB` keeps meaning "stopped, asking") and `GATE_OVERRIDE` (user forced past a phase checkpoint; the same journal session continues, `gate` names the phase). Enum is 28 codes.
+- `invoke_advisor` no longer ships a 16k stderr transcript with a successful review. Truncation is tracked per stream; on success stderr is dropped unless stdout itself was cut, and then only a 40-line tail is kept. Failures keep stderr whole.
+- `run_tests` gains opt-in output shaping: `strip_patterns` (≤10 regex sources, applied per line to both streams before the cap, `stripped_lines` reported) and `tail_lines`. Default output is byte-identical to 0.6.0.
+- Bumped package to `0.6.1`.
+
 ## 0.6.0 - 2026-09-03
 
 Field-feedback round (2026-09-02): eight friction items from a pit-boss run, triaged against the source and deliberated with an adversarial Codex pass; three deeper root causes surfaced in that deliberation are fixed here too.

@@ -39,6 +39,8 @@ Log only failures and delays. Do NOT log successes, worker spawns, or test passe
 | GATE_FIX | Gate G1–G5 fails, requires fix |
 | CX_ERR | Advisor CLI error |
 | SPEC_AMB | Stopped — spec ambiguity, asking user |
+| SPEC_GAP | Spec gap resolved by pit-boss decision — recorded in PROGRESS Decisions (owner-overrulable), run continued |
+| GATE_OVERRIDE | User forced past a phase checkpoint (`--force-continue`) — set `gate`, keep the SAME journal session |
 | T_FLAKE | Flaky test detected |
 | BLD_ERR | Build/compile failure after worker |
 | USR_INT | User interrupted or overrode |
@@ -87,7 +89,7 @@ Before building brief, read actual source. Capture:
 
 ### Step 4.5: Brief Preflight Gate
 
-Runs AFTER drafting the brief, BEFORE invoking the host's worker mechanism. Seven mechanical steps:
+Runs AFTER drafting the brief, BEFORE invoking the host's worker mechanism. Its result is attested on the delegated write (Step 5, `preflight`) — the ledger refuses `s:'delegated'` without it. Seven mechanical steps:
 
 1. **Extract key symbols** from the brief — type names, field names, function names, file paths, specific values (numeric caps, enum literals, magic strings). Write them down.
 2. **Grep `spec.md` for each symbol** — every occurrence across the spec, not only the Unit directive block.
@@ -110,7 +112,7 @@ The worker brief MUST contain the Shared-Tree Safety paragraph above verbatim. I
 
 Record the delegation in the ledger BEFORE spawning. This is mechanically enforced — a `pass` verdict is rejected unless the unit was first set to `delegated` with a brief. Also record the cost `tier` the worker runs at and a short `route_reason` — audit evidence, not a gate:
 ```
-mcp__foreman__write_ledger({ operation: "set_unit_status", phase, unit_id, data: { s: "delegated", brief: "<1-3 line summary of the worker brief>", tier: "standard", route_reason: "<why this tier fits this unit>" } })
+mcp__foreman__write_ledger({ operation: "set_unit_status", phase, unit_id, data: { s: "delegated", brief: "<1-3 line summary of the worker brief>", tier: "standard", route_reason: "<why this tier fits this unit>", preflight: { symbols_grepped: <N from Step 4.5>, self_consistent: true, telemetry: "checked" | "n/a" } } })
 ```
 Tiers: `cheap` (mechanical, fully-specified change), `standard` (default capable worker), `premium` (subtle or high-risk unit escalated to a stronger model). Each (re-)delegation is appended to the unit's `delegations[]` history, so the tier choice and reason survive the brief overwrite on fix attempts.
 
@@ -275,7 +277,7 @@ Include: unit verdicts, gate results, review findings with classifications, defe
 
 **4. Deliberation Summary:** Present to user: what was built, worker stats, gate results, review findings, test results.
 
-**5. Mandatory New Session:** "Phase [N] complete. New session required. All state persisted to ledger + progress." Default: new session. User can override with `--force-continue`. Before ending, call:
+**5. Mandatory New Session:** "Phase [N] complete. New session required. All state persisted to ledger + progress." Default: new session. User can override with `--force-continue`: log `GATE_OVERRIDE` (with `gate`) and continue in the SAME journal session — do not end_session/init_session for an override. Before ending, call:
 ```
 mcp__foreman__write_journal({ operation: "end_session", data: { dur_min: <estimate>, ctx_used_pct: <estimate>, summary: { units_ok: <N>, units_rej: <N>, w_spawned: <N>, w_wasted: <N>, tok_wasted: 0, delay_min: 0, blockers: [], friction: <1-100> } } })
 ```

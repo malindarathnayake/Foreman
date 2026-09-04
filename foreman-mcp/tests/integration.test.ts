@@ -670,7 +670,7 @@ describe("declare_phase_units round-trip via MCP", () => {
   async function passUnit(phase: string, unitId: string) {
     await writeLedgerTool({
       operation: "set_unit_status", phase, unit_id: unitId,
-      data: { s: "delegated", brief: "Worker brief long enough for the delegation gate" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "Worker brief long enough for the delegation gate" },
     })
     await writeLedgerTool({
       operation: "set_verdict", phase, unit_id: unitId, data: { v: "pass" },

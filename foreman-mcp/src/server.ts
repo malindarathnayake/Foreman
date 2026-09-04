@@ -37,6 +37,7 @@ import {
   LedgerOperationDataSchemas,
 } from "./types.js"
 import { renderShape } from "./lib/schemaDoc.js"
+import { formatSchemaError, isZodError } from "./lib/schemaError.js"
 import { readJournal, initSession, logEvent, endSession } from "./lib/journal.js"
 import { invokeAdvisor, formatAdvisorResult } from "./tools/invokeAdvisor.js"
 import { sessionOrient } from "./tools/sessionOrient.js"
@@ -526,15 +527,21 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const input = { operation: args.operation, data: args.data } as any
-      if (args.operation === "init_session") {
-        const journal = await initSession(journalPath, input)
-        return textResult(JSON.stringify({ ok: true, session_id: journal.sessions[journal.sessions.length - 1].id }))
-      } else if (args.operation === "log_event") {
-        const result = await logEvent(journalPath, input)
-        return textResult(result)
-      } else {
-        const journal = await endSession(journalPath, input)
-        return textResult(JSON.stringify({ ok: true, sessions: journal.sessions.length, rollup: !!journal.rollup }))
+      try {
+        if (args.operation === "init_session") {
+          const journal = await initSession(journalPath, input)
+          return textResult(JSON.stringify({ ok: true, session_id: journal.sessions[journal.sessions.length - 1].id }))
+        } else if (args.operation === "log_event") {
+          const result = await logEvent(journalPath, input)
+          return textResult(result)
+        } else {
+          const journal = await endSession(journalPath, input)
+          return textResult(JSON.stringify({ ok: true, sessions: journal.sessions.length, rollup: !!journal.rollup }))
+        }
+      } catch (err) {
+        // One line per field + the expected shape, instead of a raw Zod issue dump.
+        if (isZodError(err)) throw new Error(formatSchemaError("write_journal", err, input, JournalOperationDataSchemas))
+        throw err
       }
     }
   )
@@ -582,12 +589,17 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     "run_tests",
     {
       title: "Run Tests",
-      description: "Runs a test command with bounded output. Runner must be in allowlist (npm, pytest, go, cargo, dotnet, make, gradle, gradlew). Project-local Gradle wrappers are supported without shell or cmd.exe interpolation. Use instead of Bash for test execution.",
+      description: [
+        "Runs a test command with bounded output. Runner must be in allowlist (npm, pytest, go, cargo, dotnet, make, gradle, gradlew). Project-local Gradle wrappers are supported without shell or cmd.exe interpolation. Use instead of Bash for test execution.",
+        "Output shaping: truncation always keeps the TAIL of each stream (failures live there). strip_patterns (≤10 JS regex sources, case-sensitive, applied per line to both streams BEFORE the cap) drops known noise such as container banners and reports stripped_lines. tail_lines keeps only the last N lines of each stream. Both are opt-in; default output is unchanged.",
+      ].join("\n"),
       inputSchema: z.strictObject({
         runner: z.string().min(1).max(50),
         args: z.array(z.string().max(10000)).max(100).default([]),
         timeout_ms: z.number().min(1).max(600000).optional(),
         max_output_chars: z.number().min(1).max(50000).optional(),
+        strip_patterns: z.array(z.string().min(1).max(200)).max(10).optional(),
+        tail_lines: z.number().int().min(1).max(5000).optional(),
       }),
       outputSchema: TextOutputSchema,
       annotations: {
@@ -597,7 +609,13 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
     },
     async (args, _extra) => {
-      const text = maybeCompress("run_tests", await runTests(args.runner, args.args, args.timeout_ms, args.max_output_chars))
+      const text = maybeCompress(
+        "run_tests",
+        await runTests(args.runner, args.args, args.timeout_ms, args.max_output_chars, {
+          stripPatterns: args.strip_patterns,
+          tailLines: args.tail_lines,
+        })
+      )
       return textResult(text)
     }
   )

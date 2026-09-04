@@ -264,7 +264,11 @@ describe("journal", () => {
       expect(validCodes).toContain("EGRESS_NOTICE")
       // 3a (aider_worker capability probe): +CAP_WAIVER — fail-open waiver marker
       expect(validCodes).toContain("CAP_WAIVER")
-      expect(validCodes.length).toBe(26)
+      // v0.6.1 (field feedback 2026-09 round 2): +SPEC_GAP (gap decided, recorded, continuing)
+      // +GATE_OVERRIDE (user forced past a checkpoint). Both anomalies — the enum stays anomaly-only.
+      expect(validCodes).toContain("SPEC_GAP")
+      expect(validCodes).toContain("GATE_OVERRIDE")
+      expect(validCodes.length).toBe(28)
     })
   })
 

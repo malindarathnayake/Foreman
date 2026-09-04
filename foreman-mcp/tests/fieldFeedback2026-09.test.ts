@@ -30,7 +30,7 @@ afterEach(async () => {
 const BRIEF = "worker brief long enough to clear the 20 char minimum"
 
 async function delegateAndPass(phase: string, unit: string): Promise<void> {
-  await writeLedger(ledgerPath, { operation: "set_unit_status", phase, unit_id: unit, data: { s: "delegated", brief: BRIEF } })
+  await writeLedger(ledgerPath, { operation: "set_unit_status", phase, unit_id: unit, data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: BRIEF } })
   await writeLedger(ledgerPath, { operation: "set_verdict", phase, unit_id: unit, data: { v: "pass" } })
 }
 
@@ -138,7 +138,7 @@ describe("set_verdict — first_pass_ts is stamped once", () => {
   })
 
   it("is not stamped by fail/pending/inconclusive verdicts", async () => {
-    await writeLedger(ledgerPath, { operation: "set_unit_status", phase: "p1", unit_id: "u1", data: { s: "delegated", brief: BRIEF } })
+    await writeLedger(ledgerPath, { operation: "set_unit_status", phase: "p1", unit_id: "u1", data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: BRIEF } })
     await writeLedger(ledgerPath, { operation: "set_verdict", phase: "p1", unit_id: "u1", data: { v: "fail" } })
     expect((await readLedger(ledgerPath)).phases.p1.units.u1.first_pass_ts).toBeUndefined()
   })

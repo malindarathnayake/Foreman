@@ -176,17 +176,91 @@ function truncate(buf: string, max: number): { text: string; wasTruncated: boole
   return { text: '...(truncated)\n' + buf.slice(-max), wasTruncated: true }
 }
 
+// ─── Output shaping (field feedback 2026-09 round 2) ───────────────────────────
+// A testcontainers banner ate a third of the output budget on every integration
+// run. Callers can now drop known noise by regex and/or keep only the tail, both
+// applied per stream BEFORE the character cap so the budget goes to signal.
+
+export interface OutputFilterOptions {
+  /** JS regex sources (no flags, case-sensitive). A line matching any is dropped. */
+  stripPatterns?: string[]
+  /** Keep only the last N lines of each stream. */
+  tailLines?: number
+}
+
+export const MAX_STRIP_PATTERNS = 10
+export const MAX_STRIP_PATTERN_LENGTH = 200
+
+export function compileStripPatterns(
+  patterns: string[] | undefined
+): { ok: true; regexes: RegExp[] } | { ok: false; error: string } {
+  if (!patterns || patterns.length === 0) return { ok: true, regexes: [] }
+  if (patterns.length > MAX_STRIP_PATTERNS) {
+    return { ok: false, error: `too many strip_patterns (${patterns.length}); max ${MAX_STRIP_PATTERNS}` }
+  }
+  const regexes: RegExp[] = []
+  for (const p of patterns) {
+    if (p.length === 0 || p.length > MAX_STRIP_PATTERN_LENGTH) {
+      return { ok: false, error: `invalid strip_pattern length (${p.length}); must be 1..${MAX_STRIP_PATTERN_LENGTH}` }
+    }
+    try {
+      regexes.push(new RegExp(p))
+    } catch (err) {
+      return { ok: false, error: `invalid strip_pattern\npattern: ${p}\n${(err as Error).message}` }
+    }
+  }
+  return { ok: true, regexes }
+}
+
+/** Pure: drop matching lines, then keep the tail. Returns the shaped text and how many lines were stripped. */
+export function applyOutputFilters(
+  buf: string,
+  regexes: RegExp[],
+  tailLines?: number
+): { text: string; strippedLines: number } {
+  if (regexes.length === 0 && tailLines === undefined) return { text: buf, strippedLines: 0 }
+  let lines = buf.split('\n')
+  let strippedLines = 0
+  if (regexes.length > 0) {
+    const kept = lines.filter((line) => !regexes.some((re) => re.test(line)))
+    strippedLines = lines.length - kept.length
+    lines = kept
+  }
+  if (tailLines !== undefined && lines.length > tailLines) {
+    lines = lines.slice(-tailLines)
+  }
+  return { text: lines.join('\n'), strippedLines }
+}
+
 export async function runTests(
   runner: string,
   args: string[],
   timeoutMs: number = 60000,
   maxOutputChars: number = 8000,
+  filters?: OutputFilterOptions,
 ): Promise<string> {
   const allowedRunners = getAllowedRunners()
   if (!allowedRunners.includes(runner)) {
     return Promise.resolve(
       `error: runner not in allowlist\nrunner: ${runner}\nallowed_runners: ${DEFAULT_ALLOWED_RUNNERS.join(", ")}`
     )
+  }
+
+  const compiled = compileStripPatterns(filters?.stripPatterns)
+  if (!compiled.ok) {
+    return `error: ${compiled.error}`
+  }
+  const regexes = compiled.regexes
+  const finalize = (buf: string) => {
+    const shaped = applyOutputFilters(buf, regexes, filters?.tailLines)
+    return { ...truncate(shaped.text, maxOutputChars), stripped: shaped.strippedLines }
+  }
+  // Meta lines appear ONLY when shaping was requested, so default output stays byte-identical.
+  const shapingMeta = (a: { stripped: number }, b: { stripped: number }): string => {
+    const parts: string[] = []
+    if (filters?.stripPatterns?.length) parts.push(`stripped_lines: ${a.stripped + b.stripped}`)
+    if (filters?.tailLines !== undefined) parts.push(`tail_lines: ${filters.tailLines}`)
+    return parts.length ? parts.join('\n') + '\n' : ''
   }
 
   const resolution = await resolveRunner(runner)
@@ -217,10 +291,10 @@ export async function runTests(
           clearTimeout(timer)
           child.kill('SIGTERM')
           setTimeout(() => { try { child.kill('SIGKILL') } catch {} }, 2000)
-          const { text: stdoutText, wasTruncated: stdoutTruncated } = truncate(stdoutBuf, maxOutputChars)
-          const { text: stderrText, wasTruncated: stderrTruncated } = truncate(stderrBuf, maxOutputChars)
+          const out = finalize(stdoutBuf)
+          const errOut = finalize(stderrBuf)
           resolve(
-            `exit_code: -1\npassed: false\ntimed_out: false\ntruncated: true\n\nSTDOUT\n${stdoutText}\n\nSTDERR\n${stderrText}`
+            `exit_code: -1\npassed: false\ntimed_out: false\ntruncated: true\n${shapingMeta(out, errOut)}\nSTDOUT\n${out.text}\n\nSTDERR\n${errOut.text}`
           )
         }
         return
@@ -236,10 +310,10 @@ export async function runTests(
           clearTimeout(timer)
           child.kill('SIGTERM')
           setTimeout(() => { try { child.kill('SIGKILL') } catch {} }, 2000)
-          const { text: stdoutText, wasTruncated: stdoutTruncated } = truncate(stdoutBuf, maxOutputChars)
-          const { text: stderrText, wasTruncated: stderrTruncated } = truncate(stderrBuf, maxOutputChars)
+          const out = finalize(stdoutBuf)
+          const errOut = finalize(stderrBuf)
           resolve(
-            `exit_code: -1\npassed: false\ntimed_out: false\ntruncated: true\n\nSTDOUT\n${stdoutText}\n\nSTDERR\n${stderrText}`
+            `exit_code: -1\npassed: false\ntimed_out: false\ntruncated: true\n${shapingMeta(out, errOut)}\nSTDOUT\n${out.text}\n\nSTDERR\n${errOut.text}`
           )
         }
         return
@@ -284,9 +358,9 @@ export async function runTests(
       if (settled) return
       settled = true
 
-      const { text: stdoutText, wasTruncated: stdoutTruncated } = truncate(stdoutBuf, maxOutputChars)
-      const { text: stderrText, wasTruncated: stderrTruncated } = truncate(stderrBuf, maxOutputChars)
-      const truncated = stdoutTruncated || stderrTruncated
+      const out = finalize(stdoutBuf)
+      const errOut = finalize(stderrBuf)
+      const truncated = out.wasTruncated || errOut.wasTruncated
 
       const exitCode = timedOut ? -1 : (code ?? 1)
       const passed = !timedOut && exitCode === 0
@@ -296,10 +370,11 @@ export async function runTests(
         `passed: ${passed}\n` +
         `timed_out: ${timedOut}\n` +
         `truncated: ${truncated}\n` +
+        shapingMeta(out, errOut) +
         `\nSTDOUT\n` +
-        stdoutText +
+        out.text +
         `\n\nSTDERR\n` +
-        stderrText
+        errOut.text
 
       resolve(output)
     })

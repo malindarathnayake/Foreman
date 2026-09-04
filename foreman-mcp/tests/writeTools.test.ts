@@ -36,7 +36,7 @@ describe("handleWriteLedger — v0.3.1 tier telemetry + record_review (Zod path)
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "Worker brief for u1 — implement per spec", tier: "premium", route_reason: "high-risk unit" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "Worker brief for u1 — implement per spec", tier: "premium", route_reason: "high-risk unit" },
     })
     const unit = (await readLedger(ledgerPath)).phases.p1.units.u1
     expect(unit.tier).toBe("premium")
@@ -50,7 +50,7 @@ describe("handleWriteLedger — v0.3.1 tier telemetry + record_review (Zod path)
         operation: "set_unit_status",
         phase: "p1",
         unit_id: "u1",
-        data: { s: "delegated", brief: "Worker brief for u1 — implement per spec", tier: "turbo" },
+        data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "Worker brief for u1 — implement per spec", tier: "turbo" },
       })
     ).rejects.toThrow()
   })
@@ -122,7 +122,7 @@ describe("handleWriteLedger", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "Worker brief: implement unit u1 types and constants per spec" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "Worker brief: implement unit u1 types and constants per spec" },
     })
     const result = await handleWriteLedger(ledgerPath, {
       operation: "set_verdict",
@@ -141,7 +141,7 @@ describe("handleWriteLedger", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "worker brief long enough to clear the 20 char minimum" },
     })
     await handleWriteLedger(ledgerPath, {
       operation: "set_verdict",
@@ -666,7 +666,7 @@ describe("handleWriteLedger — set_verdict via/note end-to-end", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: unit,
-      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "worker brief long enough to clear the 20 char minimum" },
     })
   }
 
@@ -1089,6 +1089,7 @@ describe("WriteLedgerInputSchema — set_unit_status user_override (anti-strip)"
       unit_id: "u1",
       data: {
         s: "delegated",
+        preflight: { symbols_grepped: 1, self_consistent: true },
         brief: "worker brief long enough to clear the 20 char minimum",
         user_override: true,
       },
@@ -1503,7 +1504,7 @@ describe("handleWriteLedger — P5 discipline-adherence gate (default-on)", () =
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief },
     })
     await handleWriteLedger(ledgerPath, {
       operation: "set_verdict",
@@ -1567,7 +1568,7 @@ describe("declare_phase_units", () => {
       operation: "set_unit_status",
       phase,
       unit_id: unitId,
-      data: { s: "delegated", brief: "Worker brief long enough for the delegation gate" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "Worker brief long enough for the delegation gate" },
     })
     await handleWriteLedger(ledgerPath, {
       operation: "set_verdict",

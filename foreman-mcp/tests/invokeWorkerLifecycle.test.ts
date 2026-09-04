@@ -139,7 +139,7 @@ async function makeWorkspace(opts: { port?: number; writeEnv?: boolean; seedDele
       operation: "set_unit_status",
       phase: "4g",
       unit_id: "u1",
-      data: { s: "delegated", brief: "seed brief for delegated unit ok", tier: "standard" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "seed brief for delegated unit ok", tier: "standard" },
     })
   }
   return {
@@ -511,7 +511,7 @@ describe("write_ledger sidecar hook — two rejections on one attempt, then a se
       operation: "set_unit_status",
       phase: "4g",
       unit_id: "u1",
-      data: { s: "delegated", brief: "second attempt worker brief long enough to pass validation", tier: "standard" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "second attempt worker brief long enough to pass validation", tier: "standard" },
     })
 
     // Attempt 2: a second success chain — a SECOND delegation_id in the same file.
@@ -553,7 +553,7 @@ describe("write_ledger sidecar hook — long unit_id digest-bounded chain", () =
       operation: "set_unit_status",
       phase: "4g",
       unit_id: longUnitId,
-      data: { s: "delegated", brief: "seed brief for delegated unit ok", tier: "standard" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "seed brief for delegated unit ok", tier: "standard" },
     })
 
     const invokeText = await handleInvokeWorker(baseInput(ws, { unit_id: longUnitId }), ws.deps)

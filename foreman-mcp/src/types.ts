@@ -12,6 +12,21 @@ export interface Rejection {
 
 export type Tier = "cheap" | "standard" | "premium"
 
+/**
+ * Step 4.5 Brief Preflight attestation, recorded on the delegated write. Required for
+ * s:'delegated' since v0.6.1 (field feedback 2026-09 round 2) — makes the preflight as
+ * mechanical as the brief rule. `self_consistent` must be literally true: a brief that
+ * contradicts itself is not delegated, it is rewritten.
+ */
+export interface DelegationPreflight {
+  /** Number of brief symbols grepped across spec.md (Step 4.5 steps 1–4). ≥1. */
+  symbols_grepped: number
+  /** Every test expectation in the brief agrees with its implementation instruction (step 6). */
+  self_consistent: true
+  /** Custom telemetry names checked against the stack profile (step 7), or n/a when the unit emits no signals. */
+  telemetry?: "checked" | "n/a"
+}
+
 /** One delegation attempt. Appended per (re-)delegation so retry history survives the `w` overwrite. */
 export interface Delegation {
   brief: string
@@ -21,6 +36,8 @@ export interface Delegation {
   attempt: number
   /** True when the delegation-cap was overridden by explicit user approval (D2a). */
   user_override?: boolean
+  /** Brief Preflight attestation. Absent on delegations recorded before v0.6.1. */
+  preflight?: DelegationPreflight
 }
 
 export interface Unit {
@@ -115,6 +132,13 @@ const SetUnitStatusInput = z.object({
     tier: z.enum(["cheap", "standard", "premium"]).optional(),
     route_reason: z.string().max(2000).optional(),
     user_override: z.boolean().optional(),
+    // Optional at the schema so non-delegating statuses need nothing; the ledger
+    // refuses s:'delegated' without it (see PREFLIGHT REQUIRED in lib/ledger.ts).
+    preflight: z.object({
+      symbols_grepped: z.number().int().min(1),
+      self_consistent: z.literal(true),
+      telemetry: z.enum(["checked", "n/a"]).optional(),
+    }).optional(),
   }),
 })
 
@@ -332,6 +356,14 @@ export const WriteProgressInputSchema = z.discriminatedUnion("operation", [
 
 export type WriteProgressInput = z.infer<typeof WriteProgressInputSchema>
 
+/** Per-operation `data` schemas for write_progress (schema-error hints; see lib/schemaError.ts). */
+export const ProgressOperationDataSchemas = {
+  update_status: UpdateStatusData,
+  complete_unit: CompleteUnitData,
+  log_error: LogErrorData,
+  start_phase: StartPhaseData,
+} as const
+
 // ─── Journal Types ──────────────────────────────────────────────────────────
 
 export interface JournalEnv {
@@ -412,6 +444,12 @@ export const JournalEventCode = z.enum([
   "USR_INT", "MODEL_DEG", "PERM_DENY",
   "HOOK_BLOCK", "DEP_MISS", "SCHEMA_DRIFT", "MERGE_CONF",
   "SEC_BLOCK", "EGRESS_NOTICE", "CAP_WAIVER",
+  // v0.6.1 (field feedback 2026-09 round 2): both are anomalies, not information.
+  // SPEC_GAP — a spec gap resolved by pit-boss decision (recorded, owner-overrulable) and
+  //   the run CONTINUED; SPEC_AMB stays "stopped, asking the user".
+  // GATE_OVERRIDE — the user forced past a phase checkpoint (--force-continue); the same
+  //   journal session continues, the `gate` field names the phase.
+  "SPEC_GAP", "GATE_OVERRIDE",
 ])
 
 const InitSessionData = z.object({

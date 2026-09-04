@@ -8,7 +8,11 @@ export interface ExternalCliResult {
   stderr: string
   timedOut: boolean
   exitCode: number
+  /** Either stream hit MAX_OUTPUT. Kept for callers that predate the per-stream flags. */
   truncated: boolean
+  /** Per-stream truncation (v0.6.1). Lets formatters drop a noisy-but-complete stderr when stdout is intact. */
+  stdoutTruncated?: boolean
+  stderrTruncated?: boolean
 }
 
 export function runExternalCli(
@@ -77,9 +81,9 @@ export function runExternalCli(
       if (settled) return
       settled = true
       if (timedOut) {
-        resolve({ stdout, stderr, timedOut: true, exitCode: -1, truncated: stdoutTruncated || stderrTruncated })
+        resolve({ stdout, stderr, timedOut: true, exitCode: -1, truncated: stdoutTruncated || stderrTruncated, stdoutTruncated, stderrTruncated })
       } else {
-        resolve({ stdout, stderr, timedOut: false, exitCode: code ?? 1, truncated: stdoutTruncated || stderrTruncated })
+        resolve({ stdout, stderr, timedOut: false, exitCode: code ?? 1, truncated: stdoutTruncated || stderrTruncated, stdoutTruncated, stderrTruncated })
       }
     })
   })
@@ -245,9 +249,9 @@ export function runWithStdin(
       if (settled) return
       settled = true
       if (timedOut) {
-        resolve({ stdout, stderr, timedOut: true, exitCode: -1, truncated: stdoutTruncated || stderrTruncated })
+        resolve({ stdout, stderr, timedOut: true, exitCode: -1, truncated: stdoutTruncated || stderrTruncated, stdoutTruncated, stderrTruncated })
       } else {
-        resolve({ stdout, stderr, timedOut: false, exitCode: code ?? 1, truncated: stdoutTruncated || stderrTruncated })
+        resolve({ stdout, stderr, timedOut: false, exitCode: code ?? 1, truncated: stdoutTruncated || stderrTruncated, stdoutTruncated, stderrTruncated })
       }
     })
   })

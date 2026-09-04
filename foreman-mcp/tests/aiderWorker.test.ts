@@ -171,7 +171,7 @@ async function makeWorkspace(opts: { seedDelegation?: boolean } = {}): Promise<W
       operation: "set_unit_status",
       phase: "2c",
       unit_id: "u1",
-      data: { s: "delegated", brief: "seed brief for delegated aider unit ok", tier: "standard" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "seed brief for delegated aider unit ok", tier: "standard" },
     })
   }
 
@@ -671,7 +671,7 @@ describe("aider_worker — CAP_WAIVER journal write survives an over-cap unit_id
       operation: "set_unit_status",
       phase: "2c",
       unit_id: longUnitId,
-      data: { s: "delegated", brief: "seed brief for delegated aider unit with a long unit_id", tier: "standard" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "seed brief for delegated aider unit with a long unit_id", tier: "standard" },
     })
     setEnv("FIXTURE_AIDER_AVAILABLE", "0")
 

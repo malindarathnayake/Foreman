@@ -316,7 +316,7 @@ async function runDelegation(
     return (
       `status: error\n\n` +
       `unit '${unit_id}' in phase '${phase}' has no recorded delegation. Record it first, then re-run invoke_worker:\n` +
-      `  write_ledger set_unit_status { phase: '${phase}', unit_id: '${unit_id}', data: { s: 'delegated', brief: '<worker brief summary>', tier: '${tier}' } }\n`
+      `  write_ledger set_unit_status { phase: '${phase}', unit_id: '${unit_id}', data: { s: 'delegated', brief: '<worker brief summary>', tier: '${tier}', preflight: { symbols_grepped: <N>, self_consistent: true } } }\n`
     )
   }
   const latest = delegations[delegations.length - 1]

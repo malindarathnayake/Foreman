@@ -180,6 +180,18 @@ async function applyOperation(
             "do NOT write implementation code directly. Call mcp__foreman__pitboss_implementor to load the full protocol."
           )
         }
+        // Field feedback 2026-09 round 2: the Step 4.5 preflight was a mental checklist.
+        // Requiring its attestation here makes it as mechanical as the brief rule above,
+        // and the delegation entry keeps the evidence. Sequenced AFTER the brief check so
+        // existing DELEGATION REQUIRED messages are unchanged.
+        if (!data.preflight) {
+          throw new Error(
+            "PREFLIGHT REQUIRED: set_unit_status with s:'delegated' requires data.preflight — the Brief Preflight " +
+            "Gate attestation: { symbols_grepped: <brief symbols grepped across spec.md, ≥1>, self_consistent: true, " +
+            "telemetry?: 'checked'|'n/a' }. Run Step 4.5 (symbol grep, spec-footprint diff, brief self-consistency, " +
+            "telemetry names) and record it; a delegation without it is unaudited."
+          )
+        }
         const unit = ledger.phases[phase].units[unit_id]
         // D2a delegation cap: count DISTINCT rejected attempts, not raw rejection count —
         // two reviewers rejecting the same attempt fire the cap once. Stamped entries
@@ -212,6 +224,7 @@ async function applyOperation(
           ts: new Date().toISOString(),
           attempt: lastAttempt + 1,   // monotonic even after the cap slice below
           ...(data.user_override === true ? { user_override: true } : {}),
+          preflight: data.preflight,
         })
         if (unit.delegations.length > 20) unit.delegations = unit.delegations.slice(-20)
       }

@@ -70,9 +70,22 @@ export function formatAdvisorResult(cli: string, result: ExternalCliResult): str
 
   // On clean success the CLI's stderr is pure scaffolding — banner + the echoed prompt +
   // a verbatim DUPLICATE of stdout + the tokens line (already captured above). Drop it.
-  // On failure OR truncation, stderr may hold the only diagnostic signal — keep it.
-  if (result.exitCode === 0 && result.truncated === false) {
+  // Only STDOUT truncation matters for that decision: Codex streams its own tool-call
+  // transcript to stderr, which alone trips the cap on every big review and used to
+  // ship 16k of transcript with a successful answer (field feedback 2026-09 round 2).
+  // On failure, stderr may hold the only diagnostic signal — keep it whole.
+  const stdoutCut = result.stdoutTruncated ?? result.truncated
+  if (result.exitCode === 0 && !stdoutCut) {
     return `${meta}\n\nSTDOUT\n${result.stdout}`
+  }
+  if (result.exitCode === 0) {
+    // stdout was cut: the answer's tail may only survive in stderr's echo. Keep that tail.
+    const lines = result.stderr.split("\n")
+    const kept = Math.min(lines.length, STDERR_TAIL_LINES)
+    return `${meta}\n\nSTDOUT\n${result.stdout}\n\nSTDERR (tail ${kept} of ${lines.length} lines)\n${lines.slice(-kept).join("\n")}`
   }
   return `${meta}\n\nSTDOUT\n${result.stdout}\n\nSTDERR\n${result.stderr}`
 }
+
+/** Lines of stderr kept when a successful call's stdout was truncated. */
+const STDERR_TAIL_LINES = 40

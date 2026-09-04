@@ -1,5 +1,6 @@
-import { WriteProgressInputSchema } from "../types.js"
+import { WriteProgressInputSchema, ProgressOperationDataSchemas, type WriteProgressInput } from "../types.js"
 import { writeProgress } from "../lib/progress.js"
+import { formatSchemaError, isZodError } from "../lib/schemaError.js"
 import { toKeyValue } from "../lib/toon.js"
 import { readLedger } from "../lib/ledger.js"
 import { naturalSort } from "../lib/naturalSort.js"
@@ -44,7 +45,13 @@ export async function handleWriteProgress(
   docsDir?: string,
   ledgerPath?: string
 ): Promise<string> {
-  const parsed = WriteProgressInputSchema.parse(rawInput)
+  let parsed: WriteProgressInput
+  try {
+    parsed = WriteProgressInputSchema.parse(rawInput)
+  } catch (err) {
+    if (isZodError(err)) throw new Error(formatSchemaError("write_progress", err, rawInput, ProgressOperationDataSchemas))
+    throw err
+  }
   await writeProgress(filePath, parsed)
 
   if (docsDir) {

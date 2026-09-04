@@ -278,7 +278,7 @@ describe("sessionOrient", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "worker brief long enough to clear the 20 char minimum" },
     })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",
