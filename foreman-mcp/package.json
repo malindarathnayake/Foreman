@@ -4,6 +4,11 @@
   "description": "Foreman MCP server — workflow orchestrator for planning and implementation skills",
   "type": "module",
   "main": "dist/server.js",
+  "files": [
+    "dist/",
+    "src/skills/",
+    "HOST-CONTRACT.md"
+  ],
   "bin": {
     "foreman-mcp": "dist/server.js"
   },
@@ -20,7 +25,7 @@
     "access": "public"
   },
   "scripts": {
-    "build": "tsc && node scripts/copy-assets.mjs",
+    "build": "node scripts/clean-dist.mjs && tsc && node scripts/copy-assets.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
     "start": "node dist/server.js"
