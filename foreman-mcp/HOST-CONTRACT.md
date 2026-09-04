@@ -86,6 +86,7 @@ Six capabilities, each rated READY / DECLARED / EXPERIMENTAL. READY means the be
 - [ ] **Shared-tree mutation denylist** — implementation workers use read-only Git inspection only; repository/index/stash/ref changes are forbidden.
 - [ ] **Before/after state guard** — branch, HEAD, stash ref/list, staged diff, and pre-existing dirty paths are compared before tests or verdict.
 - [ ] **Artifacts, not shared trees** — work crosses seats only as well-formed artifacts (patches/reports), never shared mutable trees.
+- [ ] **Line endings** — worktrees are created with `git -c core.autocrlf=false worktree add` so the checkout matches the index; `.gitattributes` is authoritative. A repo with `core.autocrlf=true` and no eol attributes for the delegated files serializes editing seats instead of parallelizing. Returned diffs pass `git apply --check` and are rejected when their endings disagree with the target path's `git ls-files --eol` attributes; the presence of CR alone is not a defect.
 - [ ] **State-root separation by path classification** — project tree vs Foreman state vs scratch — a write outside the declared class is a defect.
 
 ## Seat declaration

@@ -646,7 +646,7 @@ describe("write_ledger terminal hook → discipline gate (P5 5c integration)", (
 
     // The REAL discipline gate (default-on, no injected sidecarReader): resolves u1's
     // latest delegation to the hook-written terminal 'pass' and reconciles cleanly.
-    await handleWriteLedger(ws.ledgerPath, { operation: "record_review", phase: "4g", data: { advisor: "test-seat", findings: [] } })  // gate requires ≥1 review (2026-09 R2)
+    await handleWriteLedger(ws.ledgerPath, { operation: "record_review", phase: "4g", data: { advisor: "test-seat", findings: [], completion: "complete" } })  // gate requires ≥1 review (2026-09 R2)
     const gateText = await handleWriteLedger(ws.ledgerPath, {
       operation: "update_phase_gate",
       phase: "4g",

@@ -161,7 +161,7 @@ describe("add_rejection — reopens a passed unit", () => {
     expect(unit.v).toBe("pending")
     expect(unit.rej).toHaveLength(1)
 
-    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "codex", findings: [] } })
+    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "codex", findings: [], completion: "complete" } })
     await expect(
       writeLedger(ledgerPath, { operation: "update_phase_gate", phase: "p1", data: { g: "pass" } })
     ).rejects.toThrow(/PHASE GATE BLOCKED.*u1/s)
@@ -192,13 +192,13 @@ describe("update_phase_gate — review required", () => {
     await delegateAndPass("p1", "u1")
     await expect(
       writeLedger(ledgerPath, { operation: "update_phase_gate", phase: "p1", data: { g: "pass" } })
-    ).rejects.toThrow(/REVIEW REQUIRED: phase 'p1' has no record_review entries.*user_override/s)
+    ).rejects.toThrow(/REVIEW REQUIRED: phase 'p1' has no record_review entry recorded at or after.*user_override/s)
     expect((await readLedger(ledgerPath)).phases.p1.g).toBe("pending")
   })
 
   it("passes once a review is recorded; no override marker written", async () => {
     await delegateAndPass("p1", "u1")
-    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "codex", findings: [] } })
+    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "codex", findings: [], completion: "complete" } })
     await writeLedger(ledgerPath, { operation: "update_phase_gate", phase: "p1", data: { g: "pass" } })
     const phase = (await readLedger(ledgerPath)).phases.p1
     expect(phase.g).toBe("pass")

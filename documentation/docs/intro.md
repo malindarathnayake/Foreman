@@ -3,76 +3,59 @@ id: intro
 title: What Foreman is
 sidebar_label: What Foreman is
 slug: /
-description: A local, ledger-backed coding harness that carries a repository from clarified intent to gated, resumable completion.
+description: An MCP server that gives Claude Code, Cursor, or Codex a spec-to-implementation procedure and a ledger that refuses skipped steps.
 ---
 
-# Foreman
+# What Foreman is
 
-**A spec-to-code harness for AI-assisted software development.**
+Foreman is an MCP server. It exposes 27 tools to Claude Code, Cursor, and Codex: six protocol tools that return a working procedure to the model, and the state, test, worker, and review tools that procedure tells the model to call. Project state lives in `Docs/.foreman-ledger.json` inside your repo. The server validates every write to that file and refuses the ones that skip a step.
 
-Foreman is a local, ledger-backed coding harness that takes a real repository from clarified intent through design and executable specification to delegated implementation, recorded validation, and resumable completion.
+## Who does what
 
-A frontier model occupies the **pitboss** seat. It works with you on the design, converts approved decisions into bounded implementation units, delegates those units to workers, inspects and tests their output, rejects bad work, and closes phase gates. Foreman supplies the operating protocols, durable project state, and mechanical checks that keep that process coherent across models and sessions.
+| Actor | What it does |
+|---|---|
+| You | Answer design questions, approve the design summary, arbitrate deadlocks, override gates, commit |
+| The host model, called the pit-boss in the procedures | Follows the protocol: plans, writes worker briefs, starts workers, inspects their output, runs tests, records verdicts, requests reviews |
+| Workers | Subagents the host spawns to implement one unit from a brief. They see the brief only, never the spec or the ledger |
+| Reviewers | Separate CLIs or endpoints that review a phase and return findings: Codex CLI, Gemini CLI, headless Claude, or a configured council |
+| Foreman, the MCP server | Serves the procedures; validates and writes the ledger, progress, and journal files; runs allowlisted test commands; spawns reviewer CLIs; applies the refusals on [What Foreman enforces](./enforcement/what-foreman-enforces.md) |
+| Your repo tooling | Compilers, tests, linters. Foreman runs them through `run_tests`. It does not replace them |
+
+## A ten-line example
+
+You, in Claude Code, in the repo:
 
 ```text
-intent / existing repository
-            |
-      design_partner
-            |
-      approved design
-            |
-       spec_generator
-            |
- spec + handoff + tests + progress
-            |
-   pitboss_implementor
-            |
- bounded unit -> worker -> inspect -> test -> review -> phase gate
-            |                                      |
-            +----------- ledger / journal ---------+
+Use the Foreman MCP server. Call session_orient, then pitboss_implementor with the
+context "Resume from Foreman state."
 ```
 
-**Models generate code. Foreman controls the job.**
+What the host does next, driven by the ledger:
 
-Foreman is not another general-purpose agent framework, and it does not replace your coding host, repository tools, or CI. It controls the development lifecycle across them.
+```text
+mcp__foreman__session_orient      -> action: implement_unit  resume_target: p2/u3
+mcp__foreman__write_ledger        set_unit_status u3 { s: "ip" }
+mcp__foreman__write_ledger        set_unit_status u3 { s: "delegated", brief, preflight }
+Agent (worker subagent)           implements u3 from the brief, reports back
+mcp__foreman__run_tests           the unit's test command
+mcp__foreman__write_ledger        set_verdict u3 { v: "pass" }
+```
 
-| | |
-|---|---|
-| **Current release** | `v0.6.1` |
-| **Package** | `@malindarathnayake/foreman-mcp` |
-| **Runtime** | Node.js `>=22` |
-| **License** | Apache-2.0 |
+The ledger now holds u3's brief, its delegation entry with the preflight attestation, and a verdict with a timestamp. The next session's `session_orient` starts at u4.
 
-## Start here
+## What it is not
 
-1. **[Install](./getting-started/installation.md)** — GitHub Packages or an offline release tarball.
-2. **[Configure an MCP host](./getting-started/configure-mcp-host.md)** — Claude Code, Cursor, Codex, or a generic host.
-3. **[Start a project](./getting-started/start-a-project.md)** — pick one protocol per session.
+- **Not an IDE, an agent runtime, or a daemon.** It is a stdio process your host starts and stops.
+- **Not a sandbox around the host.** Workers are the host's own subagents. Foreman cannot intercept their file or git operations. It catches damage after the fact: the procedure makes the host re-read every changed file and rerun tests before a verdict.
+- **Not a proof of correctness.** The ledger proves the recorded sequence happened. It cannot prove the model read what it said it read.
+- **Not CI.** Phase gates run in your session, before commit. Your CI still runs after.
 
-Already installed? Point your MCP host at `foreman-mcp` with the right `--host` flag and call `session_orient`.
+## When to use it
 
-## Understand the design
+Work that spans several units or sessions. Work where a wrong "done" is expensive. Work that another person, or another model, must be able to pick up mid-stream from a file rather than from a chat transcript.
 
-- **[Not another agent framework](./concepts/not-another-agent-framework.md)** — why Foreman competes on control rather than autonomy, and what that costs you.
-- **[What "coding harness" means](./concepts/coding-harness.md)** — the seats, and who owns which decision.
-- **[The development lifecycle](./concepts/lifecycle.md)** — design, spec, delegate, inspect, gate.
-- **[What Foreman enforces](./enforcement/what-foreman-enforces.md)** — the checks that are TypeScript rather than prompt text, and the honest boundary of what they prove.
+## When to skip it
 
-## Forged in real development
+A one-file fix that finishes in one session. A throwaway prototype. A large mechanical rename. Every unit costs a brief, a worker run, a file inspection, a test run, and a verdict. Every phase adds a review round. `lighttask` is the low-ceremony path for one small change; for anything smaller than that, do not load Foreman at all.
 
-Foreman grew out of delivering and maintaining real systems across **Java, Go, C#, C++, Python, and React**.
-
-Those runs exposed the same failures repeatedly:
-
-- a long session drifted away from the approved design
-- a worker received too much context, solved the wrong problem, or timed out halfway through it
-- the agent that wrote a defect reviewed and defended its own work
-- "all tests pass" existed only as a sentence in chat
-- a new session reconstructed implementation status from a compacted conversation
-- cheaper models were asked to make project-level decisions they were not equipped to make
-
-Foreman turns those failures into an explicit lifecycle. A frontier model is used where judgment matters. Bounded implementation can be delegated to smaller, local, or remote workers. Recorded verdicts, review findings, failures, and evidence explicitly written to Foreman state survive outside the context window. Raw test output remains the host's responsibility unless it is recorded.
-
-In one real Java REST API delivery, Foreman carried an approved design into a seven-phase implementation. Reviews caught scope, validation-order, and database-filter defects. The run recovered from worker timeouts, reran focused Gradle validation, and resumed from recorded state instead of replaying chat history. That is the class of work Foreman exists to control.
-
-Foreman's own releases are produced by this same pipeline: each version is carried through `design_partner`, `spec_generator`, and `pitboss_implementor`, and its design summary, implementation spec, handoff, progress record, and testing harness live under `docs/` in the working tree. Those are live working artifacts rather than published templates, so they are kept out of the published repository.
+Next: [Install](./getting-started/installation.md).

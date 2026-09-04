@@ -35,7 +35,7 @@ Tool count: 27
 - write_journal — Writes to the Foreman session journal (init_session / log_event / end_session).
 - normalize_review — Normalizes raw review text into structured findings.
 - verify_citations — Verifies that evidence citations reference real files and that a verbatim anchor appears at or near the cited line.
-- run_tests — Runs a test command with bounded output; runner must be in an allowlist (npm, pytest, go, cargo, dotnet, make, gradle, gradlew). Project Gradle wrappers are supported without shell interpolation.
+- run_tests — Runs a test command with bounded output; runner must be in an allowlist (npm, pytest, go, cargo, dotnet, make, gradle, gradlew, gofmt, golangci-lint); fail_on_stdout turns any output into a failure for list-style checkers such as gofmt -l. Project Gradle wrappers are supported without shell interpolation.
 - session_orient — Returns the ledger-authoritative action and resume target, including gate retries, blockers, and ledger/progress drift. Call first at session start.
 - retrieve_original — Recovers the exact original text behind a `<<ccr:HASH>>` compression marker, in-memory and TTL-bound.
 - pitboss_implementor — Activates the pitboss-implementor protocol for multi-phase implementation from prepared specs (worker fan-out, gates, retries, resume).

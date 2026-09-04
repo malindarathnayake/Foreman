@@ -3,7 +3,7 @@ import { existsSync } from 'fs'
 import { runExternalCli, RESOLVE_CMD, parseResolutionOutput, type SpawnPlan } from '../lib/externalCli.js'
 import path from 'path'
 
-export const DEFAULT_ALLOWED_RUNNERS = ["npm", "pytest", "go", "cargo", "dotnet", "make", "gradle", "gradlew"]
+export const DEFAULT_ALLOWED_RUNNERS = ["npm", "pytest", "go", "cargo", "dotnet", "make", "gradle", "gradlew", "gofmt", "golangci-lint"]
 const BUFFER_CAP_MULTIPLIER = 4
 const resolvedRunners = new Map<string, SpawnPlan>()
 
@@ -186,6 +186,12 @@ export interface OutputFilterOptions {
   stripPatterns?: string[]
   /** Keep only the last N lines of each stream. */
   tailLines?: number
+  /**
+   * Treat any non-empty stdout as a failure even on exit 0. For list-style checkers
+   * (`gofmt -l`, `goimports -l`) that exit 0 and print the files needing work — without
+   * this, `passed: true` would lie (field feedback 2026-09 round 3).
+   */
+  failOnStdout?: boolean
 }
 
 export const MAX_STRIP_PATTERNS = 10
@@ -260,6 +266,7 @@ export async function runTests(
     const parts: string[] = []
     if (filters?.stripPatterns?.length) parts.push(`stripped_lines: ${a.stripped + b.stripped}`)
     if (filters?.tailLines !== undefined) parts.push(`tail_lines: ${filters.tailLines}`)
+    if (filters?.failOnStdout) parts.push("fail_on_stdout: true")
     return parts.length ? parts.join('\n') + '\n' : ''
   }
 
@@ -363,7 +370,8 @@ export async function runTests(
       const truncated = out.wasTruncated || errOut.wasTruncated
 
       const exitCode = timedOut ? -1 : (code ?? 1)
-      const passed = !timedOut && exitCode === 0
+      const stdoutFailure = filters?.failOnStdout === true && stdoutBuf.trim().length > 0
+      const passed = !timedOut && exitCode === 0 && !stdoutFailure
 
       const output =
         `exit_code: ${exitCode}\n` +

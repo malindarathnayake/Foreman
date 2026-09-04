@@ -89,17 +89,17 @@ const config: Config = {
           items: [
             { label: 'What Foreman is', to: '/' },
             { label: 'Install', to: '/getting-started/installation' },
-            { label: 'Configure a host', to: '/getting-started/configure-mcp-host' },
-            { label: 'Start a project', to: '/getting-started/start-a-project' },
+            { label: 'Register your host', to: '/getting-started/configure-mcp-host' },
+            { label: 'First project', to: '/getting-started/start-a-project' },
           ],
         },
         {
           title: 'Understand it',
           items: [
-            { label: 'Not another agent framework', to: '/concepts/not-another-agent-framework' },
-            { label: 'The lifecycle', to: '/concepts/lifecycle' },
+            { label: 'The six protocols', to: '/how-it-works/protocols' },
+            { label: "A unit's life", to: '/how-it-works/unit-life' },
             { label: 'What Foreman enforces', to: '/enforcement/what-foreman-enforces' },
-            { label: 'Advisor seats', to: '/execution/advisor-seats' },
+            { label: 'Phase gates and reviews', to: '/how-it-works/phase-gates' },
           ],
         },
         {

@@ -64,9 +64,10 @@ function renderNode(node: JsonSchemaNode): string {
   const constraints: string[] = []
   if (node.minLength !== undefined && node.minLength > 0) constraints.push(`≥${node.minLength} chars`)
   if (node.maxLength !== undefined) constraints.push(`≤${node.maxLength} chars`)
-  if (node.minimum !== undefined) constraints.push(`≥${node.minimum}`)
+  // zod's .int() emits the safe-integer bounds as minimum/maximum; they are noise to a reader.
+  if (node.minimum !== undefined && node.minimum !== Number.MIN_SAFE_INTEGER) constraints.push(`≥${node.minimum}`)
   if (node.exclusiveMinimum !== undefined) constraints.push(`>${node.exclusiveMinimum}`)
-  if (node.maximum !== undefined) constraints.push(`≤${node.maximum}`)
+  if (node.maximum !== undefined && node.maximum !== Number.MAX_SAFE_INTEGER) constraints.push(`≤${node.maximum}`)
   if (node.exclusiveMaximum !== undefined) constraints.push(`<${node.exclusiveMaximum}`)
   const base = type ?? "any"
   return constraints.length ? `${base} (${constraints.join(", ")})` : base

@@ -7,7 +7,7 @@ import { renderShape } from "./schemaDoc.js"
  *
  * Why: the raw ZodError message is a JSON issue dump. A pit-boss reading it spent
  * three round trips learning that `via` is an enum, `severity` is lowercase, `line` is
- * a string, and `msg` is capped at 200 (field feedback 2026-09 round 2). The shape is
+ * a string, and `msg` is capped at 400 (field feedback 2026-09 round 2). The shape is
  * rendered from the same schema constants the descriptions use, so the hint can never
  * disagree with what the validator enforces.
  */

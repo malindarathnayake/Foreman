@@ -447,21 +447,72 @@ async function applyOperation(
         if (sidecarReader) {
           await disciplineAdherenceGate(phase, ledger.phases[phase], data, sidecarReader)
         }
-        // Field feedback 2026-09 (Codex R2): a gate is a reviewed checkpoint. Zero
-        // record_review entries means the deliberation step never ran or was never
-        // persisted. Sequenced LAST so every earlier block message is unchanged; the
-        // override is durable and auditable on the phase.
+        // Field feedback 2026-09 (Codex R2) + docs deliberation: a gate is a reviewed
+        // checkpoint of the CURRENT state. Reviews count only when recorded at or after
+        // the newest unit verdict — a review that predates a re-verdict covered old code —
+        // and a finding classified 'confirmed' in those reviews blocks the gate until the
+        // fix has been re-verdicted and a fresh review shows it resolved. Sequenced LAST so
+        // every earlier block message is unchanged; overrides are durable on the phase.
         const gatePhase = ledger.phases[phase]
-        if ((gatePhase.reviews ?? []).length === 0) {
+        const allReviews = gatePhase.reviews ?? []
+        const latestVerdictTs = Object.values(gatePhase.units).reduce(
+          (max, u) => (u.v_ts && u.v_ts > max ? u.v_ts : max),
+          ""
+        )
+        const currentReviews = allReviews.filter((r) => r.ts >= latestVerdictTs)
+        if (currentReviews.length === 0) {
           if (data.user_override !== true) {
+            const stale = allReviews.length > 0
+              ? ` ${allReviews.length} older review(s) exist but predate the latest unit verdict — a review recorded before a re-verdict does not cover the current code; re-run the review.`
+              : ""
             throw new Error(
-              `REVIEW REQUIRED: phase '${phase}' has no record_review entries. ` +
+              `REVIEW REQUIRED: phase '${phase}' has no record_review entry recorded at or after its latest unit verdict.${stale} ` +
               "Run the checkpoint deliberation and persist at least one advisor review " +
               "(write_ledger record_review) before the gate can pass, or set data.user_override: true " +
               "to pass without independent review — the override is recorded on the phase."
             )
           }
           gatePhase.review_override = { ts: new Date().toISOString() }
+        } else {
+          const confirmed = currentReviews.flatMap((r) =>
+            r.findings
+              .filter((f) => f.classification === "confirmed")
+              .map((f) => `${r.advisor}: ${(f.file || "?").slice(0, 120)}:${f.line || "?"} ${f.description.slice(0, 80)}`)
+          )
+          if (confirmed.length > 0) {
+            if (data.user_override !== true) {
+              const shown = confirmed.slice(0, 5).join("; ")
+              const more = confirmed.length > 5 ? ` (+${confirmed.length - 5} more)` : ""
+              throw new Error(
+                `CONFIRMED FINDINGS: phase '${phase}' has ${confirmed.length} confirmed review finding(s) recorded since its latest unit verdict: ${shown}${more}. ` +
+                "Reject the affected unit(s) (add_rejection → fix → set_verdict), then record a fresh review that shows the finding resolved before the gate can pass — " +
+                "or set data.user_override: true to waive it; the waiver is recorded on the phase as confirmed_override."
+              )
+            }
+            gatePhase.confirmed_override = { ts: new Date().toISOString(), findings: confirmed.length }
+          }
+          // Round 3 (Codex): a collapsed parse yields a review with zero findings and no
+          // examined list, which used to satisfy the gate. Silence is approval only when
+          // the seat says what it examined or the moderator marks it complete.
+          const incomplete = currentReviews
+            .map((r) => {
+              if (r.completion === "partial" || r.completion === "failed") return `${r.advisor}: completion=${r.completion}`
+              if (r.findings.length === 0 && !(r.checked && r.checked.length > 0) && r.completion !== "complete") {
+                return `${r.advisor}: zero findings with no examined list`
+              }
+              return null
+            })
+            .filter((s): s is string => s !== null)
+          if (incomplete.length > 0) {
+            if (data.user_override !== true) {
+              throw new Error(
+                `INCOMPLETE REVIEW: phase '${phase}' has ${incomplete.length} review(s) recorded since its latest unit verdict that do not cover the phase: ${incomplete.join("; ")}. ` +
+                "A seat that reports nothing must list what it examined (record_review data.checked) or be marked completion:'complete'; a partial or failed seat must be re-run — " +
+                "or set data.user_override: true to waive it; the waiver is recorded on the phase as incomplete_override."
+              )
+            }
+            gatePhase.incomplete_override = { ts: new Date().toISOString(), reviews: incomplete.length }
+          }
         }
       }
       // D2b: snapshot only on a passing gate — never on fail/pending, never cleared.

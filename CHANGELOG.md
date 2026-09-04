@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.2 - 2026-09-04
+
+Documentation rewrite, two gate rules that closed holes the docs review exposed, and field-feedback round 3 (six items from a third Fable 5.1 pit-boss run, triaged by a fork subagent and validated by an adversarial Codex pass).
+
+- README rewritten plain: what the server does in one paragraph, tarball-first install, `claude mcp add`, a copy-paste first prompt, and collapsible sections for what happens, what the ledger refuses versus what the procedure asks, the files it creates, cost, and egress. Docs site rebuilt to 16 pages in the same voice (name the actor; separate enforced from instructed; copy-paste prompts; exceptions in the same sentence as the rule); eleven abstract pages folded away; every stale fact found in the review corrected (tool counts, `gradle` in the allowlist, Codex editing concurrency, the forbidden full-ledger read at session start, the missing `preflight` in the enforcement example, Langfuse egress).
+- Phase gate: a review counts only when recorded at or after the phase's latest unit verdict (a review that predates a re-verdict covered old code); the gate refuses while any such review carries a finding classified `confirmed` (`CONFIRMED FINDINGS`, override recorded as `confirmed_override`) or is `completion: partial` or `failed`, or has zero findings with no `checked` list and no `completion: complete` (`INCOMPLETE REVIEW`, override recorded as `incomplete_override`). A collapsed reviewer parse can no longer satisfy the gate as an empty review.
+- Tool descriptions: hosts clip them at about 2,000 characters, which is exactly where the 0.6.0 generated shapes landed on `write_ledger`. The per-operation `data` shapes for the three write tools now live in the input schema's `data` property description, which hosts show in full; every description is held under the clip by a test. The `pitboss_implementor` description said G1–G5; it is G1–G6.
+- `normalize_review` parses bounded item blocks: bold-wrapped numbered items, `Severity:` fields mid-line or on the next line, `— HIGH:` after a location, exact `[P0]`–`[P3]` levels, markdown tables, and consecutive headings without blank lines. A block still needs an explicit severity token to become a finding. The checkpoint prompt now asks advisors to start every finding with a bracketed severity.
+- `bundle_status` reports `running_version` and `runtime_disk_version`, `restart_recommended: true` when they differ (compiled code cannot be reloaded; protocol Markdown is re-read on every activation), and which skills a project or user override shadows.
+- Worktrees: the Claude Code fan-out rule and the host contract gain a line-endings clause (check `core.autocrlf` and `git ls-files --eol`, serialize when the repo cannot normalize, create worktrees with `core.autocrlf=false`, `git apply --check` before applying); `aider_worker` creates its detached worktree with `-c core.autocrlf=false`.
+- `run_tests`: `gofmt` and `golangci-lint` in the default allowlist, plus `fail_on_stdout` for list-style checkers that exit 0 with work to do.
+- Journal `msg` limit raised to 400 characters.
+- Implementor gains a spec-amendment rule for `SPEC_GAP`: one atomic change across every affected document, one Decisions row, reopen a passed unit only when the amendment changes what it must do, material changes go to the owner or `spec_man`.
+- Bumped package to `0.6.2`.
+
 ## 0.6.1 - 2026-09-03
 
 Field-feedback round 2 (2026-09-03): six items from a second pit-boss run on a large project.

@@ -1,49 +1,74 @@
 ---
 id: installation
-title: Installation
-sidebar_label: Installation
-description: Install Foreman from GitHub Packages or an offline release tarball.
+title: Install
+sidebar_label: Install
+description: Install the release tarball, verify the binary, and know what to do when the command is not found.
 ---
 
-# Installation
+# Install
 
-Foreman requires Node.js 22 or newer.
+Node.js 22 or newer. Check with `node --version`.
 
-## GitHub Packages
+## From the release tarball
 
-Add the package scope to `~/.npmrc` or the project `.npmrc`:
+1. Download `malindarathnayake-foreman-mcp-<version>.tgz` from the [latest release](https://github.com/malindarathnayake/Foreman/releases/latest).
+2. Install it globally:
+
+```bash
+npm install -g ./malindarathnayake-foreman-mcp-<version>.tgz
+foreman-mcp --version
+```
+
+Expected output: `Foreman v<version>`.
+
+The tarball bundles its runtime dependencies (`bundleDependencies` in `package.json`), so after the download npm installs it without contacting a registry. The release workflow proves that before publishing: it installs the packed tarball with `npm install --offline` into a scratch directory, spawns the bin shim, and checks `tools/list` over MCP.
+
+## Verify
+
+```bash
+foreman-mcp --diag
+```
+
+Trimmed output from a real install:
+
+```text
+── Runtime ──
+  node                 v22.16.0
+  platform             win32 x64
+  entry                …\node_modules\@malindarathnayake\foreman-mcp\dist\server.js
+
+── Package ──
+  name                 @malindarathnayake/foreman-mcp
+  version              0.6.2
+
+── MCP SDK ──
+  server SDK version   2.0.0
+
+── Skills ──
+  skill files          design-partner.md, doc-man.md, implementor.md, lighttask.md, spec-generator.md, spec-man.md
+```
+
+The server speaks MCP over stdio. Running `foreman-mcp` with no flags in a terminal waits on stdin; that is not a hang. The host starts and stops the process.
+
+## From GitHub Packages
+
+The same package is published to GitHub Packages. That path needs a token with `read:packages`, even for a public package, and a scoped `.npmrc`:
 
 ```text
 @malindarathnayake:registry=https://npm.pkg.github.com
 //npm.pkg.github.com/:_authToken=${NPM_TOKEN}
 ```
 
-Then install the binary:
-
 ```bash
 npm install -g @malindarathnayake/foreman-mcp
-foreman-mcp --version
 ```
 
-GitHub Packages requires a token with `read:packages`, including for public packages.
+## Troubleshooting
 
-## Release tarball
+| Symptom | Cause | Fix |
+|---|---|---|
+| `foreman-mcp: command not found` | npm's global bin directory is not on `PATH` | `npm prefix -g` prints the prefix. Add `<prefix>/bin` on Linux and macOS, or the prefix itself on Windows, to `PATH` |
+| Host reports the server exited immediately (Windows) | The global install created `foreman-mcp.cmd`, and the host spawned it without a shell | Register it as `cmd /c foreman-mcp`. See [Register your host](./configure-mcp-host.md) |
+| `--version` prints an old version after reinstalling | A running host session keeps its old server process | Restart the host |
 
-Download the `.tgz` from the [latest GitHub release](https://github.com/malindarathnayake/Foreman/releases/latest), then install it without registry authentication. As of 0.5.8 the tarball bundles all runtime dependencies, so it installs fully offline — no registry or DNS access required:
-
-```bash
-npm install -g malindarathnayake-foreman-mcp-<version>.tgz
-foreman-mcp --version
-```
-
-## Verifying the install
-
-`foreman-mcp --diag` prints local runtime and host diagnostics. The server itself uses MCP over stdio; it is not a daemon to launch in a separate terminal.
-
-## Windows long paths
-
-On Windows, long dependency paths can exceed `MAX_PATH`. If installation fails for that reason, enable Windows long paths and run `git config --system core.longpaths true` from an elevated shell.
-
-## Next
-
-Continue to [configuring an MCP host](./configure-mcp-host.md).
+Next: [Register your host](./configure-mcp-host.md).

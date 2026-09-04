@@ -93,7 +93,7 @@ describe("schema errors — one hint per field, expected shape appended", () => 
     try {
       const result = await client.callTool({
         name: "write_journal",
-        arguments: { operation: "log_event", data: { t: "INFO", u: "u1", msg: "x".repeat(201) } },
+        arguments: { operation: "log_event", data: { t: "INFO", u: "u1", msg: "x".repeat(401) } },
       })
       expect(result.isError).toBe(true)
       const text = (result.content as Array<{ text: string }>)[0].text
@@ -101,7 +101,7 @@ describe("schema errors — one hint per field, expected shape appended", () => 
       expect(text).toContain("  data.t: ")
       expect(text).toContain("  data.tok: ")
       expect(text).toContain("  data.msg: ")
-      expect(text).toContain("msg: string (≤200 chars)")
+      expect(text).toContain("msg: string (≤400 chars)")
       expect(text).not.toContain('"code":')
     } finally {
       await client.close()
@@ -158,6 +158,105 @@ describe("journal codes SPEC_GAP / GATE_OVERRIDE", () => {
   it("both validate as log_event codes; GATE_OVERRIDE carries the gate field", () => {
     expect(WriteJournalInputSchema.safeParse({ operation: "log_event", data: { t: "SPEC_GAP", u: "u3", tok: 0, msg: "decided: keep 400" } }).success).toBe(true)
     expect(WriteJournalInputSchema.safeParse({ operation: "log_event", data: { t: "GATE_OVERRIDE", u: "phase", tok: 0, msg: "--force-continue", gate: "p2" } }).success).toBe(true)
+  })
+})
+
+// ─── docs deliberation: confirmed findings block the gate ───────────────────
+
+describe("update_phase_gate — confirmed findings and review currency", () => {
+  const CONFIRMED = { severity: "high" as const, file: "src/a.ts", line: "42", description: "null deref on config.port", classification: "confirmed" as const }
+
+  async function delegatePass(unit: string) {
+    await writeLedger(ledgerPath, { operation: "set_unit_status", phase: "p1", unit_id: unit, data: { s: "delegated", brief: BRIEF, preflight: PREFLIGHT } })
+    await writeLedger(ledgerPath, { operation: "set_verdict", phase: "p1", unit_id: unit, data: { v: "pass" } })
+  }
+
+  it("a confirmed finding in the current review blocks the gate and names it", async () => {
+    await delegatePass("u1")
+    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "codex", findings: [CONFIRMED] } })
+    await expect(
+      writeLedger(ledgerPath, { operation: "update_phase_gate", phase: "p1", data: { g: "pass" } })
+    ).rejects.toThrow(/CONFIRMED FINDINGS: phase 'p1' has 1 confirmed review finding\(s\).*codex: src\/a\.ts:42 null deref/)
+    expect((await readLedger(ledgerPath)).phases.p1.g).toBe("pending")
+  })
+
+  it("rejected and unverified classifications do not block", async () => {
+    await delegatePass("u1")
+    await writeLedger(ledgerPath, {
+      operation: "record_review",
+      phase: "p1",
+      data: { advisor: "codex", findings: [{ ...CONFIRMED, classification: "rejected" }, { ...CONFIRMED, classification: "unverified" }, { ...CONFIRMED, classification: undefined }] },
+    })
+    await writeLedger(ledgerPath, { operation: "update_phase_gate", phase: "p1", data: { g: "pass" } })
+    expect((await readLedger(ledgerPath)).phases.p1.g).toBe("pass")
+  })
+
+  it("resolution flow: reject → re-delegate → re-verdict → stale review is REVIEW REQUIRED → fresh clean review passes", async () => {
+    await delegatePass("u1")
+    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "codex", findings: [CONFIRMED] } })
+    await new Promise((r) => setTimeout(r, 5))
+    await writeLedger(ledgerPath, { operation: "add_rejection", phase: "p1", unit_id: "u1", data: { r: "codex", msg: "null deref", ts: "2026-09-04T00:00:00Z" } })
+    await delegatePass("u1")
+    // The confirmed review now predates the re-verdict: it does not count, and no current review exists.
+    await expect(
+      writeLedger(ledgerPath, { operation: "update_phase_gate", phase: "p1", data: { g: "pass" } })
+    ).rejects.toThrow(/REVIEW REQUIRED: phase 'p1' has no record_review entry recorded at or after its latest unit verdict\. 1 older review\(s\) exist but predate/)
+    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "codex", findings: [], checked: ["src/a.ts"], completion: "complete" } })
+    await writeLedger(ledgerPath, { operation: "update_phase_gate", phase: "p1", data: { g: "pass" } })
+    const phase = (await readLedger(ledgerPath)).phases.p1
+    expect(phase.g).toBe("pass")
+    expect(phase.confirmed_override).toBeUndefined()
+    expect(phase.review_override).toBeUndefined()
+  })
+
+  it("a zero-finding review with no examined list and no completion is INCOMPLETE; checked[] or completion:'complete' satisfies it", async () => {
+    await delegatePass("u1")
+    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "gemini", findings: [] } })
+    await expect(
+      writeLedger(ledgerPath, { operation: "update_phase_gate", phase: "p1", data: { g: "pass" } })
+    ).rejects.toThrow(/INCOMPLETE REVIEW: phase 'p1' has 1 review\(s\).*gemini: zero findings with no examined list/)
+    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "gemini", findings: [], checked: ["src/a.ts", "tests/a.test.ts"] } })
+    // The silent record is still current, so it still blocks — the seat must be re-run or marked, not papered over.
+    await expect(
+      writeLedger(ledgerPath, { operation: "update_phase_gate", phase: "p1", data: { g: "pass" } })
+    ).rejects.toThrow(/INCOMPLETE REVIEW/)
+  })
+
+  it("completion:'partial' blocks even with findings; user_override records incomplete_override", async () => {
+    await delegatePass("u1")
+    await writeLedger(ledgerPath, {
+      operation: "record_review",
+      phase: "p1",
+      data: { advisor: "codex", findings: [{ ...CONFIRMED, classification: "rejected" }], completion: "partial", checked: ["src/a.ts"] },
+    })
+    await expect(
+      writeLedger(ledgerPath, { operation: "update_phase_gate", phase: "p1", data: { g: "pass" } })
+    ).rejects.toThrow(/INCOMPLETE REVIEW.*codex: completion=partial/)
+    await writeLedger(ledgerPath, { operation: "update_phase_gate", phase: "p1", data: { g: "pass", user_override: true } })
+    const phase = (await readLedger(ledgerPath)).phases.p1
+    expect(phase.g).toBe("pass")
+    expect(phase.incomplete_override?.reviews).toBe(1)
+  })
+
+  it("a stale silent review does not count: only reviews since the latest verdict are judged", async () => {
+    await delegatePass("u1")
+    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "gemini", findings: [] } })
+    await new Promise((r) => setTimeout(r, 5))
+    await writeLedger(ledgerPath, { operation: "add_rejection", phase: "p1", unit_id: "u1", data: { r: "codex", msg: "x", ts: "2026-09-04T00:00:00Z" } })
+    await delegatePass("u1")
+    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "codex", findings: [], checked: ["src/a.ts"], completion: "complete" } })
+    await writeLedger(ledgerPath, { operation: "update_phase_gate", phase: "p1", data: { g: "pass" } })
+    expect((await readLedger(ledgerPath)).phases.p1.g).toBe("pass")
+  })
+
+  it("user_override waives a confirmed finding and records confirmed_override", async () => {
+    await delegatePass("u1")
+    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "codex", findings: [CONFIRMED, CONFIRMED] } })
+    await writeLedger(ledgerPath, { operation: "update_phase_gate", phase: "p1", data: { g: "pass", user_override: true } })
+    const phase = (await readLedger(ledgerPath)).phases.p1
+    expect(phase.g).toBe("pass")
+    expect(phase.confirmed_override?.findings).toBe(2)
+    expect(typeof phase.confirmed_override?.ts).toBe("string")
   })
 })
 

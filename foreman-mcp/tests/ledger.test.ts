@@ -224,7 +224,7 @@ describe("ledger", () => {
       data: { v: "pass" },
     })
 
-    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [] } })  // gate requires ≥1 review (2026-09 R2)
+    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [], completion: "complete" } })  // gate requires ≥1 review (2026-09 R2)
     await writeLedger(ledgerPath, {
       operation: "update_phase_gate",
       phase: "p1",
@@ -1060,7 +1060,7 @@ describe("ledger v0.5.0 gate staleness hash (D2b)", () => {
       unit_id: "u1",
       data: { v: "pass" },
     })
-    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [] } })  // gate requires ≥1 review (2026-09 R2)
+    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [], completion: "complete" } })  // gate requires ≥1 review (2026-09 R2)
     await writeLedger(ledgerPath, {
       operation: "update_phase_gate",
       phase: "p1",
@@ -1105,7 +1105,7 @@ describe("ledger v0.5.0 gate staleness hash (D2b)", () => {
       unit_id: "u1",
       data: { v: "pass" },
     })
-    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [] } })  // gate requires ≥1 review (2026-09 R2)
+    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [], completion: "complete" } })  // gate requires ≥1 review (2026-09 R2)
     await writeLedger(ledgerPath, {
       operation: "update_phase_gate",
       phase: "p1",
@@ -1192,7 +1192,7 @@ describe("ledger v0.5.0 seat minimum (D13)", () => {
   it("flagged + agent_class:'frontier' passes — gate is pass, gate_units_hash present", async () => {
     await setupFlaggedPhase()
 
-    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [] } })  // gate requires ≥1 review (2026-09 R2)
+    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [], completion: "complete" } })  // gate requires ≥1 review (2026-09 R2)
     await writeLedger(ledgerPath, {
       operation: "update_phase_gate",
       phase: "p1",
@@ -1236,7 +1236,7 @@ describe("ledger v0.5.0 seat minimum (D13)", () => {
       data: { v: "pass" },
     })
 
-    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [] } })  // gate requires ≥1 review (2026-09 R2)
+    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [], completion: "complete" } })  // gate requires ≥1 review (2026-09 R2)
     await writeLedger(ledgerPath, {
       operation: "update_phase_gate",
       phase: "p1",
@@ -1374,7 +1374,7 @@ describe("ledger P5 discipline-adherence gate", () => {
   it("native pass (no sidecar file at all) passes the gate", async () => {
     await seedPassingUnit()
 
-    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [] } })  // gate requires ≥1 review (2026-09 R2)
+    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [], completion: "complete" } })  // gate requires ≥1 review (2026-09 R2)
     await writeLedger(ledgerPath, {
       operation: "update_phase_gate",
       phase: "p1",
@@ -1397,7 +1397,7 @@ describe("ledger P5 discipline-adherence gate", () => {
       })
     )
 
-    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [] } })  // gate requires ≥1 review (2026-09 R2)
+    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [], completion: "complete" } })  // gate requires ≥1 review (2026-09 R2)
     await writeLedger(ledgerPath, {
       operation: "update_phase_gate",
       phase: "p1",
@@ -1425,7 +1425,7 @@ describe("ledger P5 discipline-adherence gate", () => {
       })
     )
 
-    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [] } })  // gate requires ≥1 review (2026-09 R2)
+    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [], completion: "complete" } })  // gate requires ≥1 review (2026-09 R2)
     await writeLedger(ledgerPath, {
       operation: "update_phase_gate",
       phase: "p1",

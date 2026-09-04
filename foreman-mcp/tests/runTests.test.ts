@@ -138,7 +138,20 @@ describe('runTests', () => {
       expect(DEFAULT_ALLOWED_RUNNERS).toContain('make')
       expect(DEFAULT_ALLOWED_RUNNERS).toContain('gradle')
       expect(DEFAULT_ALLOWED_RUNNERS).toContain('gradlew')
+      // field feedback 2026-09 round 3
+      expect(DEFAULT_ALLOWED_RUNNERS).toContain('gofmt')
+      expect(DEFAULT_ALLOWED_RUNNERS).toContain('golangci-lint')
     })
+
+    test.runIf(process.platform === 'win32' || process.platform === 'linux')(
+      'fail_on_stdout turns a silent-exit-0 checker with output into a failure',
+      async () => {
+        const result = await runTests('npm', ['--version'], 60000, 8000, { failOnStdout: true })
+        expect(result).toContain('exit_code: 0')
+        expect(result).toContain('passed: false')
+        expect(result).toContain('fail_on_stdout: true')
+      },
+    )
 
     test('npx denied from env entries (case-insensitive)', async () => {
       process.env.FOREMAN_TEST_ALLOWLIST = 'npx,NPX,Npx'

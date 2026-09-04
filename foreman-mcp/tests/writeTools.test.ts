@@ -149,7 +149,7 @@ describe("handleWriteLedger", () => {
       unit_id: "u1",
       data: { v: "pass" },
     })
-    await handleWriteLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [] } })  // gate requires ≥1 review (2026-09 R2)
+    await handleWriteLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [], completion: "complete" } })  // gate requires ≥1 review (2026-09 R2)
     const result = await handleWriteLedger(ledgerPath, {
       operation: "update_phase_gate",
       phase: "p1",
@@ -533,6 +533,99 @@ Impact also reaches src/lib/bar.ts:9 where the value is dereferenced.
     expect(data.findings).toHaveLength(1)
     expect(data.findings[0].severity).toBe("high")
     expect(data.unparsed_lines).toBe(1)
+  })
+
+  // ─── round 3: layouts the reporter's 0.6.1 run still collapsed ──────────────
+  it("bold-wrapped numbered items with 'Severity:' mid-line and the location on the next line", () => {
+    const rawText = `**1. Missing null check** — Severity: High
+   src/lib/foo.ts:42 — config.port is parsed without a guard.
+**2. Error path swallows cause** — Severity: Medium
+   src/lib/foo.ts:88 — wrap instead of rethrowing a string.
+`
+    const { data } = normalizeReview("codex", rawText)
+    expect(data.findings).toHaveLength(2)
+    expect(data.findings[0]).toMatchObject({ severity: "high", file: "src/lib/foo.ts", line: "42" })
+    expect(data.findings[0].description).toBe("Missing null check config.port is parsed without a guard.")
+    expect(data.findings[1]).toMatchObject({ severity: "medium", file: "src/lib/foo.ts", line: "88" })
+    expect(data.unparsed_lines).toBe(0)
+  })
+
+  it("'1. **Title** (file:line) — HIGH: desc' with the token after the location", () => {
+    const rawText = `1. **Null deref** (src/a.ts:42) — HIGH: config.port may be undefined.
+2. **Unused import** (src/b.ts:3) — LOW: remove it.
+`
+    const { data } = normalizeReview("codex", rawText)
+    expect(data.findings.map((f) => f.severity)).toEqual(["high", "low"])
+    expect(data.findings[0]).toMatchObject({ file: "src/a.ts", line: "42" })
+    expect(data.findings[0].description).toBe("Null deref config.port may be undefined.")
+  })
+
+  it("item line with location, 'Severity:' on the NEXT line → one finding per item", () => {
+    const rawText = `1. src/a.ts:42 — config.port parsed without a guard
+   Severity: HIGH
+2. src/b.ts:7 — log key collides with reserved field
+   Severity: MEDIUM
+`
+    const { data } = normalizeReview("gemini", rawText)
+    expect(data.findings).toHaveLength(2)
+    expect(data.findings[0]).toMatchObject({ severity: "high", file: "src/a.ts", line: "42" })
+    expect(data.findings[1]).toMatchObject({ severity: "medium", file: "src/b.ts", line: "7" })
+    expect(data.findings[1].description).toBe("log key collides with reserved field")
+  })
+
+  it("exact [P0]–[P3] levels map to severities only when the item names a location", () => {
+    const rawText = `- [P1] src/a.ts:42 — null deref
+- [P3] src/b.ts:9 — naming
+- [P2] general remark with no location
+`
+    const { data } = normalizeReview("codex", rawText)
+    expect(data.findings.map((f) => f.severity)).toEqual(["high", "low"])
+    expect(data.unparsed_lines).toBe(1)
+  })
+
+  it("sentence-ending 'Severity: high.' on an item with a location", () => {
+    const { data } = normalizeReview("codex", "- src/a.ts:42 — config.port parsed without a guard. Severity: high.")
+    expect(data.findings).toHaveLength(1)
+    expect(data.findings[0]).toMatchObject({ severity: "high", file: "src/a.ts", line: "42" })
+    expect(data.findings[0].description).toBe("config.port parsed without a guard.")
+  })
+
+  it("markdown table rows with a severity cell; header and separator rows are not findings", () => {
+    const rawText = `| Severity | Location | Finding |
+|---|---|---|
+| HIGH | src/a.ts:42 | config.port parsed without a guard |
+| LOW | src/b.ts:9 | naming |
+`
+    const { data } = normalizeReview("codex", rawText)
+    expect(data.findings).toHaveLength(2)
+    expect(data.findings[0]).toMatchObject({ severity: "high", file: "src/a.ts", line: "42", description: "config.port parsed without a guard" })
+    expect(data.unparsed_lines).toBe(2)
+  })
+
+  it("consecutive '### N. Title (SEV)' headings with no blank line between them", () => {
+    const rawText = `### 1. Null deref (HIGH)
+src/a.ts:42 — config.port parsed without a guard.
+### 2. Unused import (LOW)
+src/b.ts:3 — remove it.
+`
+    const { data } = normalizeReview("codex", rawText)
+    expect(data.findings).toHaveLength(2)
+    expect(data.findings[1]).toMatchObject({ severity: "low", file: "src/b.ts", line: "3" })
+  })
+
+  it("'- **High severity**:' leaves no residue in the description", () => {
+    const { data } = normalizeReview("codex", "- **High severity**: src/a.ts:42 — config.port parsed without a guard.")
+    expect(data.findings[0].description).toBe("config.port parsed without a guard.")
+  })
+
+  it("false-positive guards: 'Default severity: high' prose and unmarked numbered items never become findings", () => {
+    const rawText = `- Default severity: high for audit events, low for debug.
+1. src/a.ts:42 — config.port parsed without a guard
+2. src/b.ts:7 — log key collides with reserved field
+`
+    const { data } = normalizeReview("codex", rawText)
+    expect(data.findings).toHaveLength(0)
+    expect(data.unparsed_lines).toBe(3)
   })
 
   it("pipes are escaped in the table and preserved in findings_json; description capped at 10000", () => {
@@ -1622,7 +1715,7 @@ describe("declare_phase_units", () => {
 
   it("is blocked while the phase gate is 'pass'", async () => {
     await passUnit("p1", "u1")
-    await handleWriteLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [] } })  // gate requires ≥1 review (2026-09 R2)
+    await handleWriteLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [], completion: "complete" } })  // gate requires ≥1 review (2026-09 R2)
     await handleWriteLedger(ledgerPath, {
       operation: "update_phase_gate", phase: "p1", data: { g: "pass" },
     })
@@ -1692,7 +1785,7 @@ describe("declare_phase_units", () => {
       })
     ).rejects.toThrow(/declares units never registered.*u2/)
     await passUnit("p1", "u2")
-    await handleWriteLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [] } })  // gate requires ≥1 review (2026-09 R2)
+    await handleWriteLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [], completion: "complete" } })  // gate requires ≥1 review (2026-09 R2)
     await handleWriteLedger(ledgerPath, {
       operation: "update_phase_gate", phase: "p1", data: { g: "pass" },
     })

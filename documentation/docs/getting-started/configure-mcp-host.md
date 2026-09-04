@@ -1,13 +1,22 @@
 ---
 id: configure-mcp-host
-title: Configure an MCP host
-sidebar_label: Configure an MCP host
-description: Claude Code, Cursor, Codex, and generic MCP host configuration, including Windows shims.
+title: Register your host
+sidebar_label: Register your host
+description: Exact configuration for Claude Code, Cursor, and Codex, including Windows, and how to confirm the host loaded the server.
 ---
 
-# Configure an MCP host
+# Register your host
 
-## Claude Code or another Claude-style MCP host
+Foreman renders its procedures differently per host. The host flag picks the profile. Getting it wrong is not fatal, but the procedure will name the wrong worker tool, for example telling Cursor to use Claude Code's `Agent` tool.
+
+## Claude Code
+
+```bash
+claude mcp add --scope user foreman -- foreman-mcp
+claude mcp get foreman
+```
+
+`--scope user` writes `~/.claude.json`. `--scope project` writes `.mcp.json` in the repo instead, which you can commit. The JSON either scope produces:
 
 ```json
 {
@@ -19,7 +28,11 @@ description: Claude Code, Cursor, Codex, and generic MCP host configuration, inc
 }
 ```
 
+Confirm inside a session with `/mcp`. Foreman should be listed as connected.
+
 ## Cursor
+
+Global: `~/.cursor/mcp.json`. Per project: `.cursor/mcp.json`.
 
 ```json
 {
@@ -32,9 +45,11 @@ description: Claude Code, Cursor, Codex, and generic MCP host configuration, inc
 }
 ```
 
+Confirm in Cursor's MCP settings; the server should show its tools.
+
 ## Codex
 
-Codex uses TOML configuration and must select the native Codex profile explicitly:
+Global: `~/.codex/config.toml`. Per project: `.codex/config.toml`.
 
 ```toml
 [mcp_servers.foreman]
@@ -42,59 +57,49 @@ command = "foreman-mcp"
 args = ["--host=codex"]
 ```
 
-**Codex mode:** Foreman uses native Codex subagents for bounded work. Independent units can run in parallel; Foreman records delegation first, then independently validates each result. Call `codex_agents_init` to create optional explorer/worker roles and concurrency settings without overwriting existing Codex config.
+Restart Codex after changing MCP configuration or reinstalling Foreman.
 
-In Codex mode, headless Claude serves as Advisor A and Gemini as Advisor B — see [advisor seats and deliberation](../execution/advisor-seats.md) for the per-host seat assignments and the deliberation loop. Restart Codex after changing MCP configuration or reinstalling Foreman.
+Codex specifics. Workers are Codex `spawn_agent` subagents. Editing workers run one at a time unless each has a proven isolated worktree or sandbox; read-only explorer agents may run in parallel. The `codex_agents_init` tool writes `.codex/agents/explorer.toml`, `.codex/agents/worker.toml`, and an `[agents]` block in `.codex/config.toml`, and only when those files are absent. In Codex mode, phase reviews use headless Claude and the Gemini CLI, since Codex is the host.
 
-<details>
-<summary>Codex parallel-worker details</summary>
+## Windows
 
-When a phase batches to N independent units, the pitboss delegates each unit in the ledger, spawns up to `agents.max_threads` (default 6) `spawn_agent` workers at once with `max_depth=1`, waits for all, and validates each unit independently. `codex_agents_init` writes `.codex/agents/explorer.toml` (read-only code mapper), `.codex/agents/worker.toml` (workspace-write implementer), and a `.codex/config.toml` `[agents]` block only when the configuration file is absent.
-
-</details>
-
-## Windows command shim
-
-For the default host:
+The global install creates a `.cmd` shim. Hosts that spawn the command without a shell need `cmd /c`:
 
 ```json
-{
-  "mcpServers": {
-    "foreman": {
-      "command": "cmd",
-      "args": ["/c", "foreman-mcp"]
-    }
-  }
-}
+{ "mcpServers": { "foreman": { "command": "cmd", "args": ["/c", "foreman-mcp"] } } }
 ```
 
-For Cursor on Windows, preserve the host argument:
-
 ```json
-{
-  "mcpServers": {
-    "foreman": {
-      "command": "cmd",
-      "args": ["/c", "foreman-mcp", "--host=cursor"]
-    }
-  }
-}
+{ "mcpServers": { "foreman": { "command": "cmd", "args": ["/c", "foreman-mcp", "--host=cursor"] } } }
+```
+
+```toml
+[mcp_servers.foreman]
+command = "cmd"
+args = ["/c", "foreman-mcp", "--host=codex"]
 ```
 
 ## Host resolution and working directory
 
-Host resolution order is `--host=<id>`, then `FOREMAN_HOST`, then `claude-code`. Accepted profiles are `claude-code`, `cursor`, `codex`, and `generic`.
+Resolution order: `--host=<id>` on the command line, then the `FOREMAN_HOST` environment variable, then `claude-code`. Accepted ids: `claude-code`, `cursor`, `codex`, `generic`. An unknown id falls back to `claude-code` with a warning on stderr.
 
-Make sure the host starts the MCP process with the target repository as its working directory. Foreman's state paths and `.foremanenv` are resolved from that directory.
+The host must start the process with your repo as the working directory. Foreman resolves `Docs/.foreman-ledger.json`, `Docs/.foreman-progress.json`, `Docs/.foreman-journal.json`, and `.foremanenv` from there. Symptom of a wrong directory: `session_orient` answers `status: no_phases_yet` on a project that has a ledger.
 
 ## Confirm the connection
 
-After connecting, call:
+Paste this in the chat:
 
 ```text
-host_status
-bundle_status
-session_orient
+Call Foreman's host_status, bundle_status, and session_orient tools and report any warning.
 ```
 
-See [host compatibility](../reference/host-compatibility.md) for per-host caveats and documented degradations.
+`host_status` names the active profile and the model slugs it will ask the host to use. `bundle_status` names the version and whether a skill override is shadowing a bundled protocol. The host's own tool list should show this many Foreman tools:
+
+| Host | Compression on (default) | `FOREMAN_COMPRESSION=0` |
+|---|---|---|
+| Claude Code, Cursor, generic | 27 | 26 |
+| Codex | 28 | 27 |
+
+The difference is `retrieve_original`, registered only when output compression is on, and `codex_agents_init`, registered only under the Codex profile.
+
+Next: [First project](./start-a-project.md).

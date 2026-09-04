@@ -35,6 +35,7 @@ import {
   VerifyCitationsInputSchema,
   JournalOperationDataSchemas,
   LedgerOperationDataSchemas,
+  ProgressOperationDataSchemas,
 } from "./types.js"
 import { renderShape } from "./lib/schemaDoc.js"
 import { formatSchemaError, isZodError } from "./lib/schemaError.js"
@@ -97,13 +98,20 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   // install eager handlers and can advertise features that are not present.
   const server = new McpServer({ name: "foreman", version: pkg.version })
 
+  // Per-operation data shapes, rendered from the validation schemas. They live in the
+  // `data` property's schema description rather than the tool description: the host
+  // clips tool descriptions at ~2,000 characters (measured, field feedback 2026-09
+  // round 3) but shows the input schema in full.
+  const shapesOf = (schemas: Record<string, z.ZodType>): string =>
+    Object.entries(schemas).map(([op, s]) => `${op}: ${renderShape(s)}`).join("\n")
+
   // ── Tools ──────────────────────────────────────────────────────────────────
 
   server.registerTool(
     "bundle_status",
     {
       title: "Bundle Status",
-      description: "Returns the Foreman bundle version and override info.",
+      description: "Reports the version this process is running versus the package.json on disk next to it (restart_recommended when they differ — compiled code cannot be reloaded; protocol Markdown is re-read on every activation), plus which skills are shadowed by a project or user override.",
       inputSchema: z.strictObject({}),
       outputSchema: TextOutputSchema,
       annotations: {
@@ -113,7 +121,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
     },
     async (_extra) => {
-      const text = await bundleStatus()
+      const text = await bundleStatus(pkg.version)
       return textResult(text)
     }
   )
@@ -316,25 +324,24 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     {
       title: "Write Ledger",
       description: [
-        "Writes an operation to the Foreman ledger file.",
+        "Writes an operation to the Foreman ledger file. Exact data shapes for every operation are in this tool's input schema (the description of the data field); a rejected call returns one hint per field plus the expected shape.",
         "",
-        "Operations:",
-        "  set_unit_status — Set a unit's status. data: { s: 'pending'|'ip'|'delegated'|'done'|'fail', brief?: string, tier?: 'cheap'|'standard'|'premium', route_reason?: string }. Requires: phase, unit_id. s:'delegated' requires a 'brief' (min 20 chars); tier + route_reason are optional cost-tier audit evidence recorded on the delegation (and appended to the unit's delegation history).",
-        "  set_verdict     — Record the verdict. data: { v: 'pass'|'fail'|'pending'|'inconclusive', via?: 'worker'|'pitboss-direct'|'n/a', note? }. Requires: phase, unit_id. v:'pass' is blocked unless the unit was first set to s:'delegated' with a brief; if phase scope declares has_tests:false or has_build:false, a non-empty attestation 'note' is also required. The first pass verdict stamps first_pass_ts (never overwritten) — the completion frontier session_orient reports.",
-        "  add_rejection   — Log a rejection. data: { r: string, msg: string, ts: string }. Requires: phase, unit_id. Rejecting a unit whose verdict is 'pass' reopens it to 'pending' (returned as a warning) — re-run set_verdict after the fix.",
-        "  declare_phase_units — Declare the spec's expected unit-id set for a phase. data: { units?: string[] (additive, deduped, cap 200), retire?: string[] (remove declared-only ids; requires reason), reason?: string }. Requires: phase. Blocked while the phase gate is 'pass'. Gate pass then requires every declared id to be registered.",
-        "  update_phase_gate — Set phase gate result. data: { g: 'pass'|'fail'|'pending', agent_class?, user_override? }. Requires: phase. g:'pass' is blocked unless every unit in the phase has verdict 'pass', every declared unit id is registered, and at least one record_review exists for the phase (user_override:true passes without a review and is recorded on the phase).",
-        "  set_phase_scope — Declare phase scope for gate applicability. data: { has_tests, has_api, has_build: boolean, hot_path?, security_boundary? }. Requires: phase.",
-        "  record_review   — Record a durable advisor review at a checkpoint. Requires: phase. 'line' is a string. Zero findings are only a clean result when 'checked' lists what the seat examined; otherwise record completion:'partial'. stage:'cross_exam' marks a re-prompt informed by another seat's claims — it never counts as a second independent seat.",
-        "",
-        "Exact data shapes (generated from the validation schema — every key, enum value, and limit):",
-        ...Object.entries(LedgerOperationDataSchemas).map(([op, schema]) => `  ${op}: ${renderShape(schema)}`),
+        "Operations (phase required; unit_id where noted):",
+        "  set_unit_status (unit_id) — s:'delegated' needs a brief (≥20 chars) and a preflight attestation; a 4th delegation after 3 rejected attempts needs user_override.",
+        "  set_verdict (unit_id) — v:'pass' needs a prior delegation; on a phase scoped has_tests:false or has_build:false it also needs a ≥5-word attestation note. The first pass stamps first_pass_ts.",
+        "  add_rejection (unit_id) — on a 'pass' unit, reopens it to 'pending' (returned as a warning).",
+        "  declare_phase_units — additive declared id set (cap 200); retire needs a reason; frozen while the gate is 'pass'.",
+        "  update_phase_gate — g:'pass' needs every unit passed, every declared id registered, a review recorded at or after the latest unit verdict, and none of those reviews with a 'confirmed' finding, a partial/failed completion, or zero findings without checked[]; user_override waives the review conditions and is recorded on the phase.",
+        "  set_phase_scope — once per phase; hot_path or security_boundary make the gate require agent_class:'frontier'.",
+        "  record_review — 'line' is a string, severity lowercase; zero findings need checked[] or completion:'complete'; a 'confirmed' classification blocks the gate until resolved; stage:'cross_exam' never counts as an independent seat.",
       ].join("\n"),
       inputSchema: z.strictObject({
         operation: z.enum(["set_unit_status", "set_verdict", "add_rejection", "declare_phase_units", "update_phase_gate", "set_phase_scope", "record_review"]),
         unit_id: z.string().max(10000).optional(),
         phase: z.string().max(10000).optional(),
-        data: z.record(z.string(), z.unknown()),
+        data: z.record(z.string(), z.unknown()).describe(
+          "Per-operation shape (every key, enum value, and limit):\n" + shapesOf(LedgerOperationDataSchemas)
+        ),
       }),
       outputSchema: TextOutputSchema,
       annotations: {
@@ -483,10 +490,13 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "  log_error     — Log an error. data: { date: string, unit: string, what_failed: string, next_approach: string }.",
         "",
         "Markdown side effect: when Docs/PROGRESS.md exists, the block between <!-- foreman:checklist-start --> and <!-- foreman:checklist-end --> is REPLACED with a checklist rendered from the LEDGER (unit ids, verdicts, notes; natural order). Content outside the fences is preserved verbatim; with no fences the block is appended at EOF. Keep hand-written unit plans (files, checkpoint commands) outside the fences — they do not survive inside. Seed the ledger before the first call or the block renders '_No phases yet._'.",
+        "Exact data shapes for every operation are in this tool's input schema (the description of the data field).",
       ].join("\n"),
       inputSchema: z.strictObject({
         operation: z.enum(["update_status", "complete_unit", "log_error", "start_phase"]),
-        data: z.record(z.string(), z.unknown()),
+        data: z.record(z.string(), z.unknown()).describe(
+          "Per-operation shape (every key, enum value, and limit):\n" + shapesOf(ProgressOperationDataSchemas)
+        ),
       }),
       outputSchema: TextOutputSchema,
       annotations: {
@@ -511,12 +521,13 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "Sequence per session: init_session (once, at session start) → log_event (0–200 entries, anomalies only) → end_session (once, at checkpoint or handoff).",
         "The event-code enum is anomaly-only by design: log failures, delays, and degraded tooling; never successes, worker spawns, or test passes. Host tooling that is broken or unusable (e.g. run_tests cannot spawn) is TOOL_ERR. There is no informational code.",
         "",
-        "Operations and exact data shapes (generated from the validation schema — every key, enum value, and limit):",
-        ...Object.entries(JournalOperationDataSchemas).map(([op, schema]) => `  ${op} — data: ${renderShape(schema)}`),
+        "Exact data shapes for every operation are in this tool's input schema (the description of the data field); a rejected call returns one hint per field plus the expected shape.",
       ].join("\n"),
       inputSchema: z.strictObject({
         operation: z.enum(["init_session", "log_event", "end_session"]),
-        data: z.record(z.string(), z.unknown()),
+        data: z.record(z.string(), z.unknown()).describe(
+          "Per-operation shape (every key, enum value, and limit):\n" + shapesOf(JournalOperationDataSchemas)
+        ),
       }),
       outputSchema: TextOutputSchema,
       annotations: {
@@ -590,8 +601,8 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     {
       title: "Run Tests",
       description: [
-        "Runs a test command with bounded output. Runner must be in allowlist (npm, pytest, go, cargo, dotnet, make, gradle, gradlew). Project-local Gradle wrappers are supported without shell or cmd.exe interpolation. Use instead of Bash for test execution.",
-        "Output shaping: truncation always keeps the TAIL of each stream (failures live there). strip_patterns (≤10 JS regex sources, case-sensitive, applied per line to both streams BEFORE the cap) drops known noise such as container banners and reports stripped_lines. tail_lines keeps only the last N lines of each stream. Both are opt-in; default output is unchanged.",
+        "Runs a test command with bounded output. Runner must be in allowlist (npm, pytest, go, cargo, dotnet, make, gradle, gradlew, gofmt, golangci-lint; extend with FOREMAN_TEST_ALLOWLIST; npx never). Project-local Gradle wrappers are supported without shell or cmd.exe interpolation. Use instead of Bash for test execution.",
+        "passed is exit code 0. List-style checkers such as gofmt -l exit 0 and print the files needing work: pass fail_on_stdout:true so any stdout counts as a failure. Output shaping: truncation always keeps the TAIL of each stream. strip_patterns (≤10 JS regex sources, per line, both streams, before the cap) drops known noise and reports stripped_lines; tail_lines keeps the last N lines. All opt-in; default output is unchanged.",
       ].join("\n"),
       inputSchema: z.strictObject({
         runner: z.string().min(1).max(50),
@@ -600,6 +611,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         max_output_chars: z.number().min(1).max(50000).optional(),
         strip_patterns: z.array(z.string().min(1).max(200)).max(10).optional(),
         tail_lines: z.number().int().min(1).max(5000).optional(),
+        fail_on_stdout: z.boolean().optional(),
       }),
       outputSchema: TextOutputSchema,
       annotations: {
@@ -614,6 +626,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         await runTests(args.runner, args.args, args.timeout_ms, args.max_output_chars, {
           stripPatterns: args.strip_patterns,
           tailLines: args.tail_lines,
+          failOnStdout: args.fail_on_stdout,
         })
       )
       return textResult(text)
@@ -745,7 +758,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "Flags when optional LangGraph-style runtime control may be warranted while",
         "keeping Foreman specs, ledger, journal, tests, and advisor decisions canonical.",
         "Returns the full orchestration skill: pit-boss/worker pattern,",
-        "spec-driven validation, gates G1–G5, and Codex/Gemini deliberation",
+        "spec-driven validation, gates G1–G6, and Codex/Gemini deliberation",
         "(falls back to Opus agents when external CLIs are unavailable).",
         "The LLM MUST follow the returned instructions to orchestrate implementation.",
         "Pass optional context to indicate resume state or handoff path.",

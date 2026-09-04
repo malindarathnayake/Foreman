@@ -101,6 +101,10 @@ export interface Phase {
   discipline_overrides?: { discipline_override: true; unit_id: string; delegation_id: string }[]
   /** Gate passed with zero record_review entries via data.user_override (durable, auditable). Absent when at least one review was recorded. */
   review_override?: { ts: string }
+  /** Gate passed via data.user_override while the current reviews carried `findings` confirmed findings (durable, auditable). Absent when no confirmed finding was waived. */
+  confirmed_override?: { ts: string; findings: number }
+  /** Gate passed via data.user_override while `reviews` current reviews were partial, failed, or silent without an examined list (durable, auditable). */
+  incomplete_override?: { ts: string; reviews: number }
 }
 
 export interface PhaseScope {
@@ -476,7 +480,7 @@ const LogEventData = z.object({
   t: JournalEventCode,
   u: z.string().max(200),
   tok: z.number().min(0),
-  msg: z.string().max(200),
+  msg: z.string().max(400),
   wait: z.number().min(0).optional(),
   gate: z.string().max(10).optional(),
 })

@@ -208,7 +208,12 @@ export async function computeBaseFileHashes(
 /**
  * Creates a detached worktree at `baseCommit` under `<root>/<delegationId>`.
  * mkdirs the root (recursive) first, then runs:
- *   git -C repoDir worktree add --detach <root>/<delegationId> <baseCommit>
+ *   git -C repoDir -c core.autocrlf=false worktree add --detach <root>/<delegationId> <baseCommit>
+ *
+ * `-c core.autocrlf=false` (field feedback 2026-09 round 3): on a Windows repo with
+ * core.autocrlf=true the worktree checkout would be CRLF while the index is LF, and
+ * every formatter run in that tree reports noise. Checking out with conversion off makes
+ * the worktree match the index; `.gitattributes` eol rules still apply.
  */
 export async function createWorktree(
   repoDir: string,
@@ -219,7 +224,7 @@ export async function createWorktree(
   await fs.mkdir(root, { recursive: true })
   const worktreePath = path.join(root, delegationId)
 
-  const result = await runGit(repoDir, ["worktree", "add", "--detach", worktreePath, baseCommit])
+  const result = await runGit(repoDir, ["-c", "core.autocrlf=false", "worktree", "add", "--detach", worktreePath, baseCommit])
   if (result.exitCode !== 0) {
     throw new Error(result.stderr.trim() || `git worktree add failed (exit ${result.exitCode})`)
   }

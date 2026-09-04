@@ -10,9 +10,9 @@ export interface NormalizedReview {
   findings: ReviewFinding[]
   raw_length: number
   /**
-   * Non-blank lines that appeared before any recognized finding header — preambles,
-   * "what I checked" lists, "no findings" statements. They are counted, never turned
-   * into findings: unmarked prose is not evidence of a defect.
+   * Non-blank lines that belonged to no emitted finding — preambles, "what I checked"
+   * lists, "no findings" statements, and list items that never named a severity. They
+   * are counted, never turned into findings: unmarked prose is not evidence of a defect.
    */
   unparsed_lines: number
 }
@@ -22,115 +22,244 @@ type Severity = ReviewFinding["severity"]
 /** Mirrors ReviewFindingSchema.description (types.ts) so every normalized finding is record_review-safe. */
 const DESCRIPTION_MAX = 10000
 
-// ─── Header grammar ──────────────────────────────────────────────────────────
-// A finding starts ONLY at a line carrying an explicit severity token (or a
-// "Finding N" heading, whose severity may arrive on the next line). Everything
-// else is a continuation of the current finding, or unparsed when there is none.
+// ─── Grammar ─────────────────────────────────────────────────────────────────
+// The text is cut into BLOCKS at item boundaries (list items, headings, "Finding N",
+// a line that opens with a severity token, a table row, or a paragraph that opens with
+// a location or ends with a bracketed severity). Each block is then searched for an
+// EXPLICIT severity token; a block without one is counted as unparsed and never emitted.
+// That is the rule Codex insisted on in the 2026-09 deliberations: unmarked prose is
+// not a finding, no matter how much it looks like one.
 
-/** Markdown list bullets and numbered items: "- ", "* ", "+ ", "• ", "1. ", "12) ". */
-const LIST_PREFIX = /^(?:[-*+•]|\d{1,3}[.)])\s+/
+/** List bullets and numbered items, optionally bold-wrapped: "- ", "1. ", "12) ", "**1.** ", "**1. Title**". */
+const LIST_PREFIX = /^(?:\*\*)?(?:[-*+•]|\d{1,3}[.)])(?:\*\*)?\s+/
 /** Markdown headings: "## ". */
 const HEADING_PREFIX = /^#{1,6}\s+/
-
-/**
- * Leading severity in any common decoration: "HIGH:", "[HIGH]", "**HIGH**",
- * "**[HIGH]**", "[**HIGH**]", "High —". The token must be followed by a delimiter
- * or end of line so words like "Highlight" never start a finding.
- */
-const LEADING_SEVERITY = /^[\[*]{0,3}(CRITICAL|HIGH|MEDIUM|LOW)[\]*]{0,3}(?=[\s:—–\-|(]|$)/i
-
-/** "Severity: HIGH", "**Severity**: high", "Severity — Medium (rest of line)". */
-const SEVERITY_FIELD = /^\**severity\**\s*[:—–\-]\s*\**(CRITICAL|HIGH|MEDIUM|LOW)\**(.*)$/i
-
-/** Trailing "(HIGH)" / "[HIGH]" at the end of a list item or paragraph-opening line. */
-const TRAILING_SEVERITY = /[\s—–\-]*[\[(]\s*(CRITICAL|HIGH|MEDIUM|LOW)\s*[\])]\s*\.?\s*$/i
-
-/** "### Finding 3", "Finding 3:", "## Finding #2". */
+/** "Finding 3", "Finding #2", "Finding 3:". */
 const FINDING_HEADING = /^finding\s*[#-]?\s*\d+\b/i
+
+const SEV = "(CRITICAL|HIGH|MEDIUM|LOW)"
+/** Leading token in any decoration: "HIGH:", "[HIGH]", "**HIGH**", "**[HIGH]**", "[**HIGH**]", "High —". Followed by a delimiter so "Highlight" never matches. */
+const LEADING_SEVERITY = new RegExp(`^[\\[*]{0,3}${SEV}[\\]*]{0,3}(?=[\\s:—–\\-|(]|$)`, "i")
+/** Trailing "(HIGH)" / "[HIGH]" at the end of a line. */
+const TRAILING_SEVERITY = new RegExp(`[\\s—–\\-]*[\\[(]\\s*${SEV}\\s*[\\])]\\s*\\.?\\s*$`, "i")
+/** A whole line that is a severity field: "Severity: HIGH", "**Severity**: high", "Severity — Medium <rest>". */
+const SEVERITY_FIELD_LINE = new RegExp(`^\\**severity\\**\\s*[:—–\\-]\\s*\\**${SEV}\\**\\.?(.*)$`, "i")
+/** A severity field or " — HIGH:" appearing mid-line on an item line. Only honoured when the block also names a location. */
+const SEVERITY_MIDLINE = new RegExp(`(?:\\**severity\\**\\s*[:—–\\-]\\s*\\**${SEV}\\**\\.?|[—–\\-]\\s*\\**${SEV}\\**\\s*:)`, "i")
+/** Priority levels, exact, bracketed or as a field value. Only honoured with a location. */
+const P_LEVEL = /(?:[\[(]\s*(P[0-3])\s*[\])]|\bseverity\s*[:—–-]\s*(P[0-3])\b)/i
+const P_MAP: Record<string, Severity> = { P0: "critical", P1: "high", P2: "medium", P3: "low" }
 
 /** "File: src/a.ts:42", "Location — src/a.ts:42". */
 const LOCATION_FIELD = /^\**(?:file|location|path|where)\**\s*[:—–\-]\s*/i
-
 /** path.ext:line — forward or back slashes. */
 const FILE_LINE = /([a-zA-Z0-9_/.\\-]+\.[a-zA-Z0-9]+):(\d+)/
-
-/** Separators left over once a marker or location has been cut out of a line. Brackets are NOT stripped: a `[CWE-###]` prefix must survive. */
+/** Separators left over once a decoration has been cut out. Brackets are NOT stripped: a `[CWE-###]` prefix must survive. */
 const LEADING_SEPARATORS = /^[\s:—–\-|*]+/
+/** Residue that trails a matched severity word: "**High severity**:" leaves " severity**:". */
+const SEVERITY_RESIDUE = /^\s*severity\**\s*:?/i
 
-interface Draft {
-  severity: Severity
-  severityExplicit: boolean
-  file: string
-  line: string
-  descParts: string[]
+interface Block {
+  /** Raw lines, first line included. */
+  lines: string[]
+  /** The first line was a "Finding N" heading with nothing after it. */
+  openedByFindingHeading: boolean
+  /** A severity marker was seen on some line during scanning (used only to decide whether a later "Severity:" line attaches or opens a new block). */
+  sawSeverity: boolean
+  /** The first line is a markdown table row. */
+  table: boolean
 }
 
-function newDraft(severity: Severity, explicit: boolean): Draft {
-  return { severity, severityExplicit: explicit, file: "", line: "", descParts: [] }
-}
-
-/** Pull a file:line out of a header body (once) and push the remaining text as description. */
-function absorbBody(draft: Draft, body: string): void {
-  let desc = body
-  const fm = FILE_LINE.exec(body)
-  if (fm && !draft.file) {
-    draft.file = fm[1]
-    draft.line = fm[2]
-    desc = body.replace(fm[0], " ")
+function stripItemPrefix(line: string): { text: string; hadPrefix: boolean } {
+  let text = line
+  let hadPrefix = false
+  const heading = HEADING_PREFIX.exec(text)
+  if (heading) {
+    text = text.slice(heading[0].length)
+    hadPrefix = true
   }
-  desc = desc.replace(LEADING_SEPARATORS, "").replace(/\s+/g, " ").trim()
-  if (desc) draft.descParts.push(desc)
+  const list = LIST_PREFIX.exec(text)
+  if (list) {
+    text = text.slice(list[0].length)
+    hadPrefix = true
+  }
+  return { text: text.trim(), hadPrefix }
 }
 
-function finalize(draft: Draft): ReviewFinding | null {
-  let description = draft.descParts.join(" ").replace(/\s+/g, " ").trim()
-  if (!description && !draft.file) return null
-  if (description.length > DESCRIPTION_MAX) {
-    description = description.slice(0, DESCRIPTION_MAX - 1) + "…"
+function lineHasSeverityMarker(stripped: string): boolean {
+  return (
+    LEADING_SEVERITY.test(stripped) ||
+    TRAILING_SEVERITY.test(stripped) ||
+    SEVERITY_FIELD_LINE.test(stripped) ||
+    SEVERITY_MIDLINE.test(stripped) ||
+    P_LEVEL.test(stripped)
+  )
+}
+
+/** Final description cleanup: drop bold markers, brackets emptied by a lifted location, dangling separators. `[CWE-###]` survives (only EMPTY brackets go). */
+function clip(description: string): string {
+  const d = description
+    .replace(/\*\*/g, "")
+    .replace(/\(\s*\)|\[\s*\]/g, " ")
+    .replace(/\s+/g, " ")
+    .replace(LEADING_SEPARATORS, "")
+    .replace(/[\s:—–\-|*]+$/, "")
+    .trim()
+  return d.length > DESCRIPTION_MAX ? d.slice(0, DESCRIPTION_MAX - 1) + "…" : d
+}
+
+/** Parse a markdown table row into a finding, or null for header/separator rows. */
+function parseTableRow(line: string): ReviewFinding | null {
+  const cells = line
+    .replace(/^\s*\|/, "")
+    .replace(/\|\s*$/, "")
+    .split(/(?<!\\)\|/)
+    .map((c) => c.replace(/\\\|/g, "|").trim())
+  let severity: Severity | undefined
+  let file = ""
+  let lineNo = ""
+  const rest: string[] = []
+  for (const cell of cells) {
+    const bare = cell.replace(/^\**|\**$/g, "").trim()
+    if (severity === undefined && /^(CRITICAL|HIGH|MEDIUM|LOW)$/i.test(bare)) {
+      severity = bare.toLowerCase() as Severity
+      continue
+    }
+    const fm = !file ? FILE_LINE.exec(cell) : null
+    if (fm && fm.index === 0 && fm[0].length === cell.length) {
+      file = fm[1]
+      lineNo = fm[2]
+      continue
+    }
+    if (bare && !/^-{2,}:?$/.test(bare)) rest.push(cell)
   }
-  return { severity: draft.severity, file: draft.file, line: draft.line, description }
+  if (severity === undefined) return null
+  const description = clip(rest.join(" "))
+  if (!description && !file) return null
+  return { severity, file, line: lineNo, description }
+}
+
+/** Turn one block into a finding, or null when it carries no explicit severity. */
+function parseBlock(block: Block): ReviewFinding | null {
+  if (block.table) return parseTableRow(block.lines[0])
+
+  const first = stripItemPrefix(block.lines[0])
+  let firstText = first.text
+  let severity: Severity | undefined
+  let m: RegExpExecArray | null
+
+  // A "Finding N" heading contributes no description text.
+  if ((m = FINDING_HEADING.exec(firstText))) {
+    firstText = firstText.slice(m[0].length).replace(LEADING_SEPARATORS, "").trim()
+  }
+
+  const blockText = block.lines.join("\n")
+  const hasLocation = FILE_LINE.test(blockText)
+
+  if ((m = LEADING_SEVERITY.exec(firstText))) {
+    severity = m[1].toLowerCase() as Severity
+    firstText = firstText.slice(m[0].length).replace(SEVERITY_RESIDUE, "")
+  } else if ((m = TRAILING_SEVERITY.exec(firstText))) {
+    severity = m[1].toLowerCase() as Severity
+    firstText = firstText.slice(0, m.index)
+  } else if ((m = SEVERITY_FIELD_LINE.exec(firstText))) {
+    severity = m[1].toLowerCase() as Severity
+    firstText = m[2] ?? ""
+  } else if (hasLocation && (m = SEVERITY_MIDLINE.exec(firstText))) {
+    severity = (m[1] ?? m[2]).toLowerCase() as Severity
+    firstText = (firstText.slice(0, m.index) + " " + firstText.slice(m.index + m[0].length)).trim()
+  } else if (hasLocation && (m = P_LEVEL.exec(firstText))) {
+    severity = P_MAP[(m[1] ?? m[2]).toUpperCase()]
+    firstText = (firstText.slice(0, m.index) + " " + firstText.slice(m.index + m[0].length)).trim()
+  }
+
+  // Remaining lines: a "Severity:" line sets the severity when the first line had none;
+  // "File:" lines supply the location; everything else is description.
+  const descParts: string[] = []
+  let file = ""
+  let lineNo = ""
+  const takeLocation = (text: string): string => {
+    const fm = FILE_LINE.exec(text)
+    if (fm && !file) {
+      file = fm[1]
+      lineNo = fm[2]
+      return text.replace(fm[0], " ")
+    }
+    return text
+  }
+
+  firstText = takeLocation(firstText)
+  // Each part is tidied on both ends so a decoration cut out of the middle of a line
+  // ("Title — Severity: High") does not leave a dangling separator at the join.
+  const tidy = (s: string) => s.replace(LEADING_SEPARATORS, "").replace(/[\s:—–\-|*]+$/, "").replace(/\s+/g, " ").trim()
+  const firstClean = tidy(firstText)
+  if (firstClean) descParts.push(firstClean)
+
+  for (const raw of block.lines.slice(1)) {
+    const s = raw.trim()
+    if (!s) continue
+    if ((m = SEVERITY_FIELD_LINE.exec(s))) {
+      if (severity === undefined) severity = m[1].toLowerCase() as Severity
+      const rest = (m[2] ?? "").replace(LEADING_SEPARATORS, "").trim()
+      if (rest) descParts.push(takeLocation(rest).replace(LEADING_SEPARATORS, "").trim())
+      continue
+    }
+    if (severity === undefined && hasLocation && (m = P_LEVEL.exec(s)) && /^\s*\**severity/i.test(s)) {
+      severity = P_MAP[(m[1] ?? m[2]).toUpperCase()]
+      continue
+    }
+    if (LOCATION_FIELD.test(s)) {
+      const rest = takeLocation(s.replace(LOCATION_FIELD, "")).replace(LEADING_SEPARATORS, "").trim()
+      if (rest) descParts.push(rest)
+      continue
+    }
+    // Plain continuation. A location on it is adopted only when none was found yet, and
+    // then it leaves the prose (it is structured data now); a second file mentioned
+    // later stays in the prose.
+    if (!file) {
+      const fm = FILE_LINE.exec(s)
+      if (fm) {
+        file = fm[1]
+        lineNo = fm[2]
+        const rest = s.replace(fm[0], " ").replace(LEADING_SEPARATORS, "").trim()
+        if (rest) descParts.push(rest)
+        continue
+      }
+    }
+    descParts.push(s)
+  }
+
+  if (severity === undefined) return null
+  const description = clip(descParts.join(" "))
+  if (!description && !file) return null
+  return { severity, file, line: lineNo, description }
 }
 
 /**
  * Parse raw review text into structured findings.
  *
- * Contract: a finding is created only from a recognized header (explicit severity
- * token, "Severity:" field, or "Finding N" heading). Unmarked prose before the first
- * header is counted in `unparsed_lines` and never becomes a finding — so a review
- * that says "Checked X, Y. No findings." normalizes to zero findings, not one.
- * Returns structured data + TOON text (table with `|` escaped) + a `findings_json:`
- * line the host can hand to `write_ledger record_review` verbatim.
+ * Contract: a finding is emitted only from a block that carries an explicit severity
+ * token somewhere in it. Layouts handled: leading tokens in any decoration, bracketed
+ * trailing tokens, `Severity:` fields on the item line or the next line, mid-line
+ * `— HIGH:` after a location, exact `[P0]`–`[P3]` levels with a location, `Finding N`
+ * headings, and markdown table rows with a severity cell. Unmarked items and prose are
+ * counted in `unparsed_lines` and never emitted. Returns structured data + TOON text
+ * (table with `|` escaped) + a `findings_json:` line the host can hand to
+ * `write_ledger record_review` verbatim.
  */
 export function normalizeReview(
   reviewer: string,
   rawText: string
 ): { data: NormalizedReview; text: string } {
   const findings: ReviewFinding[] = []
-  let current: Draft | null = null
-  let unparsed = 0
+  const blocks: Block[] = []
+  let current: Block | null = null
   let prevBlank = true
 
-  const flush = () => {
-    if (current) {
-      const f = finalize(current)
-      if (f) findings.push(f)
-    }
-    current = null
-  }
-
-  /**
-   * A header may adopt a draft that a "Finding N" heading opened but has not filled
-   * yet — the heading and the severity line describe the same finding.
-   */
-  const startOrAdopt = (severity: Severity): Draft => {
-    if (current && !current.severityExplicit && current.descParts.length === 0 && !current.file) {
-      current.severity = severity
-      current.severityExplicit = true
-      return current
-    }
-    flush()
-    current = newDraft(severity, true)
-    return current
+  const open = (line: string, opts: Partial<Block> = {}): Block => {
+    const block: Block = { lines: [line], openedByFindingHeading: false, sawSeverity: false, table: false, ...opts }
+    blocks.push(block)
+    return block
   }
 
   for (const rawLine of rawText.split("\n")) {
@@ -140,70 +269,47 @@ export function normalizeReview(
       continue
     }
 
-    const hadList = LIST_PREFIX.test(trimmed)
-    const s = trimmed.replace(LIST_PREFIX, "").replace(HEADING_PREFIX, "").trim()
-    let m: RegExpExecArray | null
-
-    if (FINDING_HEADING.test(s)) {
-      flush()
-      current = newDraft("medium", false)
-      const rest = s.replace(FINDING_HEADING, "").replace(LEADING_SEPARATORS, "").trim()
-      if (rest) {
-        if ((m = LEADING_SEVERITY.exec(rest))) {
-          current.severity = m[1].toLowerCase() as Severity
-          current.severityExplicit = true
-          absorbBody(current, rest.slice(m[0].length))
-        } else if ((m = TRAILING_SEVERITY.exec(rest))) {
-          current.severity = m[1].toLowerCase() as Severity
-          current.severityExplicit = true
-          absorbBody(current, rest.slice(0, m.index))
-        } else {
-          absorbBody(current, rest)
-        }
-      }
-    } else if ((m = SEVERITY_FIELD.exec(s))) {
-      const d = startOrAdopt(m[1].toLowerCase() as Severity)
-      absorbBody(d, m[2] ?? "")
-    } else if ((m = LEADING_SEVERITY.exec(s))) {
-      const d = startOrAdopt(m[1].toLowerCase() as Severity)
-      absorbBody(d, s.slice(m[0].length))
-    } else if (
-      (m = TRAILING_SEVERITY.exec(s)) &&
-      (hadList || prevBlank || s.search(FILE_LINE) === 0)
-    ) {
-      // A trailing token opens a finding only where a new item plausibly starts:
-      // a list item, a paragraph opener, or a line led by a file:line reference.
-      flush()
-      current = newDraft(m[1].toLowerCase() as Severity, true)
-      absorbBody(current, s.slice(0, m.index))
-    } else if (current && LOCATION_FIELD.test(s)) {
-      const rest = s.replace(LOCATION_FIELD, "")
-      const fm = FILE_LINE.exec(rest)
-      if (fm) {
-        if (!current.file) {
-          current.file = fm[1]
-          current.line = fm[2]
-        }
-        const extra = rest.replace(fm[0], " ").replace(LEADING_SEPARATORS, "").trim()
-        if (extra) current.descParts.push(extra)
-      } else {
-        current.descParts.push(s)
-      }
-    } else if (current) {
-      const fm = FILE_LINE.exec(s)
-      if (fm && !current.file) {
-        current.file = fm[1]
-        current.line = fm[2]
-      }
-      current.descParts.push(s)
-    } else {
-      unparsed++
+    if (/^\|.*\|\s*$/.test(trimmed)) {
+      current = open(trimmed, { table: true })
+      prevBlank = false
+      continue
     }
 
+    const { text: stripped, hadPrefix } = stripItemPrefix(trimmed)
+    const startsWithLocation = FILE_LINE.exec(stripped)?.index === 0
+    const isFindingHeading = FINDING_HEADING.test(stripped)
+    const hasMarker = lineHasSeverityMarker(stripped)
+    const isSeverityFieldLine = SEVERITY_FIELD_LINE.test(stripped)
+
+    let boundary = false
+    if (hadPrefix || isFindingHeading) {
+      boundary = true
+    } else if (isSeverityFieldLine) {
+      // "Severity: X" on its own line attaches to a block that has no severity yet.
+      boundary = current === null || current.sawSeverity
+    } else if (LEADING_SEVERITY.test(stripped)) {
+      // A leading token opens a finding, unless it is filling in an empty "Finding N" heading.
+      boundary = !(current !== null && current.openedByFindingHeading && current.lines.length === 1)
+    } else if (prevBlank && (startsWithLocation || TRAILING_SEVERITY.test(stripped))) {
+      boundary = true
+    }
+
+    if (boundary || current === null) {
+      const rest = isFindingHeading ? stripped.replace(FINDING_HEADING, "").replace(LEADING_SEPARATORS, "").trim() : stripped
+      current = open(trimmed, { openedByFindingHeading: isFindingHeading && rest.length === 0, sawSeverity: hasMarker })
+    } else {
+      current.lines.push(trimmed)
+      if (hasMarker) current.sawSeverity = true
+    }
     prevBlank = false
   }
 
-  flush()
+  let unparsed = 0
+  for (const block of blocks) {
+    const finding = parseBlock(block)
+    if (finding) findings.push(finding)
+    else unparsed += block.lines.length
+  }
 
   const data: NormalizedReview = {
     reviewer,

@@ -696,7 +696,7 @@ describe("declare_phase_units round-trip via MCP", () => {
 
     await passUnit("p1", "u2")
     // gate requires ≥1 review (2026-09 R2)
-    await writeLedgerTool({ operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [] } })
+    await writeLedgerTool({ operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [], completion: "complete" } })
     const pass = await writeLedgerTool({
       operation: "update_phase_gate", phase: "p1", data: { g: "pass" },
     })
