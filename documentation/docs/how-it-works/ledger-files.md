@@ -32,7 +32,7 @@ Do not edit the `.foreman-*` files by hand. The ledger's invariants are checked 
 
 ## The ledger
 
-One JSON file. Phases keyed by id; units keyed by id inside each phase. Per unit: status `s` (`pending`, `ip`, `delegated`, `done`, `fail`), verdict `v` (`pending`, `pass`, `fail`, `inconclusive`), `v_ts`, `first_pass_ts`, `via`, `note`, the latest brief `w`, `rej[]`, `delegations[]` with brief, tier, route reason, preflight, attempt, and override, and `tier`. Per phase: gate `g`, `scope`, `declared_units`, `declared_log`, `reviews[]`, `gate_units_hash`, and the override records `discipline_overrides`, `review_override`, `confirmed_override`.
+One JSON file. Phases keyed by id; units keyed by id inside each phase. Per unit: status `s` (`pending`, `ip`, `delegated`, `done`, `fail`), verdict `v` (`pending`, `pass`, `fail`, `inconclusive`), `v_ts`, `first_pass_ts`, `via`, `note`, the latest brief `w`, `rej[]`, `delegations[]` with brief, tier, route reason, preflight, attempt, and override, `direct_fixes[]`, `tier`, and the attempt counters `attempt_seq`, `epoch_failed`, `last_failed_attempt`, `needs_attempt`, `cap_override_attempt`, plus `cap_override` when a pass waived a rule. The counters are server-written; the two arrays drop their oldest entries at 20, so the counters, not the arrays, carry the cap. Per phase: gate `g`, `scope`, `declared_units`, `declared_log`, `reviews[]`, `gate_units_hash`, and the override records `discipline_overrides`, `review_override`, `confirmed_override`.
 
 Two things read it for decisions. `session_orient` derives the next action from it. `update_phase_gate` validates against it. Everything else that reads it is display.
 

@@ -40,6 +40,13 @@ export interface Delegation {
   preflight?: DelegationPreflight
 }
 
+/** A pit-boss literal substitution recorded as an attempt (implementor Direct Fix rule). Absent before v0.6.4. */
+export interface DirectFix {
+  attempt: number
+  what: string
+  ts: string
+}
+
 export interface Unit {
   s: "pending" | "ip" | "delegated" | "done" | "fail"
   v: "pass" | "fail" | "pending" | "inconclusive"
@@ -56,6 +63,23 @@ export interface Unit {
   route_reason?: string
   /** Append-only delegation history. Optional: ledgers written before v0.3.1 lack it. */
   delegations?: Delegation[]
+  // ── Attempt accounting (v0.6.4). Server-authored scalars: rej[] and delegations[] are
+  // capped at 20 with the oldest dropped, so neither can carry the enforcement count.
+  // Absent on older ledgers; derived from the stamps on the first write that touches the unit.
+  /** Monotonic count of recorded attempts: worker delegations plus direct fixes. */
+  attempt_seq?: number
+  /** Distinct attempts that failed (rejection or fail verdict) since the unit last passed. Reset to 0 on pass. */
+  epoch_failed?: number
+  /** Attempt id that last raised epoch_failed, so a second rejection of one attempt does not count twice. */
+  last_failed_attempt?: number
+  /** True from a rejection or fail verdict until a new attempt is recorded; a pass verdict is refused while set. */
+  needs_attempt?: boolean
+  /** Attempt id recorded with user_override past the cap; a pass on that attempt needs no second override. */
+  cap_override_attempt?: number
+  /** Direct fixes recorded as attempts, newest last, capped at 20. */
+  direct_fixes?: DirectFix[]
+  /** A pass verdict that waived ATTEMPT REQUIRED or the cap through data.user_override. */
+  cap_override?: { ts: string; attempt: number; failed: number; waived: Array<"cap" | "attempt"> }
 }
 
 /** A single classified review finding. Shared with normalize_review output. */
@@ -143,6 +167,8 @@ const SetUnitStatusInput = z.object({
       self_consistent: z.literal(true),
       telemetry: z.enum(["checked", "n/a"]).optional(),
     }).optional(),
+    // With s:'ip' only: records a pit-boss literal substitution as an attempt (Direct Fix rule).
+    direct_fix: z.string().min(10).max(2000).optional(),
   }),
 })
 
@@ -154,6 +180,8 @@ const SetVerdictInput = z.object({
     v: z.enum(["pass", "fail", "pending", "inconclusive"]),
     via: z.enum(["worker", "pitboss-direct", "n/a"]).optional(),
     note: z.string().max(10000).optional(),
+    // Waives ATTEMPT REQUIRED and the delegation cap on a pass; recorded as cap_override.
+    user_override: z.boolean().optional(),
   }),
 })
 
@@ -220,12 +248,19 @@ const ReviewFindingSchema = z.object({
   classification: z.enum(["confirmed", "rejected", "unverified"]).optional(),
 })
 
+// v0.6.4 (Codex, field feedback round 4): the gate blocks only on `confirmed`, so a
+// finding recorded without a classification slipped past it. The moderator's call is
+// required on every recorded finding; the parser's output (above) stays unclassified.
+const ClassifiedFindingSchema = ReviewFindingSchema.extend({
+  classification: z.enum(["confirmed", "rejected", "unverified"]),
+})
+
 const RecordReviewInput = z.object({
   operation: z.literal("record_review"),
   phase: z.string().max(10000),
   data: z.object({
     advisor: z.string().max(200),
-    findings: z.array(ReviewFindingSchema).max(100),
+    findings: z.array(ClassifiedFindingSchema).max(100),
     packet_hash: z.string().max(200).optional(),
     tokens: z.number().min(0).optional(),
     completion: z.enum(["complete", "partial", "failed"]).optional(),

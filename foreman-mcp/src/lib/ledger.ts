@@ -100,6 +100,82 @@ function ensurePhase(ledger: LedgerFile, phase: string): void {
   }
 }
 
+// ─── Attempt accounting (field feedback 2026-09 round 4, Codex) ──────────────
+// The delegation cap used to be recomputed from rej[] stamps and guarded only the
+// delegation record: a capped unit could be fixed off the record and passed, a
+// rejected unit could be passed with no fix attempt at all, and rej[] / delegations[]
+// are capped at 20 with the oldest dropped (and rej[].ts is caller-supplied), so no
+// array can answer "how many attempts failed" or "did an attempt follow the failure".
+// Four server-authored scalars on the unit do:
+//   attempt_seq          every recorded attempt: worker delegation or Direct Fix
+//   epoch_failed         distinct attempts that failed since the unit last passed
+//   last_failed_attempt  dedupes two rejections of one attempt
+//   needs_attempt        a failure with no attempt recorded since; blocks a pass
+// A pass closes the series (epoch_failed back to 0), so a unit reopened at three
+// separate checkpoints over weeks is not treated as one non-converging attempt series.
+export const ATTEMPT_CAP = 3
+
+/** Derives the scalars once for a unit written before v0.6.4. Never mutates rej[] or delegations[]. */
+function ensureAttemptState(unit: Unit): void {
+  if (unit.attempt_seq !== undefined) return
+  const delegated = unit.delegations ?? []
+  // Greatest retained attempt id, not the array length: the array is sliced at 20.
+  const maxAttempt = delegated.reduce((m, d) => Math.max(m, d.attempt ?? 0), 0)
+  unit.attempt_seq = Math.max(maxAttempt, delegated.length)
+  if (unit.v === "pass") {
+    unit.epoch_failed = 0
+    unit.needs_attempt = false
+    return
+  }
+  // Same count the pre-0.6.4 cap used: distinct stamped attempts, each unstamped
+  // (pre-v0.5.0) rejection conservatively its own.
+  const distinct = new Set(unit.rej.map((rej, i) => (rej.attempt !== undefined ? `a${rej.attempt}` : `legacy${i}`)))
+  unit.epoch_failed = distinct.size
+  const stamped = unit.rej.filter((rej) => rej.attempt !== undefined).map((rej) => rej.attempt as number)
+  if (stamped.length > 0) {
+    const latest = Math.max(...stamped)
+    unit.last_failed_attempt = latest
+    // A rejection stamped with the current attempt count was recorded after the last
+    // attempt. Unstamped history cannot say, and is resolved toward not blocking.
+    unit.needs_attempt = latest >= unit.attempt_seq
+  } else {
+    unit.needs_attempt = false
+  }
+}
+
+/** A rejection or fail verdict: counts once per attempt, and demands a new attempt before a pass. */
+function recordFailure(unit: Unit): void {
+  ensureAttemptState(unit)
+  unit.needs_attempt = true
+  const current = unit.attempt_seq ?? 0
+  if (unit.last_failed_attempt !== current) {
+    unit.epoch_failed = (unit.epoch_failed ?? 0) + 1
+    unit.last_failed_attempt = current
+  }
+}
+
+/** Allocates the next attempt id; refuses past the cap without user_override. */
+function allocateAttempt(
+  unit: Unit,
+  unitId: string,
+  kind: "delegation" | "direct fix",
+  userOverride: boolean | undefined
+): number {
+  ensureAttemptState(unit)
+  const failed = unit.epoch_failed ?? 0
+  if (failed >= ATTEMPT_CAP && userOverride !== true) {
+    throw new Error(
+      `DELEGATION CAP: unit '${unitId}' has ${failed} failed attempts since its last pass (cap ${ATTEMPT_CAP}). ` +
+      `A further ${kind} needs data.user_override: true — escalate to the user with the rejection history. ` +
+      "A pass verdict is blocked the same way until an overridden attempt or an overridden verdict is recorded; do not fix off the record."
+    )
+  }
+  unit.attempt_seq = (unit.attempt_seq ?? 0) + 1
+  unit.needs_attempt = false
+  if (failed >= ATTEMPT_CAP) unit.cap_override_attempt = unit.attempt_seq
+  return unit.attempt_seq
+}
+
 // ─── Gate-staleness snapshot (D2b) ───────────────────────────────────────────
 // Hash of the phase's unit ids + verdicts + verdict timestamps at gate-pass time.
 // Recomputed on read: a mismatch means units changed after the gate passed.
@@ -171,6 +247,11 @@ async function applyOperation(
     case "set_unit_status": {
       const { phase, unit_id, data } = operation
       ensureUnit(ledger, phase, unit_id)
+      if (data.direct_fix !== undefined && data.s !== "ip") {
+        throw new Error(
+          "DIRECT FIX: data.direct_fix is recorded with s:'ip' only — the fix is in progress until its verdict."
+        )
+      }
       // Delegation requires a worker brief — this proves pitboss built one
       if (data.s === "delegated") {
         if (!data.brief || data.brief.trim().length < 20) {
@@ -193,19 +274,9 @@ async function applyOperation(
           )
         }
         const unit = ledger.phases[phase].units[unit_id]
-        // D2a delegation cap: count DISTINCT rejected attempts, not raw rejection count —
-        // two reviewers rejecting the same attempt fire the cap once. Stamped entries
-        // contribute their attempt number; unstamped legacy entries are conservatively
-        // treated as distinct (unique synthetic key each). Stored entries are never mutated.
-        const distinctRejectedAttempts = new Set(
-          unit.rej.map((rej, i) => (rej.attempt !== undefined ? `a${rej.attempt}` : `legacy${i}`))
-        )
-        if (distinctRejectedAttempts.size >= 3 && data.user_override !== true) {
-          throw new Error(
-            `DELEGATION CAP: unit '${unit_id}' has ${distinctRejectedAttempts.size} distinct rejected attempts (cap 3). ` +
-            "A 4th delegation requires data.user_override: true — escalate to the user with the rejection history."
-          )
-        }
+        // D2a delegation cap, on server-authored counters since 0.6.4 (see
+        // ensureAttemptState): two reviewers rejecting one attempt still fire it once.
+        const attempt = allocateAttempt(unit, unit_id, "delegation", data.user_override)
         // `w` is the latest brief (the pass-gate reads it). tier/route_reason are audit evidence.
         unit.w = data.brief
         if (data.tier !== undefined) unit.tier = data.tier
@@ -214,19 +285,32 @@ async function applyOperation(
         // Optional field: lazily created so units that never delegate stay lean, and old
         // on-disk units (which bypass the new-unit initializer) are handled here.
         unit.delegations ??= []
-        const lastAttempt = unit.delegations.length
-          ? unit.delegations[unit.delegations.length - 1].attempt
-          : 0
         unit.delegations.push({
           brief: data.brief,
           tier: data.tier,
           route_reason: data.route_reason,
           ts: new Date().toISOString(),
-          attempt: lastAttempt + 1,   // monotonic even after the cap slice below
+          attempt,   // from attempt_seq: monotonic even after the cap slice below
           ...(data.user_override === true ? { user_override: true } : {}),
           preflight: data.preflight,
         })
         if (unit.delegations.length > 20) unit.delegations = unit.delegations.slice(-20)
+      } else if (data.direct_fix !== undefined) {
+        // Field feedback 2026-09 round 4: the protocol counted a Direct Fix as an
+        // outer-loop attempt but the ledger never saw one, so a rejected direct fix
+        // collapsed onto the previous worker attempt and a pass after one had no
+        // attempt to point at. Recording it here gives the pass its attempt.
+        const unit = ledger.phases[phase].units[unit_id]
+        if (!unit.w) {
+          throw new Error(
+            "DIRECT FIX BLOCKED: a Direct Fix is a literal substitution on a unit that already had a worker delegation; " +
+            `unit '${unit_id}' has none — delegate first.`
+          )
+        }
+        const attempt = allocateAttempt(unit, unit_id, "direct fix", data.user_override)
+        unit.direct_fixes ??= []
+        unit.direct_fixes.push({ attempt, what: data.direct_fix, ts: new Date().toISOString() })
+        if (unit.direct_fixes.length > 20) unit.direct_fixes = unit.direct_fixes.slice(-20)
       }
       ledger.phases[phase].units[unit_id].s = data.s
       break
@@ -272,6 +356,36 @@ async function applyOperation(
             )
           }
         }
+        // Field feedback 2026-09 round 4: the cap guarded the delegation record only, so a
+        // capped unit could be fixed off the record and passed, and a rejected unit could be
+        // passed with no fix attempt at all. The cap is checked first: past it, a fresh
+        // attempt needs an override anyway, so that is the message to send the model to.
+        ensureAttemptState(unit)
+        const failed = unit.epoch_failed ?? 0
+        const waived: Array<"cap" | "attempt"> = []
+        if (failed >= ATTEMPT_CAP && unit.cap_override_attempt !== unit.attempt_seq) {
+          if (data.user_override !== true) {
+            throw new Error(
+              `DELEGATION CAP: unit '${unit_id}' has ${failed} failed attempts since its last pass (cap ${ATTEMPT_CAP}) ` +
+              `and its current attempt #${unit.attempt_seq} was not recorded with user_override. ` +
+              "A pass needs data.user_override: true (recorded as cap_override) — escalate to the user with the rejection history."
+            )
+          }
+          waived.push("cap")
+        }
+        if (unit.needs_attempt) {
+          if (data.user_override !== true) {
+            throw new Error(
+              `ATTEMPT REQUIRED: unit '${unit_id}' was rejected or failed after its latest recorded attempt #${unit.attempt_seq}. ` +
+              "Record the fix attempt first — set_unit_status s:'delegated' (fresh worker) or s:'ip' with data.direct_fix " +
+              "(literal substitution) — then set_verdict. data.user_override: true waives it and is recorded as cap_override."
+            )
+          }
+          waived.push("attempt")
+        }
+        if (waived.length > 0) {
+          unit.cap_override = { ts: new Date().toISOString(), attempt: unit.attempt_seq ?? 0, failed, waived }
+        }
       }
       const unit = ledger.phases[phase].units[unit_id]
       unit.v = data.v
@@ -279,7 +393,18 @@ async function applyOperation(
       unit.v_ts = new Date().toISOString()
       // Completion frontier: the FIRST pass sticks. Re-verdicting an old unit after a
       // checkpoint fix must not move session_orient's last_completed_unit backwards.
-      if (data.v === "pass") unit.first_pass_ts ??= unit.v_ts
+      if (data.v === "pass") {
+        unit.first_pass_ts ??= unit.v_ts
+        // A pass closes the failed-attempt series; a later reopen starts a fresh cap.
+        unit.epoch_failed = 0
+        unit.needs_attempt = false
+        delete unit.last_failed_attempt
+        delete unit.cap_override_attempt
+      } else if (data.v === "fail") {
+        // A fail verdict is a failed attempt too; otherwise delegate→fail→delegate→fail
+        // never meets the cap (Codex, round 4).
+        recordFailure(unit)
+      }
       if (data.via !== undefined) {
         unit.via = data.via
       } else {
@@ -296,15 +421,18 @@ async function applyOperation(
       const { phase, unit_id, data } = operation
       ensureUnit(ledger, phase, unit_id)
       const unit = ledger.phases[phase].units[unit_id]
+      ensureAttemptState(unit)
       unit.rej.push({
         r: data.r,
         msg: data.msg,
         ts: data.ts,
-        // D2a: stamp which delegation attempt this rejection belongs to.
-        // 0 = rejected before any delegation. Legacy entries (pre-v0.5.0) stay unstamped.
-        attempt: unit.delegations?.length ?? 0,
+        // D2a: stamp which attempt this rejection belongs to (0 = before any attempt).
+        // From attempt_seq, not delegations.length: the array is sliced at 20 and its
+        // length stops counting there (Codex, round 4). Legacy entries stay unstamped.
+        attempt: unit.attempt_seq ?? 0,
       })
       if (unit.rej.length > 20) unit.rej = unit.rej.slice(-20)
+      recordFailure(unit)
       // Field feedback 2026-09 (Codex R1): a rejection contradicts a standing pass verdict.
       // Leaving v:'pass' in place let a rejected unit stay gate-passable and hid it from
       // session_orient's active_rejections. Reopen to 'pending'; the fix must re-verdict.
@@ -497,6 +625,10 @@ async function applyOperation(
           const incomplete = currentReviews
             .map((r) => {
               if (r.completion === "partial" || r.completion === "failed") return `${r.advisor}: completion=${r.completion}`
+              // Reviews recorded before 0.6.4 could carry unclassified findings; the gate
+              // blocks only on 'confirmed', so an unclassified real finding slipped past.
+              const unclassified = r.findings.filter((f) => f.classification === undefined).length
+              if (unclassified > 0) return `${r.advisor}: ${unclassified} finding(s) without a classification`
               if (r.findings.length === 0 && !(r.checked && r.checked.length > 0) && r.completion !== "complete") {
                 return `${r.advisor}: zero findings with no examined list`
               }

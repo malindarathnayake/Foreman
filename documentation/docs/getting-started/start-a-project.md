@@ -88,7 +88,7 @@ mcp__foreman__write_ledger  set_verdict p1/u1 { v: "pass" }
 mcp__foreman__write_progress complete_unit p1/u1
 ```
 
-If the model rejects the worker's output you see `add_rejection` instead of `set_verdict`, then a second `delegated` write with a fix brief and a fresh worker. After three rejected attempts the next `delegated` write is refused with `DELEGATION CAP` until you tell the model to set `user_override: true`.
+If the model rejects the worker's output you see `add_rejection` instead of `set_verdict`, then a second `delegated` write with a fix brief and a fresh worker. After three failed attempts the next `delegated` write, and any pass verdict, is refused with `DELEGATION CAP` until you tell the model to set `user_override: true`. A pass written right after a rejection, with no fix attempt recorded in between, is refused with `ATTEMPT REQUIRED`.
 
 When every unit in the phase has passed, the model runs the full test suite, sends the phase to the reviewers, and records what they found:
 

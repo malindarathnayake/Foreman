@@ -53,7 +53,7 @@ describe("schema errors — one hint per field, expected shape appended", () => 
     expect(text).toContain("  data.v: ")
     expect(text).toContain("  data.via: ")
     expect(text).toContain("  data.note: ")
-    expect(text).toContain("Expected data shape: { v: 'pass'|'fail'|'pending'|'inconclusive', via?: 'worker'|'pitboss-direct'|'n/a', note?: string (≤10000 chars) }")
+    expect(text).toContain("Expected data shape: { v: 'pass'|'fail'|'pending'|'inconclusive', via?: 'worker'|'pitboss-direct'|'n/a', note?: string (≤10000 chars), user_override?: boolean }")
   })
 
   it("handleWriteLedger surfaces the formatted error instead of a Zod dump", async () => {
@@ -181,11 +181,13 @@ describe("update_phase_gate — confirmed findings and review currency", () => {
   })
 
   it("rejected and unverified classifications do not block", async () => {
+    // 0.6.4: a finding without a classification is refused at the schema and, when it
+    // reached the ledger before then, reads as an incomplete review (fieldFeedback2026-09c).
     await delegatePass("u1")
     await writeLedger(ledgerPath, {
       operation: "record_review",
       phase: "p1",
-      data: { advisor: "codex", findings: [{ ...CONFIRMED, classification: "rejected" }, { ...CONFIRMED, classification: "unverified" }, { ...CONFIRMED, classification: undefined }] },
+      data: { advisor: "codex", findings: [{ ...CONFIRMED, classification: "rejected" }, { ...CONFIRMED, classification: "unverified" }] },
     })
     await writeLedger(ledgerPath, { operation: "update_phase_gate", phase: "p1", data: { g: "pass" } })
     expect((await readLedger(ledgerPath)).phases.p1.g).toBe("pass")

@@ -205,6 +205,8 @@ When invoking an advisor (external CLI or host-native fallback) on code that dep
 Rule: if the review target touches a third-party API, paste the imports and the relevant doc excerpt into the advisor prompt; do not rely on the advisor's training recall.
 
 Advisor output economy: every advisor prompt MUST include an efficiency instruction — read files selectively (grep for the named symbols, read relevant ranges), never reproduce entire files in the transcript or the review output, and spend the budget on analysis, not restating inputs. An advisor that dumps file contents burns its reasoning budget and times out before producing findings.
+
+Adversarial wording: state the authorized verification goal and the bounded target — "find inputs this guard fails to reject", "show an in-scope call sequence where this check is skipped". Avoid context-free "break / bypass / defeat / circumvent" imperatives; some advisor CLIs refuse them and the run is wasted. If a seat refuses, record `completion: "failed"` with the refusal in `limitations`, retry once with bounded verification wording, and never treat a refusal as a clean review.
 <!-- /section -->
 
 <!-- section: context-budget -->

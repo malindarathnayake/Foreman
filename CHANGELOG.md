@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.4 - 2026-09-04
+
+Field-feedback round 4: five items from a fourth Fable 5.1 pit-boss run, triaged against the code and validated by an adversarial Codex pass. Codex overturned two of the proposed fixes and found the wider hole behind the first item.
+
+- **The delegation cap guards the pass, not only the delegation record.** A pass verdict needs an attempt recorded after the latest rejection or fail verdict (`ATTEMPT REQUIRED`), and past the cap it needs `user_override`, recorded on the unit as `cap_override`. Fixing off the record after a `DELEGATION CAP` refusal no longer passes. The cap counts failed attempts since the unit last passed, so a unit reopened at three separate checkpoints is not treated as one non-converging series; the reporter's proposal to count only rejections on the same brief was rejected as caller-controlled text. A `fail` verdict counts as a failed attempt. A Direct Fix is recorded as an attempt through `set_unit_status { s: "ip", direct_fix }`, which the protocol already said it was. The counts live in server-written per-unit scalars (`attempt_seq`, `epoch_failed`, `last_failed_attempt`, `needs_attempt`) because `rej[]` and `delegations[]` drop their oldest entries at 20; the rejection stamp after the 21st delegation was wrong for the same reason and is fixed. Existing ledgers derive the scalars on the first write that touches a unit. `session_orient` reports `attempt_blocks`; the unit view of `read_ledger` shows the counters.
+- **`record_review` requires a classification on every finding.** The gate blocks only on `confirmed`, so a real finding recorded without one slipped past it. Reviews recorded earlier with unclassified findings read as `INCOMPLETE REVIEW` at the gate.
+- **`bundle_status` answers `restart_recommended` with `true`, `false`, or `n/a`.** The server snapshots `dist/`, `package.json`, and the stack profile override at process start; the tool compares disk against it and names what changed. A rebuilt or reinstalled package under the same version is `true`; `unknown` is gone.
+- The limits the reporter hit are in the top-level tool descriptions: journal `msg` at 400 characters, review `checked` at 50 entries of 200 characters.
+- Advisor Grounding Protocol: adversarial asks state the authorized verification goal and the bounded target; context-free "break / bypass" imperatives are avoided because some advisor CLIs refuse them; a refusal is recorded as `completion: "failed"`, retried once with bounded wording, and never treated as a clean review.
+- One-call review recording was declined: classifications cannot be keyed before the model sees the parser's finding boundaries and `unparsed_lines`, and the saving is three calls of thirteen at a checkpoint, not half.
+- Bumped package to `0.6.4`.
+
 ## 0.6.3 - 2026-09-04
 
 Surface reduction, validated by an adversarial Codex pass before any cut (it rejected six of eight proposed trims; only the two below survived, plus the owner's rulings).

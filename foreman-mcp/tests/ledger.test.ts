@@ -648,7 +648,7 @@ describe("ledger v0.5.0 delegation cap (D2a)", () => {
         unit_id: "u1",
         data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: `${brief} #3` },
       })
-    ).rejects.toThrow(/DELEGATION CAP: unit 'u1' has 3 distinct rejected attempts \(cap 3\)/)
+    ).rejects.toThrow(/DELEGATION CAP: unit 'u1' has 3 failed attempts since its last pass \(cap 3\)/)
   })
 
   it("user_override:true passes the cap and is recorded on the delegation entry", async () => {

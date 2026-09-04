@@ -1,4 +1,4 @@
-import { computeGateUnitsHash, readLedgerWithStatus } from "../lib/ledger.js"
+import { ATTEMPT_CAP, computeGateUnitsHash, readLedgerWithStatus } from "../lib/ledger.js"
 import { readProgress } from "../lib/progress.js"
 import { toKeyValue } from "../lib/toon.js"
 import { naturalSort } from "../lib/naturalSort.js"
@@ -215,9 +215,13 @@ export async function sessionOrient(
     : missingDeclared.slice(0, 10).join(",") +
       (missingDeclared.length > 10 ? ` (+${missingDeclared.length - 10} more)` : "")
 
-  // ── blocked_on + active_rejections: iterate ALL phases ──────────────────────
+  // ── blocked_on + active_rejections + attempt_blocks: iterate ALL phases ───────
+  // attempt_blocks (0.6.4): units the ledger will refuse a pass on — at the cap, or
+  // rejected with no attempt recorded since. Surfaced here so the model learns it before
+  // a refused verdict, which is exactly the moment it used to fix off the record.
   let blocked_on = "null"
   let active_rejections = 0
+  const attemptBlocks: string[] = []
   for (const phaseKey of phaseKeys) {
     const phase = ledger.phases[phaseKey]
     for (const unitId of naturalSort(Object.keys(phase.units))) {
@@ -228,8 +232,16 @@ export async function sessionOrient(
         }
         active_rejections++
       }
+      if (unit.v !== "pass") {
+        const failed = unit.epoch_failed ?? 0
+        if (failed >= ATTEMPT_CAP) attemptBlocks.push(`${phaseKey}/${unitId}:cap(${failed})`)
+        else if (unit.needs_attempt) attemptBlocks.push(`${phaseKey}/${unitId}:needs_attempt`)
+      }
     }
   }
+  const attempt_blocks = attemptBlocks.length === 0
+    ? "none"
+    : attemptBlocks.slice(0, 10).join(",") + (attemptBlocks.length > 10 ? ` (+${attemptBlocks.length - 10} more)` : "")
 
   // ── stale_gates: phases whose gate snapshot no longer matches their units (D2b) ──
   const staleGates = phaseKeys.filter((key) => {
@@ -250,6 +262,7 @@ export async function sessionOrient(
     next_pending_unit,
     blocked_on,
     active_rejections,
+    attempt_blocks,
     phases_total,
     phases_done,
     unsupported_capabilities: unsupportedCapabilities(host),

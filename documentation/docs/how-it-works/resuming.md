@@ -38,6 +38,7 @@ latest_pass_verdict_ts: 2026-09-03T14:02:11.318Z
 next_pending_unit: p2/u4
 blocked_on: null
 active_rejections: 0
+attempt_blocks: none
 phases_total: 4
 phases_done: 1
 unsupported_capabilities: none
@@ -55,6 +56,7 @@ missing_declared_units: none
 | `latest_pass_verdict_unit`, `latest_pass_verdict_ts` | Newest pass by `v_ts`. Re-verdicts move it. Useful for "what was touched last" |
 | `next_pending_unit` | First unit with status `pending`, or declared and not yet seeded, from the current phase on |
 | `blocked_on`, `active_rejections` | First unit with rejections and no pass verdict; count of such units across all phases |
+| `attempt_blocks` | Units the ledger will refuse a pass on: `p4/u2:cap(3)` for three failed attempts since the last pass, `p1/u3:needs_attempt` for a rejection or fail verdict with no attempt recorded since |
 | `stale_gates` | Phases whose passed-gate hash no longer matches their units |
 | `state_drift` | `progress:<target>;ledger:<target>` when the progress file points elsewhere, or `progress:complete(<unit>);ledger:<target>` when progress marks the ledger's own resume unit complete |
 | `missing_declared_units` | Declared ids with no ledger entry, up to ten |
@@ -74,6 +76,7 @@ action: complete              resume_target: null         -> nothing left
 - **`missing_declared_units` is not `none`:** seed each with `set_unit_status { s: "pending" }` before delegating. They are spec scope the ledger does not track yet.
 - **The current unit is `ip`:** treat it as not started. Re-read the files, rebuild the brief, respawn the worker. The previous worker's partial edit is not trusted; the repository-state guard in validation will catch anything it left behind.
 - **`blocked_on` is set:** read that unit's rejections with `read_ledger({ phase, unit_id })` before writing a fix brief.
+- **`attempt_blocks` names a unit:** `needs_attempt` means the next write for it is a delegation or a recorded direct fix, not a verdict. `cap(n)` means stop and bring the rejection history to the owner; the ledger refuses another attempt and a pass alike until a write carries `user_override`.
 - **`stale_gates` is set:** a unit changed after its phase closed. The gate is not reopened for you; decide whether to re-run the checkpoint.
 
 ## Corrupt ledger

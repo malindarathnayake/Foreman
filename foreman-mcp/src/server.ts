@@ -7,6 +7,7 @@ import path from "path"
 import { fileURLToPath } from "url"
 
 import { bundleStatus } from "./tools/bundleStatus.js"
+import { captureRuntimeSnapshot, type RuntimeSnapshot } from "./lib/runtimeSnapshot.js"
 import { changelog } from "./tools/changelog.js"
 import { ethos, ETHOS_SECTIONS } from "./tools/ethos.js"
 import { resolveStackProfile } from "./lib/stackProfiles.js"
@@ -92,6 +93,19 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   const pkgPath = path.resolve(__dirname, "..", "package.json")
   const pkg = JSON.parse(await fs.readFile(pkgPath, "utf-8")) as { version: string }
 
+  // Process-start snapshot for bundle_status (round 4): dist/, package.json, and the
+  // stack profile override, which resolveStackProfile above read once. Failure to snapshot
+  // is reported by the tool as n/a, never fatal here.
+  let startupSnapshot: RuntimeSnapshot | { error: string }
+  try {
+    startupSnapshot = await captureRuntimeSnapshot({
+      packageRoot: path.resolve(__dirname, ".."),
+      extraFiles: [path.resolve(docsDir, "foreman-stack-profile.md")],
+    })
+  } catch (err) {
+    startupSnapshot = { error: (err as Error).message }
+  }
+
   // McpServer v2 installs and advertises capabilities as tools/resources are
   // registered. Avoid declaring empty capabilities up front: that would
   // install eager handlers and can advertise features that are not present.
@@ -110,7 +124,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     "bundle_status",
     {
       title: "Bundle Status",
-      description: "Reports the version this process is running versus the package.json on disk next to it (restart_recommended when they differ — compiled code cannot be reloaded; protocol Markdown is re-read on every activation), plus which skills are shadowed by a project or user override.",
+      description: "Reports the version this process is running versus the package.json on disk next to it, and restart_recommended true/false/n-a from comparing dist/, package.json, and the stack profile override against a snapshot taken at process start (compiled code cannot be reloaded; protocol Markdown is re-read on every activation), plus which skills are shadowed by a project or user override.",
       inputSchema: z.strictObject({}),
       outputSchema: TextOutputSchema,
       annotations: {
@@ -120,7 +134,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
     },
     async (_extra) => {
-      const text = await bundleStatus(pkg.version)
+      const text = await bundleStatus(pkg.version, startupSnapshot)
       return textResult(text)
     }
   )
@@ -326,13 +340,13 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "Writes an operation to the Foreman ledger file. Exact data shapes for every operation are in this tool's input schema (the description of the data field); a rejected call returns one hint per field plus the expected shape.",
         "",
         "Operations (phase required; unit_id where noted):",
-        "  set_unit_status (unit_id) — s:'delegated' needs a brief (≥20 chars) and a preflight attestation; a 4th delegation after 3 rejected attempts needs user_override.",
-        "  set_verdict (unit_id) — v:'pass' needs a prior delegation; on a phase scoped has_tests:false or has_build:false it also needs a ≥5-word attestation note. The first pass stamps first_pass_ts.",
-        "  add_rejection (unit_id) — on a 'pass' unit, reopens it to 'pending' (returned as a warning).",
+        "  set_unit_status (unit_id) — s:'delegated' needs a brief (≥20 chars) and a preflight attestation; s:'ip' with direct_fix records a pit-boss literal fix as an attempt. After 3 failed attempts since the last pass, another attempt needs user_override.",
+        "  set_verdict (unit_id) — v:'pass' needs a prior delegation, an attempt recorded after the latest rejection or fail (ATTEMPT REQUIRED), past the cap user_override (recorded as cap_override), and on a has_tests:false or has_build:false phase a ≥5-word attestation note. The first pass stamps first_pass_ts; v:'fail' counts as a failed attempt.",
+        "  add_rejection (unit_id) — counts a failed attempt; on a 'pass' unit, reopens it to 'pending' (returned as a warning).",
         "  declare_phase_units — additive declared id set (cap 200); retire needs a reason; frozen while the gate is 'pass'.",
         "  update_phase_gate — g:'pass' needs every unit passed, every declared id registered, a review recorded at or after the latest unit verdict, and none of those reviews with a 'confirmed' finding, a partial/failed completion, or zero findings without checked[]; user_override waives the review conditions and is recorded on the phase.",
         "  set_phase_scope — once per phase; hot_path or security_boundary make the gate require agent_class:'frontier'.",
-        "  record_review — 'line' is a string, severity lowercase; zero findings need checked[] or completion:'complete'; a 'confirmed' classification blocks the gate until resolved; stage:'cross_exam' never counts as an independent seat.",
+        "  record_review — every finding needs a classification; 'line' is a string, severity lowercase; zero findings need checked[] or completion:'complete'; a 'confirmed' classification blocks the gate until resolved; stage:'cross_exam' never counts as an independent seat. Limit: checked ≤50 entries of ≤200 chars.",
       ].join("\n"),
       inputSchema: z.strictObject({
         operation: z.enum(["set_unit_status", "set_verdict", "add_rejection", "declare_phase_units", "update_phase_gate", "set_phase_scope", "record_review"]),
@@ -482,6 +496,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "The event-code enum is anomaly-only by design: log failures, delays, and degraded tooling; never successes, worker spawns, or test passes. Host tooling that is broken or unusable (e.g. run_tests cannot spawn) is TOOL_ERR. There is no informational code.",
         "",
         "Exact data shapes for every operation are in this tool's input schema (the description of the data field); a rejected call returns one hint per field plus the expected shape.",
+        "Limit: log_event data.msg is at most 400 characters.",
       ].join("\n"),
       inputSchema: z.strictObject({
         operation: z.enum(["init_session", "log_event", "end_session"]),

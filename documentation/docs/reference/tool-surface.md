@@ -25,7 +25,7 @@ Where the shapes are. Hosts clip tool descriptions at about 2,000 characters, so
 | `read_ledger` | `query`: `verdicts`, `rejections`, `phase_gates`, `reviews`, `delegation_metrics`, `full`; `phase`, `unit_id`, `verdict`, `include_notes`, `cursor`, `limit` up to 100 | A paged table, or one unit, or the full JSON. `full` on a large ledger returns guidance instead of flooding the context |
 | `read_progress` | `last_n_completed` | The descriptive checklist |
 | `read_journal` | `last_n`, `rollup_only` | Sessions, or the rollup |
-| `bundle_status` | none | `running_version` versus `runtime_disk_version`, `restart_recommended` when they differ, and which skills are shadowed by a project or user override. Compiled code cannot be reloaded; protocol Markdown is re-read on every activation |
+| `bundle_status` | none | `running_version` versus `runtime_disk_version`; `restart_recommended` as `true` with what changed, `false`, or `n/a` with why, from comparing `dist/`, `package.json`, and the stack profile override against a snapshot taken at process start; and which skills are shadowed by a project or user override. Compiled code cannot be reloaded; protocol Markdown is re-read on every activation |
 | `host_status` | none | Active host profile and the model slugs it renders |
 | `changelog` | `since` | Bundled changelog entries |
 | `ethos` | `section` | The engineering document rendered with the active stack profile |

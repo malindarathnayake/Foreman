@@ -29,7 +29,7 @@ Seven checks before spawning: extract every symbol the brief names; grep `spec.m
 
 **Ledger:** `set_unit_status { s: "delegated", brief, tier, route_reason, preflight: { symbols_grepped, self_consistent: true, telemetry } }`.
 
-The server refuses this write without a brief of at least 20 characters (`DELEGATION REQUIRED`) or without the preflight object (`PREFLIGHT REQUIRED`). It stores the brief, the tier, and the attestation on the unit's `delegations[]` history, so they survive later re-delegations. It refuses a fourth delegation after three distinct rejected attempts (`DELEGATION CAP`) unless the write carries `user_override: true`, which is recorded on the delegation.
+The server refuses this write without a brief of at least 20 characters (`DELEGATION REQUIRED`) or without the preflight object (`PREFLIGHT REQUIRED`). It stores the brief, the tier, and the attestation on the unit's `delegations[]` history, so they survive later re-delegations. It refuses another attempt after three failed attempts since the unit last passed (`DELEGATION CAP`) unless the write carries `user_override: true`, which is recorded on the delegation. Each delegation is an attempt; so is a recorded direct fix.
 
 The attestation is exactly that. The server checks the shape, not whether the grep happened.
 
@@ -75,11 +75,11 @@ Then the six self-review gates:
 
 ## 7. Verdict
 
-**Ledger, accept:** `set_verdict { v: "pass", note? }`. Refused (`VERDICT BLOCKED`) unless a delegation with a brief was recorded first. On a phase whose scope declares `has_tests: false` or `has_build: false`, refused (`ATTESTATION REQUIRED`) unless `note` has at least five words and 32 characters describing how the unit was checked. The first pass stamps `first_pass_ts`, which later re-verdicts never change.
+**Ledger, accept:** `set_verdict { v: "pass", note? }`. Refused (`VERDICT BLOCKED`) unless a delegation with a brief was recorded first. Refused (`ATTEMPT REQUIRED`) when the unit was rejected or failed after its latest recorded attempt: the fix has to be recorded as a worker delegation or a direct fix before the pass. Refused (`DELEGATION CAP`) past three failed attempts unless the current attempt was recorded with `user_override` or the verdict carries it, in which case the waiver is recorded on the unit as `cap_override`. On a phase whose scope declares `has_tests: false` or `has_build: false`, refused (`ATTESTATION REQUIRED`) unless `note` has at least five words and 32 characters describing how the unit was checked. The first pass stamps `first_pass_ts`, which later re-verdicts never change. A pass resets the failed-attempt count to zero.
 
 Then `write_progress complete_unit`.
 
-**Ledger, reject:** `add_rejection { r, msg, ts }`, then `write_progress log_error`. If the unit had already passed, the rejection reopens it to `pending` and the write returns a warning saying so. The rejection is stamped with the delegation attempt it belongs to.
+**Ledger, reject:** `add_rejection { r, msg, ts }`, then `write_progress log_error`. If the unit had already passed, the rejection reopens it to `pending` and the write returns a warning saying so. The rejection is stamped with the attempt it belongs to and counts as a failed attempt; two rejections of one attempt count once. A `fail` verdict counts the same way. An `inconclusive` verdict counts nothing.
 
 ## 8. Fix loop
 
@@ -87,17 +87,18 @@ Inner loop, same worker: compile, import, and type errors, at most two self-fixe
 
 Outer loop, fresh worker, at most three attempts: the model writes a fix brief that quotes the rejection, the spec text, the exact files to touch and to leave alone, the previous attempts from the ledger, and the tier. Raising the tier is allowed only when the fix brief adds context or cites a reviewer diagnosis; a repeated failure on an unchanged brief means the brief is wrong, not the model too small.
 
-After three rejected attempts the model stops and escalates with the full rejection history.
+After three failed attempts since the unit last passed, the model stops and escalates with the full rejection history. The ledger holds that line: another attempt or a pass then needs `user_override`, so fixing off the record is not a way past it. A unit reopened by a checkpoint finding after a pass starts a fresh count, because the earlier series did converge.
 
-**Direct Fix.** The one case where the model edits product code itself under this protocol. All of these must hold: the unit's latest delegation was host-native, not `invoke_worker`; the change is an exact literal substitution the rejection already spelled out, such as a rename, a typo, an import path, a test name, or a constant the spec states verbatim; it touches only the unit's files; it adds no function, branch, or test; it does not touch authn, authz, secrets, telemetry names, public contracts, schemas, concurrency, or error semantics. Line count is not the boundary. The model applies it, runs the full validation and gates, and records `set_verdict { v: "pass", via: "pitboss-direct", note: "direct-fix: ..." }`. It counts as an outer-loop attempt.
+**Direct Fix.** The one case where the model edits product code itself under this protocol. All of these must hold: the unit's latest delegation was host-native, not `invoke_worker`; the change is an exact literal substitution the rejection already spelled out, such as a rename, a typo, an import path, a test name, or a constant the spec states verbatim; it touches only the unit's files; it adds no function, branch, or test; it does not touch authn, authz, secrets, telemetry names, public contracts, schemas, concurrency, or error semantics. Line count is not the boundary. The model records it first with `set_unit_status { s: "ip", direct_fix: "<file>: <substitution>" }`, applies it, runs the full validation and gates, and records `set_verdict { v: "pass", via: "pitboss-direct", note: "direct-fix: ..." }`. It counts as an outer-loop attempt, and the pass is refused without the record. The server refuses the record on a unit that has never been delegated (`DIRECT FIX BLOCKED`).
 
 ## Errors you will see
 
 ```text
 DELEGATION REQUIRED: set_unit_status with s:'delegated' requires a 'brief' field (min 20 chars) ...
 PREFLIGHT REQUIRED: set_unit_status with s:'delegated' requires data.preflight — the Brief Preflight Gate attestation: { symbols_grepped: ..., self_consistent: true, telemetry?: 'checked'|'n/a' } ...
-DELEGATION CAP: unit 'u3' has 3 distinct rejected attempts (cap 3). A 4th delegation requires data.user_override: true ...
+DELEGATION CAP: unit 'u3' has 3 failed attempts since its last pass (cap 3). A further delegation needs data.user_override: true ... A pass verdict is blocked the same way ...
 VERDICT BLOCKED: Cannot set verdict 'pass' without prior delegation. Unit must go through: set_unit_status(s:'ip') → set_unit_status(s:'delegated', brief:'...') → set_verdict(v:'pass') ...
+ATTEMPT REQUIRED: unit 'u3' was rejected or failed after its latest recorded attempt #2. Record the fix attempt first — set_unit_status s:'delegated' (fresh worker) or s:'ip' with data.direct_fix (literal substitution) — then set_verdict ...
 ATTESTATION REQUIRED: phase 'p4' declares scope has_tests:false. set_verdict(v:'pass') must include a non-empty 'note' ...
 SCHEMA ERROR — write_ledger set_verdict rejected (1 issue):
   data.via: Invalid option: expected one of "worker"|"pitboss-direct"|"n/a"

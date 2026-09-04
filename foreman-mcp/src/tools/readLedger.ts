@@ -88,7 +88,11 @@ export async function handleReadLedger(filePath: string, input: ReadLedgerInput)
       note: unit.note ?? "n/a",
       worker: unit.w ?? "none",
       delegations: String(unit.delegations?.length ?? 0),
+      direct_fixes: String(unit.direct_fixes?.length ?? 0),
       rejections: String(unit.rej.length),
+      attempts: String(unit.attempt_seq ?? unit.delegations?.length ?? 0),
+      failed_since_pass: unit.epoch_failed === undefined ? "n/a" : String(unit.epoch_failed),
+      needs_attempt: unit.needs_attempt ? "true" : "false",
     }), "unit", input.phase)
   }
 
