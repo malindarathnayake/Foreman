@@ -62,7 +62,6 @@ Six capabilities, each rated READY / DECLARED / EXPERIMENTAL. READY means the be
 - **Do not use when:** single-seat sequential work on one tree (isolation is then a no-op).
 - **NOT-claims:**
   - "For host-native seats, the Foreman capability layer validates isolation declarations; the host creates and destroys their worktrees."
-  - "`aider_worker` is the exception: that MCP tool creates and tears down its own isolated detached worktree."
   - "Foreman does not intercept a host-native agent's Git commands. The host/brief MUST deny Git mutations (`stash`, `reset`, `checkout`, `switch`, `clean`, staging, commits, ref/index/stash changes), and the pitboss MUST compare branch/HEAD/stash/index/dirty-path state before running tests. A mismatch is a hard stop; Foreman never performs automatic recovery."
 - **Smoke:** seat-declaration shape validation (contract, from P3 onward).
 

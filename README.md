@@ -143,7 +143,7 @@ Everything lands under `Docs/` in your repo.
 | `.foreman-ledger.json` | write_ledger only | Unit status, verdicts, delegation history, rejections, reviews, gates. Read by `session_orient` and the phase gate |
 | `.foreman-progress.json` | write_progress | The data behind the checklist. Descriptive only |
 | `.foreman-journal.json` | write_journal | Friction log: failures, retries, delays, overrides |
-| `.foreman-events.jsonl` | invoke_worker, aider_worker | Hash-chained event log; only when those tools are used |
+| `.foreman-events.jsonl` | invoke_worker | Hash-chained event log; only when that tool is used |
 
 Commit them or ignore them; both work. Tracked state lets another person resume from the ledger. The spec generator runs `git check-ignore` on these paths and records the result in `handoff.md` as `state_tracking_policy`.
 
@@ -159,7 +159,7 @@ Every unit is a brief, a worker run, a file inspection, a test run, and a verdic
 <details>
 <summary><b>What can leave your machine</b></summary>
 
-Reviews spawn the Codex, Gemini, or Claude CLI as child processes; each uses its own provider login. Two experimental tools, `invoke_worker` and `aider_worker`, send a brief and file excerpts to an endpoint you configure. Optional Langfuse tracing sends review metadata. Nothing else makes a network call. Read [SECURITY.md](SECURITY.md) and [Security](https://malindarathnayake.github.io/Foreman/reference/privacy-and-security) before enabling the worker tools.
+Reviews spawn the Codex, Gemini, or Claude CLI as child processes; each uses its own provider login. One experimental tool, `invoke_worker`, sends a brief and file excerpts to an endpoint you configure. Optional Langfuse tracing sends review metadata. Nothing else makes a network call. Read [SECURITY.md](SECURITY.md) and [Security](https://malindarathnayake.github.io/Foreman/reference/privacy-and-security) before enabling it.
 
 </details>
 
@@ -174,7 +174,7 @@ Full docs: [malindarathnayake.github.io/Foreman](https://malindarathnayake.githu
 
 ## Project
 
-**Current release:** `v0.6.2` | **Package:** `@malindarathnayake/foreman-mcp` | **Runtime:** Node.js `>=22`
+**Current release:** `v0.6.3` | **Package:** `@malindarathnayake/foreman-mcp` | **Runtime:** Node.js `>=22`
 
 - [Changelog](CHANGELOG.md)
 - [Security policy](SECURITY.md)

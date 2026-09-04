@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.3 - 2026-09-04
+
+Surface reduction, validated by an adversarial Codex pass before any cut (it rejected six of eight proposed trims; only the two below survived, plus the owner's rulings).
+
+- **`aider_worker` removed.** The tool, its detached-worktree library, the Python harness, and their tests are gone; the failure taxonomy shrinks from 21 to 17 active stages. Sidecars written before 0.6.3 still read: the four aider-era stages are kept in a read-only legacy set so their historical refunded classification does not change. `.foremanenv` no longer accepts `aider-cli` as a worker kind, nor the `FOREMAN_NUM_CTX_*`, `FOREMAN_MAX_REFLECTIONS_*`, and `FOREMAN_REASONING_TAG_*` keys. Default tool count is 26 (27 under Codex).
+- **The tarball ships only what the runtime reads.** `package.json` now carries a `files` whitelist: `dist/`, `src/skills/`, `HOST-CONTRACT.md`, the package README and LICENSE, and the bundled dependencies. `bench/`, `scripts/`, `tests/`, TypeScript sources, the `src/docs` and `src/preview` duplicates, the vendor tree, declarations, and source maps no longer ship. The build cleans `dist/` first so a removed module cannot keep shipping as stale output. A test pins the packed manifest.
+- **Publish smoke gate extended.** Beyond `tools/list`, the installed package must activate a protocol from `src/skills`, serve the ethos document from `dist/docs`, contain exactly the runtime file set, and resolve its skills dir under `--diag`.
+- **Journal codes trimmed to 15.** Twelve codes no protocol text or code path ever emitted, plus `CAP_WAIVER` (aider-only), are gone. Journals written earlier still parse.
+- **Council regression.** A loopback test proves a configured `invoke_council` seat authenticates, streams, parses, and prints a `record_review` payload, so shared worker code can change without silently breaking the council.
+- Bumped package to `0.6.3`.
+
 ## 0.6.2 - 2026-09-04
 
 Documentation rewrite, two gate rules that closed holes the docs review exposed, and field-feedback round 3 (six items from a third Fable 5.1 pit-boss run, triaged by a fork subagent and validated by an adversarial Codex pass).

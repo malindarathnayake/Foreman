@@ -13,7 +13,7 @@ description: Build, test, and package Foreman the same way CI and the release wo
 git clone https://github.com/malindarathnayake/Foreman.git
 cd Foreman/foreman-mcp
 npm ci
-npm run build              # tsc, then copies preview assets, docs, and the aider harness into dist/
+npm run build              # cleans dist/, runs tsc, then copies preview assets and docs into dist/
 npm test                   # vitest, 44 files, about a minute
 npx tsc --noEmit           # types only
 node scripts/publish-smoke.mjs
@@ -38,7 +38,7 @@ foreman-mcp/src/lib/            ledger validation, journal, progress, redaction,
 foreman-mcp/src/skills/         the six procedures plus _common-protocol.md and _assists.md
 foreman-mcp/src/docs/           the ethos document
 foreman-mcp/tests/              vitest; integration tests start the server in-process over an in-memory transport
-foreman-mcp/scripts/            publish-smoke.mjs, copy-assets.mjs, aider_harness.py
+foreman-mcp/scripts/            clean-dist.mjs, copy-assets.mjs, publish-smoke.mjs (not shipped)
 foreman-mcp/HOST-CONTRACT.md    ships in the tarball
 ```
 

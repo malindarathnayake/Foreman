@@ -46,7 +46,7 @@ In this order, so an earlier problem is reported before a later one:
 | The phase has no units | `PHASE GATE BLOCKED: phase 'p2' has no units recorded` | none |
 | A unit's verdict is not `pass` | `PHASE GATE BLOCKED: phase 'p2' has units without a pass verdict: u5` | none; `inconclusive` units are named separately as re-run guidance |
 | Phase scope is `hot_path` or `security_boundary` and the write does not declare `agent_class: "frontier"` | `SEAT MINIMUM: ...` | `user_override: true` |
-| A unit passed in the ledger but its latest `invoke_worker` or `aider_worker` sidecar chain ended in a failure or never ended | `DISCIPLINE ADHERENCE: ...` | `user_override: true`, recorded in `discipline_overrides` |
+| A unit passed in the ledger but its latest `invoke_worker` sidecar chain ended in a failure or never ended | `DISCIPLINE ADHERENCE: ...` | `user_override: true`, recorded in `discipline_overrides` |
 | No review was recorded at or after the phase's latest unit verdict | `REVIEW REQUIRED: ...` (names how many older reviews exist) | `user_override: true`, recorded as `review_override` |
 | A review recorded since the latest verdict carries a finding classified `confirmed` | `CONFIRMED FINDINGS: phase 'p2' has 1 confirmed review finding(s) ... codex: src/a.ts:42 null deref ...` | `user_override: true`, recorded as `confirmed_override` with the count |
 | A review recorded since the latest verdict is `completion: partial` or `failed`, or has zero findings with no `checked` list and no `completion: complete` | `INCOMPLETE REVIEW: phase 'p2' has 1 review(s) ... gemini: zero findings with no examined list` | `user_override: true`, recorded as `incomplete_override` with the count |

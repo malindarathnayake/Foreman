@@ -1522,7 +1522,7 @@ describe("ledger P5 discipline-adherence gate", () => {
     ])
   })
 
-  it("refunded terminal (e.g. WORKER_AIDER_EXIT) is a contradiction under strict reconciliation — blocks without override, passes with override", async () => {
+  it("refunded terminal (e.g. WORKER_TIMEOUT) is a contradiction under strict reconciliation — blocks without override, passes with override", async () => {
     await seedPassingUnit()
     const sidecarPath = sidecarPathFor()
     await appendEvent(
@@ -1536,7 +1536,7 @@ describe("ledger P5 discipline-adherence gate", () => {
         delegation_id: "del1",
         event_type: "worker_completed",
         outcome: "fail",
-        failure_stage: "WORKER_AIDER_EXIT",
+        failure_stage: "WORKER_TIMEOUT",
       })
     )
 

@@ -97,8 +97,8 @@ Call Foreman's host_status, bundle_status, and session_orient tools and report a
 
 | Host | Compression on (default) | `FOREMAN_COMPRESSION=0` |
 |---|---|---|
-| Claude Code, Cursor, generic | 27 | 26 |
-| Codex | 28 | 27 |
+| Claude Code, Cursor, generic | 26 | 25 |
+| Codex | 27 | 26 |
 
 The difference is `retrieve_original`, registered only when output compression is on, and `codex_agents_init`, registered only under the Codex profile.
 

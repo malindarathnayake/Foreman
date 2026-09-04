@@ -8,7 +8,7 @@ description: An MCP server that gives Claude Code, Cursor, or Codex a spec-to-im
 
 # What Foreman is
 
-Foreman is an MCP server. It exposes 27 tools to Claude Code, Cursor, and Codex: six protocol tools that return a working procedure to the model, and the state, test, worker, and review tools that procedure tells the model to call. Project state lives in `Docs/.foreman-ledger.json` inside your repo. The server validates every write to that file and refuses the ones that skip a step.
+Foreman is an MCP server. It exposes 26 tools to Claude Code, Cursor, and Codex: six protocol tools that return a working procedure to the model, and the state, test, worker, and review tools that procedure tells the model to call. Project state lives in `Docs/.foreman-ledger.json` inside your repo. The server validates every write to that file and refuses the ones that skip a step.
 
 ## Who does what
 

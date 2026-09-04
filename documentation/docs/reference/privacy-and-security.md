@@ -17,7 +17,6 @@ Foreman has no telemetry service of its own. Whether anything leaves your machin
 | `invoke_advisor` | The review prompt: spec excerpts, diffs, file excerpts the model pasted | The Codex, Gemini, or Claude CLI, then that provider, with that CLI's login | When a CLI is installed and the procedure reviews a phase |
 | `capability_check` | Nothing about the repo; runs the CLI's version and health commands | Local, then whatever the CLI's health command contacts | Same |
 | `invoke_worker` | The brief and the full contents of the listed files | The endpoint in `.foremanenv` | No; needs `.foremanenv` |
-| `aider_worker` | The brief and the files Aider reads | The model endpoint configured for that tier | No; needs `.foremanenv` and Aider |
 | `invoke_council` | One evidence packet per seat: diffs, spec excerpts | The seats' endpoints | No; needs seat configuration |
 | Langfuse tracing | Review metadata: seat, model, tokens, cost; prompt and finding text only when `FOREMAN_LANGFUSE_CONTENT` allows | Your Langfuse endpoint | No; needs the URL and keys |
 | `preview_diagram` | A Mermaid diagram | A listener on `127.0.0.1` only | Only while a preview is open |
@@ -36,7 +35,7 @@ A secret that lives only in a file, and not in the environment, is not harvested
 
 ## `.foremanenv`
 
-Must be ignored and untracked. `invoke_worker` and `aider_worker` both refuse to run otherwise, and say which condition failed. The file names the key's environment variable; it never holds the key.
+Must be ignored and untracked. `invoke_worker` and `invoke_council` refuse to run otherwise, and say which condition failed. The file names the key's environment variable; it never holds the key.
 
 ## External worker protections
 
@@ -44,7 +43,6 @@ Must be ignored and untracked. `invoke_worker` and `aider_worker` both refuse to
 - **Protected paths.** A patch that targets `.foreman-*` state, the docs directory, or a path outside the repo fails with `PATCH_PROTECTED_PATH_FAIL` before it is returned.
 - **Redaction markers.** A patch containing a redaction marker fails with `PATCH_REDACTION_MARKER_FAIL`.
 - **Payload and response caps.** Briefs, file payloads, and responses are size-bounded; over-cap calls fail before sending or discard the response.
-- **Dirty tree.** `aider_worker` refuses untracked or modified delegated files and never runs `git stash`; the refusal tells you to commit or stash yourself.
 - **Sidecar chain.** Every external delegation writes a hash-chained event log that the phase gate reconciles against the ledger. A chain that ends in failure blocks a pass verdict on that unit.
 
 ## Host-native workers

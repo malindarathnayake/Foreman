@@ -17,7 +17,6 @@ import { handleWriteLedger } from "./tools/writeLedger.js"
 import { handleWriteProgress } from "./tools/writeProgress.js"
 import { handleInvokeWorker } from "./tools/invokeWorker.js"
 import { handleInvokeCouncil } from "./tools/invokeCouncil.js"
-import { handleAiderWorker } from "./tools/aiderWorker.js"
 import { LENS_IDS, LENS_CATALOG } from "./lib/lensCatalog.js"
 import { normalizeReview } from "./tools/normalizeReview.js"
 import { verifyCitations } from "./tools/verifyCitations.js"
@@ -433,45 +432,6 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const text = await handleInvokeCouncil(args, { journalPath })
-      return textResult(text)
-    }
-  )
-
-  server.registerTool(
-    "aider_worker",
-    {
-      title: "Invoke Aider Patch Worker (EXPERIMENTAL)",
-      description: [
-        "EXPERIMENTAL. Delegates a single patch task to the local aider CLI, driven through an",
-        "external harness inside an ISOLATED, throwaway git worktree at the requested cost tier.",
-        "APPLY MODEL: aider edits the worktree; Foreman computes the git diff ITSELF and returns it",
-        "VERBATIM between -----BEGIN FOREMAN PATCH----- / -----END FOREMAN PATCH----- sentinels together",
-        "with base_file_hashes for a content-addressed staleness check — the HOST applies the patch,",
-        "never Foreman, and the worktree is torn down on every exit path. Requires the editable set to be",
-        "tracked and clean (dirty tree is refused). An outbound secret gate blocks the delegation if any",
-        "configured secret value appears in the brief or files. Every outcome is classified into a closed",
-        "failure-stage taxonomy and recorded in the hash-chained event sidecar. Requires the unit to already",
-        "be recorded as s:'delegated' in the ledger (aider_worker never writes the ledger).",
-      ].join(" "),
-      inputSchema: z.strictObject({
-        phase: z.string().min(1),
-        unit_id: z.string().min(1),
-        brief: z.string().min(20),
-        tier: z.enum(["cheap", "standard", "premium"]),
-        files: z.array(z.string().min(1)).min(1),
-        read_only_files: z.array(z.string().min(1)).optional(),
-        edit_format: z.enum(["whole_file", "search_replace", "unified_diff"]).optional(),
-      }),
-      outputSchema: TextOutputSchema,
-      annotations: {
-        title: "Invoke Aider Patch Worker (EXPERIMENTAL)",
-        readOnlyHint: false,
-        destructiveHint: false,
-        openWorldHint: true,
-      },
-    },
-    async (args, _extra) => {
-      const text = await handleAiderWorker(args, { docsDir, ledgerPath, journalPath })
       return textResult(text)
     }
   )

@@ -6,6 +6,7 @@
 import {
   readEvents,
   REFUNDED_STAGES,
+  LEGACY_REFUNDED_STAGES,
   type SidecarEvent,
   type FailureStage,
   type Tier,
@@ -19,7 +20,9 @@ import type { LedgerFile } from "../types.js"
 // scorecard denominator (an infra fault must never pollute the model's tier scorecard).
 // Canonical home is eventsSidecar.ts's REFUNDED_STAGES — imported here so the refund
 // partition can never drift across files.
-const PRESEND_CODES = REFUNDED_STAGES
+// Union with the read-only legacy set: sidecars written before 0.6.3 carry the four
+// aider-only stages, which were refunded when written and must stay refunded on read.
+const PRESEND_CODES: ReadonlySet<string> = new Set<string>([...REFUNDED_STAGES, ...LEGACY_REFUNDED_STAGES])
 
 const STAGE0_CODES = new Set<FailureStage>(["WORKER_GHOST", "WORKER_RESPONSE_TOO_LARGE", "MODEL_SCHEMA_FAIL"])
 

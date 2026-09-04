@@ -36,7 +36,7 @@ Log only failures and delays. Do NOT log successes, worker spawns, or test passe
 | W_REJ | Pit-boss rejects worker output |
 | W_FAIL | Worker crashes or times out |
 | W_RETRY | 2nd/3rd outer-loop fix attempt |
-| GATE_FIX | Gate G1–G5 fails, requires fix |
+| GATE_FIX | Gate G1–G6 fails, requires fix |
 | CX_ERR | Advisor CLI error |
 | SPEC_AMB | Stopped — spec ambiguity, asking user |
 | SPEC_GAP | Spec gap resolved by pit-boss decision — recorded in PROGRESS Decisions (owner-overrulable), run continued |
@@ -175,7 +175,7 @@ mcp__foreman__write_progress({ operation: "log_error", data: { date, unit, what_
 
 After 3 outer-loop failures: STOP. Escalate to user with full rejection history from ledger.
 
-**Direct Fix (pit-boss applies, no worker) — ALL must hold:** the unit already has a delegation and its latest delegation was host-native (units delegated through `invoke_worker`/`aider_worker` are sidecar-tracked and ineligible); the change is an exact literal substitution the rejection already spelled out — identifier rename, typo in a string/comment, import path, test name/message, or a constant the spec states verbatim; it touches only files in the unit's brief; it adds no function, branch, or test; it does not touch authn/authz, secrets, telemetry names, public contracts/schemas, concurrency, or error-handling semantics. Line count is not the boundary — `&&`→`||` on an auth check is one line and ineligible. Procedure: `add_rejection` as normal → apply the substitution → full Step 6 + G1–G6 → `set_verdict({ v: "pass", via: "pitboss-direct", note: "direct-fix: <file> <what> (+N/-M)" })`. A direct fix is an outer-loop attempt (counts toward 3). Anything outside the list → fresh worker.
+**Direct Fix (pit-boss applies, no worker) — ALL must hold:** the unit already has a delegation and its latest delegation was host-native (units delegated through `invoke_worker` are sidecar-tracked and ineligible); the change is an exact literal substitution the rejection already spelled out — identifier rename, typo in a string/comment, import path, test name/message, or a constant the spec states verbatim; it touches only files in the unit's brief; it adds no function, branch, or test; it does not touch authn/authz, secrets, telemetry names, public contracts/schemas, concurrency, or error-handling semantics. Line count is not the boundary — `&&`→`||` on an auth check is one line and ineligible. Procedure: `add_rejection` as normal → apply the substitution → full Step 6 + G1–G6 → `set_verdict({ v: "pass", via: "pitboss-direct", note: "direct-fix: <file> <what> (+N/-M)" })`. A direct fix is an outer-loop attempt (counts toward 3). Anything outside the list → fresh worker.
 
 ### Repeated Checkpoint Blocks
 

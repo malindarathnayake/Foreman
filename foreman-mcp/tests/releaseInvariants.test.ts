@@ -97,6 +97,7 @@ describe("packed manifest", () => {
       ["tsconfig", /^tsconfig/],
       ["vitest config", /^vitest\.config/],
       ["python bytecode", /\.pyc$|__pycache__/],
+      ["aider remnants (removed in 0.6.3)", /aider/i],
     ]
     for (const [label, re] of forbidden) {
       const hits = own.filter((p) => re.test(p))

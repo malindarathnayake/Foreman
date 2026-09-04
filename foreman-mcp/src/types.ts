@@ -438,22 +438,18 @@ export interface JournalFile {
 
 // ─── Journal Zod Schemas ────────────────────────────────────────────────────
 
+// Anomaly-only, and only codes something actually emits: the implementor's friction table
+// (11), TOOL_ERR from the write_journal description, SEC_BLOCK from the .foremanenv loader,
+// EGRESS_NOTICE from the worker and council tools, and ED_STALE for a stale patch base.
+// 0.6.3 removed twelve codes no protocol text or code path ever emitted, plus CAP_WAIVER
+// (aider-only). Journals written earlier still parse: readJournal does not revalidate.
 export const JournalEventCode = z.enum([
-  "W_FAIL", "W_REJ", "W_RETRY", "W_DRIFT",
-  "CX_ERR", "CX_FP",
-  "ED_FAIL", "ED_STALE",
-  "T_FLAKE", "T_INFRA",
-  "BLD_ERR", "CTX_OVF", "CTX_COMP",
-  "SPEC_AMB", "GATE_FIX", "TOOL_ERR",
-  "USR_INT", "MODEL_DEG", "PERM_DENY",
-  "HOOK_BLOCK", "DEP_MISS", "SCHEMA_DRIFT", "MERGE_CONF",
-  "SEC_BLOCK", "EGRESS_NOTICE", "CAP_WAIVER",
-  // v0.6.1 (field feedback 2026-09 round 2): both are anomalies, not information.
-  // SPEC_GAP — a spec gap resolved by pit-boss decision (recorded, owner-overrulable) and
-  //   the run CONTINUED; SPEC_AMB stays "stopped, asking the user".
-  // GATE_OVERRIDE — the user forced past a phase checkpoint (--force-continue); the same
-  //   journal session continues, the `gate` field names the phase.
-  "SPEC_GAP", "GATE_OVERRIDE",
+  "W_FAIL", "W_REJ", "W_RETRY",
+  "CX_ERR", "ED_STALE",
+  "T_FLAKE", "BLD_ERR",
+  "SPEC_AMB", "SPEC_GAP", "GATE_FIX", "GATE_OVERRIDE",
+  "TOOL_ERR", "USR_INT",
+  "SEC_BLOCK", "EGRESS_NOTICE",
 ])
 
 const InitSessionData = z.object({

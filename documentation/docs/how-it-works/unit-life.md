@@ -45,11 +45,10 @@ Which worker depends on the host:
 | Cursor | `Task` tool, `generalPurpose`, brief only | The worker edits the shared tree directly |
 | Codex | `spawn_agent` subagent, brief only | The worker edits the shared tree directly |
 | Any host, `invoke_worker` (experimental) | The brief and selected file excerpts go to an OpenAI-compatible endpoint configured in `.foremanenv`; a checked patch comes back | The model applies the patch after a base-file hash check |
-| Any host, `aider_worker` (experimental) | Aider runs in a detached git worktree at a pinned base commit; the bounded diff comes back | The model applies the diff after the same hash check |
 
 Editing workers run one at a time on the shared tree. Parallel editing is allowed only when each worker has an isolated worktree, their file sets are disjoint, each returns its full `git diff`, and the model applies those diffs serially with a verdict per unit. Read-only explorer workers may run in parallel.
 
-Line endings matter for worktrees. On a repo with `core.autocrlf=true` and no `.gitattributes` eol rule, a fresh worktree checks out CRLF while the index is LF, and every formatter in that tree reports noise. The procedure has the model check `core.autocrlf` and `git ls-files --eol` first, serialize on the shared tree when the repo cannot normalize itself, create worktrees with `git -c core.autocrlf=false worktree add`, and run `git apply --check` before applying a returned diff. `aider_worker` creates its worktree that way itself.
+Line endings matter for worktrees. On a repo with `core.autocrlf=true` and no `.gitattributes` eol rule, a fresh worktree checks out CRLF while the index is LF, and every formatter in that tree reports noise. The procedure has the model check `core.autocrlf` and `git ls-files --eol` first, serialize on the shared tree when the repo cannot normalize itself, create worktrees with `git -c core.autocrlf=false worktree add`, and run `git apply --check` before applying a returned diff.
 
 ## 6. Validate
 
@@ -90,7 +89,7 @@ Outer loop, fresh worker, at most three attempts: the model writes a fix brief t
 
 After three rejected attempts the model stops and escalates with the full rejection history.
 
-**Direct Fix.** The one case where the model edits product code itself under this protocol. All of these must hold: the unit's latest delegation was host-native, not `invoke_worker` or `aider_worker`; the change is an exact literal substitution the rejection already spelled out, such as a rename, a typo, an import path, a test name, or a constant the spec states verbatim; it touches only the unit's files; it adds no function, branch, or test; it does not touch authn, authz, secrets, telemetry names, public contracts, schemas, concurrency, or error semantics. Line count is not the boundary. The model applies it, runs the full validation and gates, and records `set_verdict { v: "pass", via: "pitboss-direct", note: "direct-fix: ..." }`. It counts as an outer-loop attempt.
+**Direct Fix.** The one case where the model edits product code itself under this protocol. All of these must hold: the unit's latest delegation was host-native, not `invoke_worker`; the change is an exact literal substitution the rejection already spelled out, such as a rename, a typo, an import path, a test name, or a constant the spec states verbatim; it touches only the unit's files; it adds no function, branch, or test; it does not touch authn, authz, secrets, telemetry names, public contracts, schemas, concurrency, or error semantics. Line count is not the boundary. The model applies it, runs the full validation and gates, and records `set_verdict { v: "pass", via: "pitboss-direct", note: "direct-fix: ..." }`. It counts as an outer-loop attempt.
 
 ## Errors you will see
 
@@ -105,4 +104,4 @@ SCHEMA ERROR — write_ledger set_verdict rejected (1 issue):
 Expected data shape: { v: 'pass'|'fail'|'pending'|'inconclusive', via?: 'worker'|'pitboss-direct'|'n/a', note?: string (≤10000 chars) }
 ```
 
-For `invoke_worker` and `aider_worker` there is a separate 21-stage failure taxonomy (`WORKER_TIMEOUT`, `PATCH_PROTECTED_PATH_FAIL`, `ED_STALE`, and so on). Each failure result carries a `hint:` line from a fixed playbook telling the model what to do before re-delegating. The full catalog is in `HOST-CONTRACT.md` in the package.
+For `invoke_worker` there is a separate 17-stage failure taxonomy (`WORKER_TIMEOUT`, `PATCH_PROTECTED_PATH_FAIL`, `ED_STALE`, and so on). Each failure result carries a `hint:` line from a fixed playbook telling the model what to do before re-delegating. The full catalog is in `HOST-CONTRACT.md` in the package.

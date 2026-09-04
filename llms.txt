@@ -16,7 +16,7 @@ first tool call.
 
 ## 1. Public tool surface (contract)
 
-Tool count: 27
+Tool count: 26
 
 - bundle_status — Returns the Foreman bundle version and override info.
 - host_status — Returns the active Foreman host and the model slugs used for worker/advisor invocation.
@@ -30,7 +30,6 @@ Tool count: 27
 - write_ledger — Writes an operation to the Foreman ledger (unit status, verdicts, rejections, phase gates, scope, durable reviews).
 - invoke_worker — EXPERIMENTAL (egress: sends briefs + file excerpts to your configured HTTP endpoint). Delegates a single patch task to the remote OpenAI-compatible endpoint configured in `.foremanenv`; returns a shape-checked, verbatim patch for the host to apply.
 - invoke_council — EXPERIMENTAL (egress: sends the review evidence packet to your configured HTTP endpoint). Convenes an adaptive review council of remote read-only seats across risk lenses, returns structured findings for the host to moderate and the user to arbitrate. Entirely optional: with no seats configured it returns `status: unavailable` and Foreman proceeds on its normal advisor flow.
-- aider_worker — EXPERIMENTAL (local aider CLI in an isolated git worktree). Drives aider to edit a throwaway worktree, computes the git diff itself, and returns a shape-checked verbatim patch + base_file_hashes for the host to apply; never applies, never writes the ledger.
 - write_progress — Writes an operation to the Foreman progress file.
 - write_journal — Writes to the Foreman session journal (init_session / log_event / end_session).
 - normalize_review — Normalizes raw review text into structured findings.

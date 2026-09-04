@@ -22,7 +22,7 @@ Two statuses matter and they are not the same. **Profile rendered** means the pr
 - **Editing concurrency.** Under every profile, editing workers run one at a time unless each has a proven isolated worktree or sandbox. Claude Code's profile spells out the parallel procedure: `isolation: "worktree"`, disjoint file sets, full `git diff` in each report, serial application with a verdict per unit. Codex explorers, which are read-only, may run in parallel up to `agents.max_threads`.
 - **Reviewer seats.** Reviews are cross-vendor by design, so the host's own vendor is never a reviewer. Claude Code reviews with Codex and Gemini; Codex reviews with Claude and Gemini.
 - **Autonomy.** Cursor declares no autonomy capability, so phase progression stays interactive there. Claude Code and Codex profiles carry an autonomy clause; the generic profile fails closed and points at the contract.
-- **Tool count.** 27 by default, 28 under Codex, one fewer each with compression off.
+- **Tool count.** 26 by default, 27 under Codex, one fewer each with compression off.
 
 ## Resolution and fallback
 

@@ -32,15 +32,3 @@ for (const f of ["engineering-ethos.md"]) {
 }
 console.log(`[copy-assets] copied docs assets -> ${path.relative(process.cwd(), docsDestDir)}`)
 
-// Ship the external aider harness next to the compiled tool: aiderWorker.js resolves
-// the default harness path as path.join(__dirname, "aider_harness.py"), and __dirname
-// is dist/tools at runtime (tsc outDir: dist, rootDir: src).
-const harnessSrc = path.resolve(__dirname, "..", "scripts", "aider_harness.py")
-const toolsDestDir = path.resolve(__dirname, "..", "dist", "tools")
-
-await mkdir(toolsDestDir, { recursive: true })
-await cp(harnessSrc, path.join(toolsDestDir, "aider_harness.py"))
-
-// Sanity: confirm the harness landed.
-await access(path.join(toolsDestDir, "aider_harness.py"))
-console.log(`[copy-assets] copied aider harness -> ${path.relative(process.cwd(), path.join(toolsDestDir, "aider_harness.py"))}`)

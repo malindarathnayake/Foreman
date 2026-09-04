@@ -21,12 +21,12 @@ All paths are relative to the working directory the host started the server in. 
 | `Docs/.foreman-ledger.json` | first `write_ledger` | `write_ledger` only | `session_orient`, `read_ledger`, the phase gate, `write_progress` |
 | `Docs/.foreman-progress.json` | first `write_progress` | `write_progress` | `read_progress`, `session_orient` for drift |
 | `Docs/.foreman-journal.json` | first `write_journal` | `write_journal` | `read_journal` |
-| `Docs/.foreman-events.jsonl` | first `invoke_worker` or `aider_worker` call | those tools and the `write_ledger` hook that closes their chains | the phase gate, `read_ledger delegation_metrics` |
+| `Docs/.foreman-events.jsonl` | first `invoke_worker` call | that tool and the `write_ledger` hook that closes its chains | the phase gate, `read_ledger delegation_metrics` |
 | `Docs/diagrams/*.mmd` | `preview_diagram` is used | the model | `preview_diagram` |
 | `Docs/lighttask.md` | `lighttask` is used | the model | you |
 | `Docs/foreman-stack-profile.md` | you create it | you | the `ethos` tool |
 | `.codex/agents/*.toml`, `.codex/config.toml` | `codex_agents_init` on the Codex host, only if absent | that tool | Codex |
-| `.foremanenv` | you create it to configure `invoke_worker` or `aider_worker` | you | those tools |
+| `.foremanenv` | you create it to configure `invoke_worker` or a review council | you | those tools |
 
 Do not edit the `.foreman-*` files by hand. The ledger's invariants are checked on write, and the next tool write overwrites a hand edit anyway.
 
@@ -46,7 +46,7 @@ Verdict timestamps drive two different answers. `latest_pass_verdict_unit` is th
 
 ## Journal
 
-Per session: id, timestamp, branch, phase, units, environment (host, worker, reviewer probe results, declared capability classes), events, and an end-of-session summary with units passed and rejected, workers spawned and wasted, tokens wasted, delay, blockers, and a friction score. Events are anomaly-only, 28 codes: worker failures and rejections, advisor errors, test flakes, build errors, context overflow, spec ambiguity stops, spec gaps decided and continued, gate fixes, tool errors, user interrupts and gate overrides, and so on. After five sessions the file carries a rollup: average friction, top events, total tokens wasted, worst and best unit patterns. `read_journal { rollup_only: true }` returns just that.
+Per session: id, timestamp, branch, phase, units, environment (host, worker, reviewer probe results, declared capability classes), events, and an end-of-session summary with units passed and rejected, workers spawned and wasted, tokens wasted, delay, blockers, and a friction score. Events are anomaly-only, 15 codes: worker failures and rejections, advisor errors, test flakes, build errors, context overflow, spec ambiguity stops, spec gaps decided and continued, gate fixes, tool errors, user interrupts and gate overrides, and so on. After five sessions the file carries a rollup: average friction, top events, total tokens wasted, worst and best unit patterns. `read_journal { rollup_only: true }` returns just that.
 
 ## Events
 
