@@ -5,6 +5,9 @@ import {
 } from "../lib/externalCli.js"
 import type { AdvisorCli } from "../lib/advisorCli.js"
 
+/** Gemini seat model, shared with capability_check so the probe exercises the same model the review uses. */
+export const GEMINI_ADVISOR_MODEL = "gemini-3.8-flash"
+
 const ADVISOR_CONFIGS: Record<AdvisorCli, { buildArgs: () => string[] }> = {
   claude: {
     buildArgs: () => [
@@ -27,8 +30,13 @@ const ADVISOR_CONFIGS: Record<AdvisorCli, { buildArgs: () => string[] }> = {
     ],
   },
   gemini: {
+    // The model id is passed directly (0.6.6). The earlier `arch-review` was a custom alias
+    // that existed only in one machine's ~/.gemini/settings.json; on any other machine the
+    // seat could not resolve it. gemini-3.8-flash was verified through the CLI before the
+    // change: it answers, and an unknown id fails with ModelNotFoundError rather than falling
+    // back silently. `-p ""` is appended to the prompt on stdin (gemini --help, 0.57).
     buildArgs: () => [
-      "-p", "", "-m", "arch-review",
+      "-p", "", "-m", GEMINI_ADVISOR_MODEL,
       "--approval-mode", "plan", "--output-format", "text"
     ],
   },

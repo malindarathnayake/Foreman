@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.6 - 2026-09-04
+
+- **The Gemini advisor seat runs `gemini-3.8-flash`.** `invoke_advisor` and `capability_check` pass the model id directly instead of `arch-review`, an alias that existed only in one machine's `~/.gemini/settings.json` (mapped to `gemini-3.1-pro-preview`) and could not resolve anywhere else. Verified through the CLI before the change: the id answers, and an unknown id fails with `ModelNotFoundError`, so the answer is not a silent fallback.
+- Gitleaks allowlist: the two aider fixture tokens are back. They live on in history after the file's removal in 0.6.3, and gitleaks scans every commit.
+- Bumped package to `0.6.6`.
+
 ## 0.6.5 - 2026-09-04
 
 Field-feedback round 5: six items from a fifth Fable 5.1 pit-boss run, validated by an adversarial Codex pass that overturned two of the proposed fixes.

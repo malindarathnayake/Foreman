@@ -28,7 +28,7 @@ Runs when every unit in the phase has a passing verdict.
 
 | Host | Advisor A | Advisor B | Fallback when neither is available |
 |---|---|---|---|
-| Claude Code | Codex CLI: `codex exec`, `gpt-5.6-sol`, reasoning `xhigh`, read-only sandbox | Gemini CLI, `-m arch-review`, plan approval mode | Claude subagents with an adversarial critic prompt, recorded as non-independent |
+| Claude Code | Codex CLI: `codex exec`, `gpt-5.6-sol`, reasoning `xhigh`, read-only sandbox | Gemini CLI, `-m gemini-3.8-flash`, plan approval mode | Claude subagents with an adversarial critic prompt, recorded as non-independent |
 | Cursor | Cursor read-only `Task` seat on GPT-5.6 Sol | Cursor read-only `Task` seat on Gemini 3.1 Pro | Sonnet adversarial review, recorded as non-independent |
 | Codex | Headless Claude: `claude -p`, `claude-fable-5`, effort `max`, no tools, no session persistence | Gemini CLI | Adversarial self-review, recorded as non-independent |
 

@@ -2,6 +2,7 @@ import { runExternalCli, resolveInvocation, type SpawnPlan } from "../lib/extern
 import { toKeyValue } from "../lib/toon.js"
 import { type HostId, getProfile } from "../lib/hostProfiles.js"
 import type { AdvisorCli } from "../lib/advisorCli.js"
+import { GEMINI_ADVISOR_MODEL } from "./invokeAdvisor.js"
 
 // Module-level cache for resolved SpawnPlans
 const resolvedPlans = new Map<string, SpawnPlan>()
@@ -21,7 +22,8 @@ const HEALTH_COMMANDS: Record<AdvisorCli, { command: string; args: string[] }> =
   },
   gemini: {
     command: "gemini",
-    args: ["-p", "echo health check", "-m", "arch-review", "--approval-mode", "plan", "--output-format", "text"],
+    // Same model as the review seat, so a passing probe means the review's model resolves.
+    args: ["-p", "echo health check", "-m", GEMINI_ADVISOR_MODEL, "--approval-mode", "plan", "--output-format", "text"],
   },
 }
 
