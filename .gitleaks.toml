@@ -29,6 +29,13 @@ regexes = [
   '''SCRUB_4B_JOURNAL_KEY''',
   '''SCRUB_4B_PROGRESS_KEY''',
   '''SCRUB_4B_MARKDOWN_KEY''',
+  # tests/aiderWorker.test.ts (REMOVED in 0.6.3 with aider_worker) — the two fixture
+  # values from the aider-cli transport and outbound secret-gate tests (unit 2c). The
+  # file is gone from the tree, but gitleaks scans every commit and the values live on
+  # in history (commit 1ef163f); dropping these entries in 0.6.3 failed the security
+  # workflow on the next push. Obviously-fake: unit id embedded / sequential 0-9 digits.
+  '''fixture_key_aider2c_00001''',
+  '''sk-fixture-0123456789''',
   # tests/foremanEnv.test.ts — OPENROUTER_API_KEY fixture for the worker_kind axis
   # tests. Deterministic fake; never a live credential.
   '''fixture_key_hard001''',
