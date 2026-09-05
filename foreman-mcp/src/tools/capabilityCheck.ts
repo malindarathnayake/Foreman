@@ -2,7 +2,7 @@ import { runExternalCli, resolveInvocation, type SpawnPlan } from "../lib/extern
 import { toKeyValue } from "../lib/toon.js"
 import { type HostId, getProfile } from "../lib/hostProfiles.js"
 import type { AdvisorCli } from "../lib/advisorCli.js"
-import { GEMINI_ADVISOR_MODEL } from "./invokeAdvisor.js"
+import { GEMINI_ADVISOR_MODEL, parseGeminiJson } from "./invokeAdvisor.js"
 
 // Module-level cache for resolved SpawnPlans
 const resolvedPlans = new Map<string, SpawnPlan>()
@@ -22,12 +22,13 @@ const HEALTH_COMMANDS: Record<AdvisorCli, { command: string; args: string[] }> =
   },
   gemini: {
     command: "gemini",
-    // Same model as the review seat, so a passing probe means the review's model resolves.
-    args: ["-p", "echo health check", "-m", GEMINI_ADVISOR_MODEL, "--approval-mode", "plan", "--output-format", "text"],
+    // Same model as the review seat, and JSON output so the probe can read which model
+    // actually served the request (0.6.7): an accepted id is no proof of the model.
+    args: ["-p", "echo health check", "-m", GEMINI_ADVISOR_MODEL, "--approval-mode", "plan", "--output-format", "json"],
   },
 }
 
-export type AuthStatus = "ok" | "not_found" | "not_trusted" | "auth_expired" | "probe_timeout" | "error"
+export type AuthStatus = "ok" | "not_found" | "not_trusted" | "auth_expired" | "probe_timeout" | "model_substituted" | "error"
 
 interface SentinelRow {
   cli: AdvisorCli
@@ -72,6 +73,8 @@ function hintFor(status: AuthStatus, cli: AdvisorCli): string | null {
       if (cli === "codex") return "re-login: run `codex login`"
       return "re-authenticate: run the gemini CLI interactively (or fix GEMINI_API_KEY)"
     }
+    case "model_substituted":
+      return "the CLI answered with a different model than the pinned one, so the seat cannot run on the pinned model on this account or CLI version — pin a model the CLI serves, or update the CLI or account"
     case "error": return "unclassified CLI error — run the health command manually and inspect stderr"
   }
 }
@@ -90,13 +93,20 @@ function classifyNonZeroExit(cli: AdvisorCli, exitCode: number, stderr: string):
   return "error"
 }
 
-function respond(cli: AdvisorCli, available: boolean, version: string, status: AuthStatus): string {
+function respond(
+  cli: AdvisorCli,
+  available: boolean,
+  version: string,
+  status: AuthStatus,
+  extra: Record<string, string> = {}
+): string {
   const hint = hintFor(status, cli)
   return toKeyValue({
     cli,
     available: String(available),
     version,
     auth_status: status,
+    ...extra,
     ...(hint ? { hint } : {}),
   })
 }
@@ -179,6 +189,18 @@ export async function capabilityCheck(
 
   if (result.exitCode !== 0) {
     return respond(cli, true, version ?? "unknown", classifyNonZeroExit(cli, result.exitCode, result.stderr ?? ""))
+  }
+
+  // 0.6.7: for gemini, exit 0 is not enough — the run stats say which model served the
+  // request, and a pinned-but-unserved id falls through to another model silently.
+  if (cli === "gemini") {
+    const run = parseGeminiJson(result.stdout ?? "")
+    const served = run?.mainModel
+    const fields = { model_requested: GEMINI_ADVISOR_MODEL, model_served: served ?? "unknown" }
+    if (served !== undefined && served !== GEMINI_ADVISOR_MODEL) {
+      return respond(cli, true, version ?? "unknown", "model_substituted", fields)
+    }
+    return respond(cli, true, version ?? "unknown", "ok", fields)
   }
 
   return respond(cli, true, version ?? "unknown", "ok")

@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.7 - 2026-09-04
+
+- **The Gemini seat is pinned to `gemini-3.1-pro-preview`, and the served model is checked.** 0.6.6 pinned `gemini-3.8-flash` on the strength of a probe that only proved the id was accepted. The run stats told the truth: on that account the CLI served `gemini-3.5-flash` for the main request, silently, with exit 0 and a plausible answer, and did the same for `3.7-flash`. `gemini-3.1-pro-preview` is served faithfully and the API defaults Pro to thinking level `high`. `invoke_advisor` and `capability_check` now run gemini with `--output-format json`, read `model_served` and the thinking tokens from the stats, and treat a served model other than the pinned one as a failed seat (`model_substituted`), text kept for the record. Non-JSON output from an older CLI is handled as before with `model_served: unknown`.
+- Bumped package to `0.6.7`.
+
 ## 0.6.6 - 2026-09-04
 
 - **The Gemini advisor seat runs `gemini-3.8-flash`.** `invoke_advisor` and `capability_check` pass the model id directly instead of `arch-review`, an alias that existed only in one machine's `~/.gemini/settings.json` (mapped to `gemini-3.1-pro-preview`) and could not resolve anywhere else. Verified through the CLI before the change: the id answers, and an unknown id fails with `ModelNotFoundError`, so the answer is not a silent fallback.

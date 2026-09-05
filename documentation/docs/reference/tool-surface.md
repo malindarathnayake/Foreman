@@ -46,8 +46,8 @@ Where the shapes are. Hosts clip tool descriptions at about 2,000 characters, so
 | Tool | Spawns | Notes |
 |---|---|---|
 | `run_tests` | One runner from the allowlist: `npm`, `pytest`, `go`, `cargo`, `dotnet`, `make`, `gradle`, `gradlew`, `gofmt`, `golangci-lint`; extend with `FOREMAN_TEST_ALLOWLIST`; `npx` is never allowed | No shell. Windows `.cmd` shims and Gradle wrappers are resolved directly. `passed` is exit code 0; list-style checkers such as `gofmt -l` exit 0 and print the files needing work, so pass `fail_on_stdout: true` for those. Output is capped per stream (default 8000 characters, max 50000) and truncation keeps the tail. `strip_patterns` drops lines matching up to 10 regexes before the cap; `tail_lines` keeps the last N lines. Default timeout 60 s, max 600 s |
-| `capability_check` | The advisor CLI's version and health commands | Returns `ok`, `not_found`, `not_trusted`, `auth_expired`, `probe_timeout`, or `error`, with a one-line hint |
-| `invoke_advisor` | `claude`, `codex`, or `gemini` CLI with the prompt on stdin | The CLI's own login and network. On success, stderr is dropped unless stdout was truncated; failures keep it. Exit 0 with empty stdout, or stdout equal to the prompt, is reported as `completion: failed` with the reason and the stderr tail |
+| `capability_check` | The advisor CLI's version and health commands | Returns `ok`, `not_found`, `not_trusted`, `auth_expired`, `probe_timeout`, `model_substituted`, or `error`, with a one-line hint. For gemini it also reports `model_requested` and `model_served` from the run stats |
+| `invoke_advisor` | `claude`, `codex`, or `gemini` CLI with the prompt on stdin | The CLI's own login and network. On success, stderr is dropped unless stdout was truncated; failures keep it. Exit 0 with empty stdout, or stdout equal to the prompt, is reported as `completion: failed` with the reason and the stderr tail. Gemini answers in JSON; the meta block names `model_requested` and `model_served`, and a served model other than the pinned `gemini-3.1-pro-preview` is `completion: failed` with `model_substituted` |
 
 ## Make a network call
 

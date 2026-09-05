@@ -39,7 +39,7 @@ Trimmed output from a real install:
 
 ── Package ──
   name                 @malindarathnayake/foreman-mcp
-  version              0.6.6
+  version              0.6.7
 
 ── MCP SDK ──
   server SDK version   2.0.0
