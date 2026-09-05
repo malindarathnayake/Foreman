@@ -120,7 +120,8 @@ Normal implementation units are delegated. The model edits directly only under `
 |---|---|
 | Delegating a unit | a brief of 20+ characters and a preflight attestation are included |
 | A pass verdict | a delegation was recorded first; after a rejection, a fix attempt was recorded after it (a worker delegation or a direct fix); on a phase with no tests, a written attestation of how it was checked |
-| Another attempt, or a pass, after three failed attempts since the unit last passed | you set `user_override`; it is recorded on the attempt or as `cap_override` |
+| Another attempt, or a pass, after three failed attempts since the unit last passed | you decide once with `authorize_attempts`, or set `user_override` on the write; either is recorded on the unit |
+| Closing a phase after a fix | an independent review, or a verification record with evidence for a direct fix, postdates the re-verdict; a cross-examination record never counts |
 | A review finding | it carries a classification: confirmed, rejected, or unverified |
 | Closing a phase | every unit passed, every declared unit is registered, a review was recorded after the latest verdict, and no such review carries a confirmed finding, is partial, or is silent without an examined list; `user_override` waives the review conditions and is recorded on the phase |
 | A rejection on a passed unit | never refused; it reopens the unit to pending |
@@ -175,7 +176,7 @@ Full docs: [malindarathnayake.github.io/Foreman](https://malindarathnayake.githu
 
 ## Project
 
-**Current release:** `v0.6.4` | **Package:** `@malindarathnayake/foreman-mcp` | **Runtime:** Node.js `>=22`
+**Current release:** `v0.6.5` | **Package:** `@malindarathnayake/foreman-mcp` | **Runtime:** Node.js `>=22`
 
 - [Changelog](CHANGELOG.md)
 - [Security policy](SECURITY.md)

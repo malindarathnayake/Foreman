@@ -35,6 +35,24 @@ export function parseFencedBlock(content: string): FencedBlock {
 }
 
 /**
+ * Counts hand-written checkbox lines OUTSIDE the fences whose text is the unit id: a
+ * legacy Unit Plan that predates the checkbox-free format (spec-generator 0.6.0). The
+ * count is reported, never acted on: `complete_unit` does not prove a pass verdict, a
+ * line can name two units or say "keep p7.4 disabled", and nothing would untick it on a
+ * reopen (Codex, field feedback round 5). The id must be the whole item text, optionally
+ * in backticks, followed by a separator or the end of the line.
+ */
+export function countLegacyCheckboxes(content: string, unitId: string): number {
+  const block = parseFencedBlock(content)
+  const outside = block.hasStart && block.hasEnd && block.startIdx < block.endIdx
+    ? content.slice(0, block.startIdx) + "\n" + content.slice(block.endIdx + FENCE_END.length)
+    : content
+  const escaped = unitId.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const line = new RegExp(`^[ \\t]*[-*+][ \\t]+\\[[ \\t]\\][ \\t]+\`?${escaped}\`?(?=[ \\t]*(?:—|–|-|:|$))`, "gm")
+  return [...outside.matchAll(line)].length
+}
+
+/**
  * Validates input, delegates to lib/progress.ts,
  * splices a ledger-derived checklist into PROGRESS.md fenced block,
  * returns TOON confirmation.
@@ -111,6 +129,21 @@ export async function handleWriteProgress(
     }
 
     await fs.writeFile(markdownPath, scrub(newContent), "utf-8")
+
+    if (parsed.operation === "complete_unit") {
+      const candidates = countLegacyCheckboxes(existing, parsed.data.unit_id)
+      if (candidates > 0) {
+        return toKeyValue({
+          operation: parsed.operation,
+          status: "ok",
+          legacy_checkbox_candidates: String(candidates),
+          legacy_checkbox_action: "not_modified",
+          note:
+            "Hand-written checkbox line(s) naming this unit exist outside the Foreman fence; they were preserved. " +
+            "The ledger checklist inside the fence is authoritative; tick or remove the hand-written line yourself.",
+        })
+      }
+    }
   }
 
   return toKeyValue({

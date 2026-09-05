@@ -359,7 +359,10 @@ describe("sessionOrient", () => {
 
     expect(result).toContain("action: retry_phase_gate")
     expect(result).toContain("resume_target: V20-P0/phase_gate")
-    expect(result).toContain("state_drift: progress:P4/U4.2;ledger:V20-P0/phase_gate")
+    // 0.6.5: a progress entry the ledger does not know is an advisory, not a stop —
+    // pointer-order disagreement between unrelated id schemes never blocked for a real reason.
+    expect(result).toContain("state_drift: none")
+    expect(result).toContain("progress_advisories: orphan:P4/U4.2")
   })
 
   it("uses verdict timestamps rather than lexical unit ids for last_completed_unit", async () => {

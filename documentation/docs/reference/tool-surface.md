@@ -37,8 +37,8 @@ Where the shapes are. Hosts clip tool descriptions at about 2,000 characters, so
 
 | Tool | Operations | Refusals |
 |---|---|---|
-| `write_ledger` | `set_unit_status`, `set_verdict`, `add_rejection`, `declare_phase_units`, `update_phase_gate`, `set_phase_scope`, `record_review` | The full list on [What Foreman enforces](../enforcement/what-foreman-enforces.md). The tool description carries every operation's exact `data` shape |
-| `write_progress` | `start_phase`, `update_status`, `complete_unit`, `log_error` | Also rewrites the fenced block in `PROGRESS.md` from the ledger |
+| `write_ledger` | `set_unit_status`, `set_verdict`, `add_rejection`, `authorize_attempts`, `declare_phase_units`, `update_phase_gate`, `set_phase_scope`, `record_review` | The full list on [What Foreman enforces](../enforcement/what-foreman-enforces.md). The tool description carries every operation's exact `data` shape |
+| `write_progress` | `start_phase`, `update_status`, `complete_unit`, `log_error` | Also rewrites the fenced block in `PROGRESS.md` from the ledger. `complete_unit` reports `legacy_checkbox_candidates` for hand-written `- [ ] <unit id>` lines outside the fence and leaves them as they are |
 | `write_journal` | `init_session`, `log_event`, `end_session` | 15 anomaly-only event codes; 200 events per session |
 
 ## Spawn a local process
@@ -47,7 +47,7 @@ Where the shapes are. Hosts clip tool descriptions at about 2,000 characters, so
 |---|---|---|
 | `run_tests` | One runner from the allowlist: `npm`, `pytest`, `go`, `cargo`, `dotnet`, `make`, `gradle`, `gradlew`, `gofmt`, `golangci-lint`; extend with `FOREMAN_TEST_ALLOWLIST`; `npx` is never allowed | No shell. Windows `.cmd` shims and Gradle wrappers are resolved directly. `passed` is exit code 0; list-style checkers such as `gofmt -l` exit 0 and print the files needing work, so pass `fail_on_stdout: true` for those. Output is capped per stream (default 8000 characters, max 50000) and truncation keeps the tail. `strip_patterns` drops lines matching up to 10 regexes before the cap; `tail_lines` keeps the last N lines. Default timeout 60 s, max 600 s |
 | `capability_check` | The advisor CLI's version and health commands | Returns `ok`, `not_found`, `not_trusted`, `auth_expired`, `probe_timeout`, or `error`, with a one-line hint |
-| `invoke_advisor` | `claude`, `codex`, or `gemini` CLI with the prompt on stdin | The CLI's own login and network. On success, stderr is dropped unless stdout was truncated; failures keep it |
+| `invoke_advisor` | `claude`, `codex`, or `gemini` CLI with the prompt on stdin | The CLI's own login and network. On success, stderr is dropped unless stdout was truncated; failures keep it. Exit 0 with empty stdout, or stdout equal to the prompt, is reported as `completion: failed` with the reason and the stderr tail |
 
 ## Make a network call
 

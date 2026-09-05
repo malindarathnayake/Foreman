@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.6.5 - 2026-09-04
+
+Field-feedback round 5: six items from a fifth Fable 5.1 pit-boss run, validated by an adversarial Codex pass that overturned two of the proposed fixes.
+
+- **A silent advisor seat is a failed seat.** `invoke_advisor` reports exit 0 with empty stdout, or with stdout equal to the prompt, as `completion: failed` with the reason and the stderr tail, keeping the child's exit code. The checkpoint protocol records it with the reason in `limitations`, retries once, and treats a second failure as an unavailable seat. No retry inside the tool, so the wasted call stays visible.
+- **Drift blocks only on a contradiction.** `session_orient` used to compare the progress file's first-open pointer to the ledger target as strings, so a pending entry for a later unit stopped the next session on a false alarm that no write could clear. `state_drift` now fires only when the progress file marks a unit complete that the ledger has not passed, or has units while the ledger has no phases. Stale, ahead, and orphan entries go to a new non-blocking `progress_advisories` field. The pit-boss's natural-order proposal was rejected: it still false-stopped on stale progress and compared unrelated id schemes.
+- **One owner decision past the cap.** `authorize_attempts { attempts, reason, user_override: true }` records a grant of up to ten further attempts on a capped unit; each later delegation or direct fix is charged to it, `session_orient` shows `attempt_grants`, the unit view shows the grant, and a pass closes it. Refused below the cap, while a grant is open, and together with `user_override` on one write (`AMBIGUOUS OVERRIDE`). Per-write `user_override` remains the fallback.
+- **`cross_exam` never satisfies the gate.** Review currency counted every current record, so a pit-boss cross-examination written after a re-verdict passed `REVIEW REQUIRED`. Currency now needs an independent review, or an eligible verification record; council payloads carry `stage: "independent"`.
+- **`stage: "verification"` for direct-fix follow-ups.** A pit-boss record with structured evidence (baseline review, units and attempts, files, tests, probe) stands in for a fresh seat only when the baseline is a retained independent review, the phase is not `hot_path` or `security_boundary`, no confirmed finding above LOW was recorded since the baseline, every re-verdicted unit passed `via: "pitboss-direct"` with a direct-fix record at its current attempt, the evidence names that attempt, and the sidecar shows no `invoke_worker` delegation for it. `REVIEW REQUIRED` names the failed predicate.
+- **`checked[]` entries up to 400 characters.**
+- **Legacy checkbox lines are counted, not edited.** `complete_unit` reports `legacy_checkbox_candidates` for hand-written `- [ ] <unit id>` lines outside the fence and leaves them untouched: a tick could contradict the fenced line, nothing would untick it on a reopen, and the fence contract preserves outside content verbatim.
+- Bumped package to `0.6.5`.
+
 ## 0.6.4 - 2026-09-04
 
 Field-feedback round 4: five items from a fourth Fable 5.1 pit-boss run, triaged against the code and validated by an adversarial Codex pass. Codex overturned two of the proposed fixes and found the wider hole behind the first item.

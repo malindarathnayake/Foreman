@@ -38,6 +38,28 @@ export interface Delegation {
   user_override?: boolean
   /** Brief Preflight attestation. Absent on delegations recorded before v0.6.1. */
   preflight?: DelegationPreflight
+  /** The cap grant this attempt was charged to (v0.6.5). */
+  cap_grant_id?: number
+}
+
+/**
+ * Owner authorization for attempts past the cap (v0.6.5, field feedback round 5). One
+ * recorded decision instead of a user_override on every later write. The newest entry is
+ * the active one; closed entries are the audit trail of how each decision was spent.
+ */
+export interface CapGrant {
+  id: number
+  ts: string
+  /** attempt_seq when the grant was issued. */
+  at_attempt: number
+  /** epoch_failed when the grant was issued. */
+  failed_at_issue: number
+  granted: number
+  remaining: number
+  /** Attempt ids allocated against this grant. */
+  consumed: number[]
+  reason: string
+  closed?: { ts: string; reason: "exhausted" | "pass" }
 }
 
 /** A pit-boss literal substitution recorded as an attempt (implementor Direct Fix rule). Absent before v0.6.4. */
@@ -45,6 +67,8 @@ export interface DirectFix {
   attempt: number
   what: string
   ts: string
+  /** The cap grant this attempt was charged to (v0.6.5). */
+  cap_grant_id?: number
 }
 
 export interface Unit {
@@ -80,6 +104,8 @@ export interface Unit {
   direct_fixes?: DirectFix[]
   /** A pass verdict that waived ATTEMPT REQUIRED or the cap through data.user_override. */
   cap_override?: { ts: string; attempt: number; failed: number; waived: Array<"cap" | "attempt"> }
+  /** Owner grants for attempts past the cap, newest last, capped at 20. Enforcement reads the newest only. */
+  cap_grants?: CapGrant[]
 }
 
 /** A single classified review finding. Shared with normalize_review output. */
@@ -104,8 +130,10 @@ export interface PhaseReview {
   checked?: string[]
   /** Seat-reported limitations (timeouts, unread files, refused categories). */
   limitations?: string
-  /** 'independent' = first, blind pass (counts toward seat independence); 'cross_exam' = re-prompt informed by another seat's claims (never a second independent vote). */
-  stage?: "independent" | "cross_exam"
+  /** 'independent' = first, blind pass (counts toward seat independence); 'cross_exam' = re-prompt informed by another seat's claims (never a second independent vote); 'verification' = pit-boss re-verification of direct fixes with evidence (v0.6.5; counts for the gate only under verificationIneligibility in lib/ledger.ts). */
+  stage?: "independent" | "cross_exam" | "verification"
+  /** Present on stage:'verification' only. */
+  evidence?: VerificationEvidence
 }
 
 export interface Phase {
@@ -255,6 +283,28 @@ const ClassifiedFindingSchema = ReviewFindingSchema.extend({
   classification: z.enum(["confirmed", "rejected", "unverified"]),
 })
 
+// v0.6.5 (Codex, field feedback round 5): a pit-boss re-verification of direct fixes,
+// recorded with structured evidence. The gate accepts it in place of a fresh seat only
+// under the predicates in lib/ledger.ts verificationIneligibility; the ledger cannot
+// check the evidence, so the record's value is that it is linked to exact attempts and
+// to the independent review it extends.
+const TestsEvidence = z.discriminatedUnion("outcome", [
+  z.object({ outcome: z.literal("pass"), command: z.string().max(2000), result: z.string().max(2000) }),
+  z.object({ outcome: z.literal("n/a"), reason: z.string().min(10).max(2000) }),
+])
+const ProbeEvidence = z.discriminatedUnion("outcome", [
+  z.object({ outcome: z.literal("pass"), method: z.string().max(2000), result: z.string().max(2000) }),
+  z.object({ outcome: z.literal("n/a"), reason: z.string().min(10).max(2000) }),
+])
+const VerificationEvidenceSchema = z.object({
+  baseline_review_ts: z.string().max(100),
+  units: z.array(z.object({ unit_id: z.string().max(200), attempt: z.number().int().min(1) })).min(1).max(50),
+  files: z.array(z.string().max(4096)).min(1).max(50),
+  tests: TestsEvidence,
+  probe: ProbeEvidence,
+})
+export type VerificationEvidence = z.infer<typeof VerificationEvidenceSchema>
+
 const RecordReviewInput = z.object({
   operation: z.literal("record_review"),
   phase: z.string().max(10000),
@@ -264,9 +314,25 @@ const RecordReviewInput = z.object({
     packet_hash: z.string().max(200).optional(),
     tokens: z.number().min(0).optional(),
     completion: z.enum(["complete", "partial", "failed"]).optional(),
-    checked: z.array(z.string().max(200)).max(50).optional(),
+    // 400 since 0.6.5: 200 bit on any review with real content (field feedback round 5).
+    checked: z.array(z.string().max(400)).max(50).optional(),
     limitations: z.string().max(2000).optional(),
-    stage: z.enum(["independent", "cross_exam"]).optional(),
+    stage: z.enum(["independent", "cross_exam", "verification"]).optional(),
+    // Required with stage:'verification', refused with any other stage (lib/ledger.ts).
+    evidence: VerificationEvidenceSchema.optional(),
+  }),
+})
+
+// v0.6.5: the owner's decision to allow attempts past the cap, recorded once. Refused
+// below the cap (a grant issued early would defeat it) and while a grant is still open.
+const AuthorizeAttemptsInput = z.object({
+  operation: z.literal("authorize_attempts"),
+  unit_id: z.string().max(10000),
+  phase: z.string().max(10000),
+  data: z.object({
+    attempts: z.number().int().min(1).max(10),
+    reason: z.string().min(10).max(2000),
+    user_override: z.literal(true),
   }),
 })
 
@@ -278,6 +344,7 @@ export const WriteLedgerInputSchema = z.discriminatedUnion("operation", [
   UpdatePhaseGateInput,
   SetPhaseScopeInput,
   RecordReviewInput,
+  AuthorizeAttemptsInput,
 ])
 
 export type WriteLedgerInput = z.infer<typeof WriteLedgerInputSchema>
@@ -558,6 +625,7 @@ export const LedgerOperationDataSchemas = {
   update_phase_gate: UpdatePhaseGateInput.shape.data,
   set_phase_scope: SetPhaseScopeInput.shape.data,
   record_review: RecordReviewInput.shape.data,
+  authorize_attempts: AuthorizeAttemptsInput.shape.data,
 } as const
 
 export const ReadJournalInputSchema = z.object({

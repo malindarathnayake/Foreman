@@ -1,7 +1,7 @@
 import fs from "fs/promises"
 import path from "path"
 import { createHash } from "crypto"
-import type { LedgerFile, Phase, Unit, WriteLedgerInput } from "../types.js"
+import type { CapGrant, LedgerFile, Phase, PhaseReview, Unit, WriteLedgerInput } from "../types.js"
 import { detectTestFiles } from "./detectTestFiles.js"
 import { atomicWriteFile } from "./atomicWrite.js"
 import { scrub } from "./redaction.js"
@@ -154,26 +154,58 @@ function recordFailure(unit: Unit): void {
   }
 }
 
-/** Allocates the next attempt id; refuses past the cap without user_override. */
+/** The newest grant while it has attempts left and was not closed. Enforcement reads only this entry. */
+function activeGrant(unit: Unit): CapGrant | undefined {
+  const grant = unit.cap_grants?.[unit.cap_grants.length - 1]
+  return grant && !grant.closed && grant.remaining > 0 ? grant : undefined
+}
+
+function closeGrant(unit: Unit, reason: "exhausted" | "pass"): void {
+  const grant = unit.cap_grants?.[unit.cap_grants.length - 1]
+  if (grant && !grant.closed) grant.closed = { ts: new Date().toISOString(), reason }
+}
+
+/**
+ * Allocates the next attempt id. Past the cap the attempt is charged to an open grant
+ * (authorize_attempts, v0.6.5) or needs a per-write user_override; both on one write is
+ * refused so the audit trail says which decision paid for the attempt.
+ */
 function allocateAttempt(
   unit: Unit,
   unitId: string,
   kind: "delegation" | "direct fix",
   userOverride: boolean | undefined
-): number {
+): { attempt: number; cap_grant_id?: number } {
   ensureAttemptState(unit)
   const failed = unit.epoch_failed ?? 0
-  if (failed >= ATTEMPT_CAP && userOverride !== true) {
-    throw new Error(
-      `DELEGATION CAP: unit '${unitId}' has ${failed} failed attempts since its last pass (cap ${ATTEMPT_CAP}). ` +
-      `A further ${kind} needs data.user_override: true — escalate to the user with the rejection history. ` +
-      "A pass verdict is blocked the same way until an overridden attempt or an overridden verdict is recorded; do not fix off the record."
-    )
+  const grant = failed >= ATTEMPT_CAP ? activeGrant(unit) : undefined
+  if (failed >= ATTEMPT_CAP) {
+    if (grant && userOverride === true) {
+      throw new Error(
+        `AMBIGUOUS OVERRIDE: unit '${unitId}' has grant #${grant.id} with ${grant.remaining} attempt(s) remaining. ` +
+        "Drop data.user_override so this attempt is charged to the grant, or exhaust the grant first."
+      )
+    }
+    if (!grant && userOverride !== true) {
+      throw new Error(
+        `DELEGATION CAP: unit '${unitId}' has ${failed} failed attempts since its last pass (cap ${ATTEMPT_CAP}). ` +
+        `A further ${kind} needs the owner's decision: record it once with authorize_attempts { attempts, reason, user_override: true } ` +
+        "(one grant covers several attempts) or set data.user_override: true on this write — escalate with the rejection history. " +
+        "A pass verdict is blocked the same way until a granted or overridden attempt, or an overridden verdict, is recorded; do not fix off the record."
+      )
+    }
   }
   unit.attempt_seq = (unit.attempt_seq ?? 0) + 1
   unit.needs_attempt = false
-  if (failed >= ATTEMPT_CAP) unit.cap_override_attempt = unit.attempt_seq
-  return unit.attempt_seq
+  if (failed >= ATTEMPT_CAP) {
+    unit.cap_override_attempt = unit.attempt_seq
+    if (grant) {
+      grant.remaining -= 1
+      grant.consumed.push(unit.attempt_seq)
+      if (grant.remaining === 0) closeGrant(unit, "exhausted")
+    }
+  }
+  return { attempt: unit.attempt_seq, ...(grant ? { cap_grant_id: grant.id } : {}) }
 }
 
 // ─── Gate-staleness snapshot (D2b) ───────────────────────────────────────────
@@ -236,6 +268,51 @@ async function disciplineAdherenceGate(
   }
 }
 
+// ─── Verification eligibility (round 5, Codex) ───────────────────────────────
+// A stage:'verification' record stands in for an independent seat only when it is a
+// tightly linked, low-risk extension of one: every predicate below is checkable from
+// the ledger and the sidecar, and each one names the exact thing the reporter's
+// cross_exam loophole left unchecked. Returns null when eligible, else the reason.
+export function verificationIneligibility(
+  phaseKey: string,
+  phaseObj: Phase,
+  review: PhaseReview,
+  allReviews: PhaseReview[],
+  events: SidecarEvent[]
+): string | null {
+  const ev = review.evidence
+  if (!ev) return "no evidence recorded"
+  const baseline = allReviews.find(
+    (r) => r.ts === ev.baseline_review_ts && (r.stage === undefined || r.stage === "independent")
+  )
+  if (!baseline) return `baseline_review_ts ${ev.baseline_review_ts} is not a retained independent review`
+  if (phaseObj.scope?.hot_path || phaseObj.scope?.security_boundary) {
+    return "phase is scoped hot_path or security_boundary; those need a seat"
+  }
+  const serious = allReviews
+    .filter((r) => r.ts >= baseline.ts && r.ts <= review.ts)
+    .flatMap((r) => r.findings.filter((f) => f.classification === "confirmed" && f.severity !== "low"))
+  if (serious.length > 0) return `${serious.length} confirmed finding(s) above LOW since the baseline review`
+  const changed = Object.entries(phaseObj.units).filter(([, u]) => u.v_ts !== undefined && u.v_ts > baseline.ts)
+  if (changed.length === 0) return "no unit was re-verdicted after the baseline review"
+  const boundedPhase = boundIdentifier(phaseKey)
+  for (const [unitId, u] of changed) {
+    if (u.v !== "pass" || u.via !== "pitboss-direct") {
+      return `unit '${unitId}' was re-verdicted after the baseline but not as a passing direct fix`
+    }
+    const fix = u.direct_fixes?.find((d) => d.attempt === u.attempt_seq)
+    if (!fix) return `unit '${unitId}' has no direct_fix record at its current attempt #${u.attempt_seq}`
+    if (!ev.units.some((x) => x.unit_id === unitId && x.attempt === u.attempt_seq)) {
+      return `evidence.units does not name '${unitId}' attempt #${u.attempt_seq}`
+    }
+    const boundedUnit = boundIdentifier(unitId)
+    if (events.some((e) => e.phase === boundedPhase && e.unit_id === boundedUnit && e.attempt === u.attempt_seq)) {
+      return `unit '${unitId}' attempt #${u.attempt_seq} is an invoke_worker delegation in the sidecar, not a direct fix`
+    }
+  }
+  return null
+}
+
 // ─── Apply mutation ───────────────────────────────────────────────────────────
 // Returns an optional warning string to surface in the tool result.
 async function applyOperation(
@@ -276,7 +353,7 @@ async function applyOperation(
         const unit = ledger.phases[phase].units[unit_id]
         // D2a delegation cap, on server-authored counters since 0.6.4 (see
         // ensureAttemptState): two reviewers rejecting one attempt still fire it once.
-        const attempt = allocateAttempt(unit, unit_id, "delegation", data.user_override)
+        const { attempt, cap_grant_id } = allocateAttempt(unit, unit_id, "delegation", data.user_override)
         // `w` is the latest brief (the pass-gate reads it). tier/route_reason are audit evidence.
         unit.w = data.brief
         if (data.tier !== undefined) unit.tier = data.tier
@@ -292,6 +369,7 @@ async function applyOperation(
           ts: new Date().toISOString(),
           attempt,   // from attempt_seq: monotonic even after the cap slice below
           ...(data.user_override === true ? { user_override: true } : {}),
+          ...(cap_grant_id !== undefined ? { cap_grant_id } : {}),
           preflight: data.preflight,
         })
         if (unit.delegations.length > 20) unit.delegations = unit.delegations.slice(-20)
@@ -307,9 +385,14 @@ async function applyOperation(
             `unit '${unit_id}' has none — delegate first.`
           )
         }
-        const attempt = allocateAttempt(unit, unit_id, "direct fix", data.user_override)
+        const { attempt, cap_grant_id } = allocateAttempt(unit, unit_id, "direct fix", data.user_override)
         unit.direct_fixes ??= []
-        unit.direct_fixes.push({ attempt, what: data.direct_fix, ts: new Date().toISOString() })
+        unit.direct_fixes.push({
+          attempt,
+          what: data.direct_fix,
+          ts: new Date().toISOString(),
+          ...(cap_grant_id !== undefined ? { cap_grant_id } : {}),
+        })
         if (unit.direct_fixes.length > 20) unit.direct_fixes = unit.direct_fixes.slice(-20)
       }
       ledger.phases[phase].units[unit_id].s = data.s
@@ -400,6 +483,9 @@ async function applyOperation(
         unit.needs_attempt = false
         delete unit.last_failed_attempt
         delete unit.cap_override_attempt
+        // An open grant never carries into a reopened series: the owner authorized this
+        // one. The closed entry keeps the decision and what it was spent on.
+        closeGrant(unit, "pass")
       } else if (data.v === "fail") {
         // A fail verdict is a failed attempt too; otherwise delegate→fail→delegate→fail
         // never meets the cap (Codex, round 4).
@@ -588,13 +674,32 @@ async function applyOperation(
           ""
         )
         const currentReviews = allReviews.filter((r) => r.ts >= latestVerdictTs)
-        if (currentReviews.length === 0) {
+        // Round 5 (Codex): currency counted every current record, so a pit-boss cross_exam
+        // written after a re-verdict satisfied the gate. A cross_exam never counts as a
+        // seat; a verification record counts only under verificationIneligibility; an
+        // absent stage is independent (records written before stages existed).
+        const independent = currentReviews.filter((r) => r.stage === undefined || r.stage === "independent")
+        const ineligible: string[] = []
+        let eligibleVerification = false
+        const verifications = currentReviews.filter((r) => r.stage === "verification")
+        if (verifications.length > 0) {
+          const events = sidecarReader ? await sidecarReader() : []
+          for (const r of verifications) {
+            const why = verificationIneligibility(phase, gatePhase, r, allReviews, events)
+            if (why === null) eligibleVerification = true
+            else ineligible.push(`${r.advisor}: ${why}`)
+          }
+        }
+        if (independent.length === 0 && !eligibleVerification) {
           if (data.user_override !== true) {
-            const stale = allReviews.length > 0
-              ? ` ${allReviews.length} older review(s) exist but predate the latest unit verdict — a review recorded before a re-verdict does not cover the current code; re-run the review.`
+            const stale = allReviews.length > currentReviews.length
+              ? ` ${allReviews.length - currentReviews.length} older review(s) exist but predate the latest unit verdict — a review recorded before a re-verdict does not cover the current code; re-run the review.`
+              : ""
+            const notSeats = currentReviews.length > 0
+              ? ` ${currentReviews.length} current record(s) do not count as a seat: a cross_exam never does, and a verification counts only for direct-fix re-verdicts${ineligible.length > 0 ? ` (${ineligible.join("; ")})` : ""}.`
               : ""
             throw new Error(
-              `REVIEW REQUIRED: phase '${phase}' has no record_review entry recorded at or after its latest unit verdict.${stale} ` +
+              `REVIEW REQUIRED: phase '${phase}' has no record_review entry recorded at or after its latest unit verdict.${stale}${notSeats} ` +
               "Run the checkpoint deliberation and persist at least one advisor review " +
               "(write_ledger record_review) before the gate can pass, or set data.user_override: true " +
               "to pass without independent review — the override is recorded on the phase."
@@ -686,6 +791,19 @@ async function applyOperation(
       const { phase, data } = operation
       ensurePhase(ledger, phase)
       const p = ledger.phases[phase]
+      // v0.6.5: a verification record stands in for a seat only with its evidence; the
+      // evidence shape is meaningless on any other stage.
+      if (data.stage === "verification") {
+        if (data.completion !== "complete" || data.evidence === undefined) {
+          throw new Error(
+            "VERIFICATION INCOMPLETE: stage:'verification' needs completion:'complete' and data.evidence " +
+            "{ baseline_review_ts, units: [{ unit_id, attempt }], files: [...], tests: { outcome, ... }, probe: { outcome, ... } }. " +
+            "It stands in for a seat only for direct-fix re-verdicts, and only with the evidence recorded."
+          )
+        }
+      } else if (data.evidence !== undefined) {
+        throw new Error("VERIFICATION EVIDENCE: data.evidence is accepted with stage:'verification' only.")
+      }
       // Optional field: lazily created (absent on pre-v0.3.1 phases loaded from disk).
       p.reviews ??= []
       p.reviews.push({
@@ -698,9 +816,53 @@ async function applyOperation(
         checked: data.checked,
         limitations: data.limitations,
         stage: data.stage,
+        ...(data.evidence !== undefined ? { evidence: data.evidence } : {}),
       })
       if (p.reviews.length > 20) p.reviews = p.reviews.slice(-20)
       break
+    }
+    case "authorize_attempts": {
+      const { phase, unit_id, data } = operation
+      const unit = ledger.phases[phase]?.units[unit_id]
+      if (!unit) {
+        throw new Error(
+          `AUTHORIZE BLOCKED: unit '${unit_id}' is not registered in phase '${phase}'; a grant covers an existing unit at the cap.`
+        )
+      }
+      ensureAttemptState(unit)
+      if (unit.v === "pass") {
+        throw new Error(`AUTHORIZE BLOCKED: unit '${unit_id}' has a pass verdict; there is no failed series to authorize.`)
+      }
+      const failed = unit.epoch_failed ?? 0
+      if (failed < ATTEMPT_CAP) {
+        throw new Error(
+          `AUTHORIZE BLOCKED: unit '${unit_id}' has ${failed} failed attempt(s) since its last pass (cap ${ATTEMPT_CAP}). ` +
+          "Below the cap attempts need no authorization; a grant issued early would defeat the cap."
+        )
+      }
+      const open = activeGrant(unit)
+      if (open) {
+        throw new Error(
+          `AUTHORIZE BLOCKED: unit '${unit_id}' already has grant #${open.id} with ${open.remaining} attempt(s) remaining; exhaust it before issuing another.`
+        )
+      }
+      unit.cap_grants ??= []
+      const id = (unit.cap_grants[unit.cap_grants.length - 1]?.id ?? 0) + 1
+      unit.cap_grants.push({
+        id,
+        ts: new Date().toISOString(),
+        at_attempt: unit.attempt_seq ?? 0,
+        failed_at_issue: failed,
+        granted: data.attempts,
+        remaining: data.attempts,
+        consumed: [],
+        reason: data.reason,
+      })
+      if (unit.cap_grants.length > 20) unit.cap_grants = unit.cap_grants.slice(-20)
+      return (
+        `grant #${id}: ${data.attempts} attempt(s) authorized on '${unit_id}' past the cap — each further delegation or ` +
+        "direct fix is charged to it (no per-write user_override); a pass closes it"
+      )
     }
     default: {
       // Exhaustiveness guard: the switch has no implicit fallthrough safety, so a new

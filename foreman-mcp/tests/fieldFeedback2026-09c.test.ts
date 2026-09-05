@@ -499,7 +499,7 @@ describe("description limits and protocol wording", () => {
   it("write_journal and write_ledger name the limits that bit in the field", async () => {
     expect(await toolDescription("write_journal")).toContain("Limit: log_event data.msg is at most 400 characters.")
     const ledger = await toolDescription("write_ledger")
-    expect(ledger).toContain("Limit: checked ≤50 entries of ≤200 chars.")
+    expect(ledger).toContain("Limit: checked ≤50 entries of ≤400 chars.")
     for (const word of ["ATTEMPT REQUIRED", "cap_override", "direct_fix", "every finding needs a classification"]) {
       expect(ledger, word).toContain(word)
     }

@@ -39,11 +39,13 @@ next_pending_unit: p2/u4
 blocked_on: null
 active_rejections: 0
 attempt_blocks: none
+attempt_grants: none
 phases_total: 4
 phases_done: 1
 unsupported_capabilities: none
 stale_gates: none
 state_drift: none
+progress_advisories: none
 missing_declared_units: none
 ```
 
@@ -56,9 +58,11 @@ missing_declared_units: none
 | `latest_pass_verdict_unit`, `latest_pass_verdict_ts` | Newest pass by `v_ts`. Re-verdicts move it. Useful for "what was touched last" |
 | `next_pending_unit` | First unit with status `pending`, or declared and not yet seeded, from the current phase on |
 | `blocked_on`, `active_rejections` | First unit with rejections and no pass verdict; count of such units across all phases |
-| `attempt_blocks` | Units the ledger will refuse a pass on: `p4/u2:cap(3)` for three failed attempts since the last pass, `p1/u3:needs_attempt` for a rejection or fail verdict with no attempt recorded since |
+| `attempt_blocks` | Units the ledger will refuse a pass on: `p4/u2:cap(3)` for three failed attempts since the last pass with no open grant, `p1/u3:needs_attempt` for a rejection or fail verdict with no attempt recorded since |
+| `attempt_grants` | Open owner grants past the cap: `p4/u2:#1(2 left)`. The next attempt on that unit is charged to the grant; do not ask for another override |
 | `stale_gates` | Phases whose passed-gate hash no longer matches their units |
-| `state_drift` | `progress:<target>;ledger:<target>` when the progress file points elsewhere, or `progress:complete(<unit>);ledger:<target>` when progress marks the ledger's own resume unit complete |
+| `state_drift` | `progress:complete(<unit>);ledger:<target>` when the progress file marks a unit complete that the ledger has not passed, the one contradiction the file cannot honestly hold; `progress:<unit>;ledger:no_phases` when progress has units and the ledger has none. Where the progress pointer sits relative to the ledger target is never drift |
+| `progress_advisories` | Non-blocking: `stale:<paths>` for entries still open on units the ledger passed, `ahead:<paths>` for open entries later than the target, `orphan:<paths>` for entries the ledger does not know. Five per kind, then a count |
 | `missing_declared_units` | Declared ids with no ledger entry, up to ten |
 | `unsupported_capabilities` | What the active host profile cannot do, from the capability contract |
 
@@ -72,11 +76,12 @@ action: complete              resume_target: null         -> nothing left
 
 ## What the procedure does with it
 
-- **`state_drift` is not `none`:** stop and reconcile before delegating. The ledger target wins; the progress file is corrected to match.
+- **`state_drift` is not `none`:** stop and reconcile before delegating. The ledger target wins; the progress file is corrected to match. A unit reopened by a checkpoint finding after `complete_unit` is the common cause; re-verdict it or reset its progress status.
+- **`progress_advisories` is not `none`:** continue. Fix stale entries with `complete_unit` when convenient; ahead entries are the plan getting written down early; orphans are usually an old id scheme.
 - **`missing_declared_units` is not `none`:** seed each with `set_unit_status { s: "pending" }` before delegating. They are spec scope the ledger does not track yet.
 - **The current unit is `ip`:** treat it as not started. Re-read the files, rebuild the brief, respawn the worker. The previous worker's partial edit is not trusted; the repository-state guard in validation will catch anything it left behind.
 - **`blocked_on` is set:** read that unit's rejections with `read_ledger({ phase, unit_id })` before writing a fix brief.
-- **`attempt_blocks` names a unit:** `needs_attempt` means the next write for it is a delegation or a recorded direct fix, not a verdict. `cap(n)` means stop and bring the rejection history to the owner; the ledger refuses another attempt and a pass alike until a write carries `user_override`.
+- **`attempt_blocks` names a unit:** `needs_attempt` means the next write for it is a delegation or a recorded direct fix, not a verdict. `cap(n)` means stop and bring the rejection history to the owner; the ledger refuses another attempt and a pass alike until the owner records a grant with `authorize_attempts` or a write carries `user_override`. A unit listed under `attempt_grants` is not blocked: charge the next attempt to the grant.
 - **`stale_gates` is set:** a unit changed after its phase closed. The gate is not reopened for you; decide whether to re-run the checkpoint.
 
 ## Corrupt ledger

@@ -20,10 +20,11 @@ function unitHasActiveRejections(unit: Unit): boolean {
   return unit.rej.length > 0 && unit.v !== "pass"
 }
 
-function firstIncompleteProgressTarget(progress: ProgressFile): string | null {
+/** First unit the progress file mentions, any status. Only the no-phases contradiction uses it. */
+function firstProgressUnit(progress: ProgressFile): string | null {
   for (const [phaseKey, phase] of Object.entries(progress.phases)) {
     for (const [unitId, unit] of Object.entries(phase.units)) {
-      if (unit.status !== "complete") return `${unit.phase || phaseKey}/${unitId}`
+      return `${unit.phase || phaseKey}/${unitId}`
     }
   }
   return null
@@ -43,7 +44,7 @@ export async function sessionOrient(
 ): Promise<string> {
   const { ledger, corrupt } = await readLedgerWithStatus(ledgerPath, { readOnly: true })
   const progress = await readProgress(progressPath, { readOnly: true })
-  const progressTarget = firstIncompleteProgressTarget(progress)
+  const progressTarget = firstProgressUnit(progress)
 
   // Corrupt ledger must not masquerade as a fresh project
   if (corrupt) {
@@ -80,6 +81,8 @@ export async function sessionOrient(
       unsupported_capabilities: unsupportedCapabilities(host),
       stale_gates: "none",
       state_drift: progressTarget ? `progress:${progressTarget};ledger:no_phases` : "none",
+      progress_advisories: "none",
+      attempt_grants: "none",
       missing_declared_units: "none",
     })
   }
@@ -184,23 +187,49 @@ export async function sessionOrient(
     }
   }
 
-  let state_drift = progressTarget && progressTarget !== resume_target
-    ? `progress:${progressTarget};ledger:${resume_target}`
-    : "none"
-
-  // Reverse-direction drift: progress marks the ledger's resume unit itself as
-  // complete — a unit-level contradiction. A progress file that simply doesn't
-  // track the unit is NOT drift (progress is seeded per-phase, so partial files
-  // are the normal case for later-phase resumes).
-  if (state_drift === "none" && current_phase !== "null" && current_unit !== "null") {
-    for (const [phaseKey, progressPhase] of Object.entries(progress.phases)) {
-      const pu = progressPhase.units[current_unit]
-      if (pu && (pu.phase || phaseKey) === current_phase && pu.status === "complete") {
-        state_drift = `progress:complete(${current_phase}/${current_unit});ledger:${resume_target}`
-        break
+  // ── state_drift + progress_advisories (round 5, Codex) ──────────────────────
+  // The progress file is descriptive. Comparing its first-open pointer to the ledger
+  // target as strings stopped the next session on a pending entry for a later unit, or a
+  // stale one for an earlier unit, and no write could clear it. Drift now blocks only on
+  // a contradiction the file cannot honestly hold: a unit marked complete that the ledger
+  // has not passed (declared-but-unregistered counts as not passed). Everything else is
+  // an advisory: stale (open in progress, passed in the ledger), ahead (open, later than
+  // the target), orphan (not a ledger unit at all).
+  const contradictions: string[] = []
+  const stale: string[] = []
+  const ahead: string[] = []
+  const orphan: string[] = []
+  for (const [progressPhaseKey, progressPhase] of Object.entries(progress.phases)) {
+    for (const [unitId, pu] of Object.entries(progressPhase.units)) {
+      const phaseKey = pu.phase || progressPhaseKey
+      const ledgerPhase = ledger.phases[phaseKey]
+      const unit = ledgerPhase?.units[unitId]
+      const declared = ledgerPhase?.declared_units?.includes(unitId) ?? false
+      const pathKey = `${phaseKey}/${unitId}`
+      if (!unit && !declared) {
+        orphan.push(pathKey)
+        continue
       }
+      if (pu.status === "complete") {
+        if (!unit || unit.v !== "pass") contradictions.push(pathKey)
+        continue
+      }
+      if (unit && unit.v === "pass") stale.push(pathKey)
+      else if (pathKey !== resume_target) ahead.push(pathKey)
     }
   }
+  const state_drift = contradictions.length === 0
+    ? "none"
+    : `progress:complete(${naturalSort(contradictions)[0]});ledger:${resume_target}` +
+      (contradictions.length > 1 ? ` (+${contradictions.length - 1} more)` : "")
+  const advisory = (label: string, list: string[]): string | null =>
+    list.length === 0
+      ? null
+      : `${label}:${naturalSort(list).slice(0, 5).join(",")}${list.length > 5 ? `(+${list.length - 5})` : ""}`
+  const progress_advisories =
+    [advisory("stale", stale), advisory("ahead", ahead), advisory("orphan", orphan)]
+      .filter((s): s is string => s !== null)
+      .join(";") || "none"
 
   // ── missing_declared_units: declared ids with no registered unit (all phases) ──
   const missingDeclared: string[] = []
@@ -222,6 +251,7 @@ export async function sessionOrient(
   let blocked_on = "null"
   let active_rejections = 0
   const attemptBlocks: string[] = []
+  const attemptGrants: string[] = []
   for (const phaseKey of phaseKeys) {
     const phase = ledger.phases[phaseKey]
     for (const unitId of naturalSort(Object.keys(phase.units))) {
@@ -234,7 +264,12 @@ export async function sessionOrient(
       }
       if (unit.v !== "pass") {
         const failed = unit.epoch_failed ?? 0
-        if (failed >= ATTEMPT_CAP) attemptBlocks.push(`${phaseKey}/${unitId}:cap(${failed})`)
+        // An open grant (0.6.5) means the owner already decided: the next attempt is charged
+        // to it, so the unit is not cap-blocked and the model must not ask for another override.
+        const newest = unit.cap_grants?.[unit.cap_grants.length - 1]
+        const open = newest && !newest.closed && newest.remaining > 0 ? newest : undefined
+        if (open) attemptGrants.push(`${phaseKey}/${unitId}:#${open.id}(${open.remaining} left)`)
+        if (failed >= ATTEMPT_CAP && !open) attemptBlocks.push(`${phaseKey}/${unitId}:cap(${failed})`)
         else if (unit.needs_attempt) attemptBlocks.push(`${phaseKey}/${unitId}:needs_attempt`)
       }
     }
@@ -242,6 +277,7 @@ export async function sessionOrient(
   const attempt_blocks = attemptBlocks.length === 0
     ? "none"
     : attemptBlocks.slice(0, 10).join(",") + (attemptBlocks.length > 10 ? ` (+${attemptBlocks.length - 10} more)` : "")
+  const attempt_grants = attemptGrants.length === 0 ? "none" : attemptGrants.slice(0, 10).join(",")
 
   // ── stale_gates: phases whose gate snapshot no longer matches their units (D2b) ──
   const staleGates = phaseKeys.filter((key) => {
@@ -263,11 +299,13 @@ export async function sessionOrient(
     blocked_on,
     active_rejections,
     attempt_blocks,
+    attempt_grants,
     phases_total,
     phases_done,
     unsupported_capabilities: unsupportedCapabilities(host),
     stale_gates: staleGates.length === 0 ? "none" : staleGates.join(","),
     state_drift,
+    progress_advisories,
     missing_declared_units,
   })
 }

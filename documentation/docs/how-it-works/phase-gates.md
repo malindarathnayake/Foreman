@@ -47,11 +47,17 @@ In this order, so an earlier problem is reported before a later one:
 | A unit's verdict is not `pass` | `PHASE GATE BLOCKED: phase 'p2' has units without a pass verdict: u5` | none; `inconclusive` units are named separately as re-run guidance |
 | Phase scope is `hot_path` or `security_boundary` and the write does not declare `agent_class: "frontier"` | `SEAT MINIMUM: ...` | `user_override: true` |
 | A unit passed in the ledger but its latest `invoke_worker` sidecar chain ended in a failure or never ended | `DISCIPLINE ADHERENCE: ...` | `user_override: true`, recorded in `discipline_overrides` |
-| No review was recorded at or after the phase's latest unit verdict | `REVIEW REQUIRED: ...` (names how many older reviews exist) | `user_override: true`, recorded as `review_override` |
+| No independent review, and no eligible verification record, was recorded at or after the phase's latest unit verdict. A `cross_exam` record never counts | `REVIEW REQUIRED: ...` (names how many older reviews exist and why current records do not count) | `user_override: true`, recorded as `review_override` |
 | A review recorded since the latest verdict carries a finding classified `confirmed` | `CONFIRMED FINDINGS: phase 'p2' has 1 confirmed review finding(s) ... codex: src/a.ts:42 null deref ...` | `user_override: true`, recorded as `confirmed_override` with the count |
 | A review recorded since the latest verdict is `completion: partial` or `failed`, or has zero findings with no `checked` list and no `completion: complete` | `INCOMPLETE REVIEW: phase 'p2' has 1 review(s) ... gemini: zero findings with no examined list` | `user_override: true`, recorded as `incomplete_override` with the count |
 
 A passing gate snapshots a hash of every unit's id, verdict, and verdict timestamp. If a unit changes afterwards, `read_ledger` and `session_orient` report the gate as stale. Nothing is blocked by staleness; it is a flag for you.
+
+## Trivial follow-ups: the verification record
+
+A review that finds only LOW items, fixed by direct fix, used to cost a fresh seat because the re-verdict made the review stale. Since 0.6.5 the model may close that case with `record_review { stage: "verification", completion: "complete", evidence }` instead. The evidence names the independent review it extends (`baseline_review_ts`), each unit and attempt re-verified, the files, the test command and result, and the mutation probe and result, or a stated reason either does not apply. The server cannot check the evidence; what it checks is the link. The record counts for the gate only when all of these hold: the baseline is a retained independent review; the phase is not `hot_path` or `security_boundary`; no `confirmed` finding above LOW was recorded since the baseline; every unit re-verdicted since the baseline passed `via: "pitboss-direct"` with a direct-fix record at its current attempt; the evidence names that exact unit and attempt; and the sidecar shows no `invoke_worker` delegation for that attempt. When any of those fails, `REVIEW REQUIRED` says which, and the follow-up needs a seat.
+
+A silent seat is not a clean seat. When an advisor exits 0 with empty output, or echoes the prompt back, `invoke_advisor` reports `completion: failed` with the reason and the stderr tail. The procedure records it as failed with the reason in `limitations` and retries once.
 
 ## Review policy
 

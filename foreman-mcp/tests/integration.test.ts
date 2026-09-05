@@ -629,6 +629,7 @@ describe("set_phase_scope round-trip via MCP", () => {
     expect(operationSchema.enum).toContain("declare_phase_units")
     expect(operationSchema.enum).toContain("update_phase_gate")
     expect(operationSchema.enum).toContain("record_review")
+    expect(operationSchema.enum).toContain("authorize_attempts")
   })
 })
 

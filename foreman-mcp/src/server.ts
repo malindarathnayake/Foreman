@@ -306,7 +306,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     "invoke_advisor",
     {
       title: "Invoke Advisor",
-      description: "Invoke claude|codex|gemini CLI via stdin. Resolves binaries cross-platform and wraps .cmd shims on win32. Claude runs headless with Fable 5 at max effort and no tools. Failed calls may be compressed; if a failed call's summary is insufficient, call retrieve_original with the <<ccr:HASH>> marker for the full diagnostic.",
+      description: "Invoke claude|codex|gemini CLI via stdin. Resolves binaries cross-platform and wraps .cmd shims on win32. Claude runs headless with Fable 5 at max effort and no tools. Exit 0 with empty stdout, or stdout equal to the prompt, is reported as completion: failed with the stderr tail — not a clean seat; record it as failed and retry once. Failed calls may be compressed; if a failed call's summary is insufficient, call retrieve_original with the <<ccr:HASH>> marker for the full diagnostic.",
       inputSchema: z.strictObject({
         cli: z.enum(ADVISOR_CLIS),
         prompt: z.string().max(100000),
@@ -323,7 +323,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const result = await invokeAdvisor(args.cli, args.prompt, args.timeout_ms)
-      const formatted = formatAdvisorResult(args.cli, result)
+      const formatted = formatAdvisorResult(args.cli, result, args.prompt)
       // Successful advisor output is PROSE — never lossy-compress it (silent loss of the
       // recommendations). A FAILED call is an unpredictable diagnostic dump: let the normal
       // compression path handle it; the agent sees exit_code != 0 and can retrieve_original.
@@ -337,19 +337,20 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     {
       title: "Write Ledger",
       description: [
-        "Writes an operation to the Foreman ledger file. Exact data shapes for every operation are in this tool's input schema (the description of the data field); a rejected call returns one hint per field plus the expected shape.",
+        "Writes one operation to the Foreman ledger. Per-operation data shapes are in the input schema (data field description); a rejected call returns one hint per field plus the expected shape.",
         "",
         "Operations (phase required; unit_id where noted):",
-        "  set_unit_status (unit_id) — s:'delegated' needs a brief (≥20 chars) and a preflight attestation; s:'ip' with direct_fix records a pit-boss literal fix as an attempt. After 3 failed attempts since the last pass, another attempt needs user_override.",
-        "  set_verdict (unit_id) — v:'pass' needs a prior delegation, an attempt recorded after the latest rejection or fail (ATTEMPT REQUIRED), past the cap user_override (recorded as cap_override), and on a has_tests:false or has_build:false phase a ≥5-word attestation note. The first pass stamps first_pass_ts; v:'fail' counts as a failed attempt.",
-        "  add_rejection (unit_id) — counts a failed attempt; on a 'pass' unit, reopens it to 'pending' (returned as a warning).",
-        "  declare_phase_units — additive declared id set (cap 200); retire needs a reason; frozen while the gate is 'pass'.",
-        "  update_phase_gate — g:'pass' needs every unit passed, every declared id registered, a review recorded at or after the latest unit verdict, and none of those reviews with a 'confirmed' finding, a partial/failed completion, or zero findings without checked[]; user_override waives the review conditions and is recorded on the phase.",
-        "  set_phase_scope — once per phase; hot_path or security_boundary make the gate require agent_class:'frontier'.",
-        "  record_review — every finding needs a classification; 'line' is a string, severity lowercase; zero findings need checked[] or completion:'complete'; a 'confirmed' classification blocks the gate until resolved; stage:'cross_exam' never counts as an independent seat. Limit: checked ≤50 entries of ≤200 chars.",
+        "  set_unit_status (unit_id) — s:'delegated' needs a brief (≥20 chars) and a preflight attestation; s:'ip' with direct_fix records a literal fix as an attempt. Past 3 failed attempts since the last pass, an attempt needs an open grant or user_override.",
+        "  set_verdict (unit_id) — v:'pass' needs a prior delegation, an attempt after the latest failure (ATTEMPT REQUIRED), past the cap a granted/overridden attempt or user_override (cap_override), and on a no-test/no-build phase a ≥5-word note; v:'fail' counts as a failed attempt.",
+        "  add_rejection (unit_id) — counts a failed attempt; reopens a passed unit to 'pending'.",
+        "  authorize_attempts (unit_id) — the owner's decision, once: N more attempts past the cap, charged per attempt; refused below the cap or while a grant is open; a pass closes it.",
+        "  declare_phase_units — additive declared id set (cap 200); retire needs a reason; frozen once the gate is 'pass'.",
+        "  update_phase_gate — g:'pass' needs every unit passed, every declared id registered, and a current independent review (or eligible verification; cross_exam never counts) with no 'confirmed' finding and no partial, failed, or silent record without checked[]; user_override waives the review conditions (recorded on the phase).",
+        "  set_phase_scope — once per phase; hot_path/security_boundary make the gate require agent_class:'frontier'.",
+        "  record_review — every finding needs a classification; 'line' is a string, severity lowercase; zero findings need checked[] or completion:'complete'; 'confirmed' blocks the gate; stage:'verification' (direct-fix re-verdicts only) needs completion:'complete' + evidence. Limit: checked ≤50 entries of ≤400 chars.",
       ].join("\n"),
       inputSchema: z.strictObject({
-        operation: z.enum(["set_unit_status", "set_verdict", "add_rejection", "declare_phase_units", "update_phase_gate", "set_phase_scope", "record_review"]),
+        operation: z.enum(["set_unit_status", "set_verdict", "add_rejection", "declare_phase_units", "update_phase_gate", "set_phase_scope", "record_review", "authorize_attempts"]),
         unit_id: z.string().max(10000).optional(),
         phase: z.string().max(10000).optional(),
         data: z.record(z.string(), z.unknown()).describe(
@@ -463,7 +464,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "  complete_unit — Mark unit done. data: { unit_id: string, phase: string, completed_at: string, notes: string }.",
         "  log_error     — Log an error. data: { date: string, unit: string, what_failed: string, next_approach: string }.",
         "",
-        "Markdown side effect: when Docs/PROGRESS.md exists, the block between <!-- foreman:checklist-start --> and <!-- foreman:checklist-end --> is REPLACED with a checklist rendered from the LEDGER (unit ids, verdicts, notes; natural order). Content outside the fences is preserved verbatim; with no fences the block is appended at EOF. Keep hand-written unit plans (files, checkpoint commands) outside the fences — they do not survive inside. Seed the ledger before the first call or the block renders '_No phases yet._'.",
+        "Markdown side effect: when Docs/PROGRESS.md exists, the block between <!-- foreman:checklist-start --> and <!-- foreman:checklist-end --> is REPLACED with a checklist rendered from the LEDGER (unit ids, verdicts, notes; natural order). Content outside the fences is preserved verbatim; with no fences the block is appended at EOF. Keep hand-written unit plans (files, checkpoint commands) outside the fences — they do not survive inside. Seed the ledger before the first call or the block renders '_No phases yet._'. complete_unit also counts hand-written checkbox lines outside the fences that name the unit (legacy_checkbox_candidates) and leaves them untouched.",
         "Exact data shapes for every operation are in this tool's input schema (the description of the data field).",
       ].join("\n"),
       inputSchema: z.strictObject({

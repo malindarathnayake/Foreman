@@ -20,8 +20,9 @@ The **ledger validation** is TypeScript in `lib/ledger.ts`. It runs on every `wr
 | A pass verdict needs a prior delegation with a brief | The model actually reads every changed file |
 | A pass after a rejection or fail verdict needs an attempt recorded after it, a worker delegation or a direct fix | The attempt fixed what was rejected |
 | A delegation needs a brief of 20+ characters and a preflight attestation | The model actually runs the grep the attestation claims |
-| Another attempt, or a pass, after three failed attempts since the unit last passed needs your override | The model actually runs the unit's test command |
+| Another attempt, or a pass, after three failed attempts since the unit last passed needs your override, recorded once as a grant or per write | The model actually runs the unit's test command |
 | A recorded review finding carries a classification | The classification was honest |
+| A `cross_exam` record never satisfies the review requirement; a `verification` record does only for linked direct-fix re-verdicts | The verification evidence is true |
 | A pass on a no-test or no-build phase needs a five-word, 32-character attestation note | The note describes something that happened |
 | A rejection on a passed unit reopens it to `pending` | The model writes the rejection when it should |
 | A gate needs every unit passed and every declared unit registered | The units were the right units |
@@ -41,20 +42,23 @@ The **ledger validation** is TypeScript in `lib/ledger.ts`. It runs on every `wr
 |---|---|---|---|
 | `set_unit_status { s: "delegated" }` | `brief` missing or under 20 chars | `DELEGATION REQUIRED` | none |
 | same | `preflight` missing | `PREFLIGHT REQUIRED` | none |
-| same | three failed attempts since the unit last passed | `DELEGATION CAP` | `user_override: true`, stored on the delegation |
-| `set_unit_status { s: "ip", direct_fix }` | the unit was never delegated; `direct_fix` given with another status; three failed attempts | `DIRECT FIX BLOCKED`, `DIRECT FIX`, `DELEGATION CAP` | `user_override: true` for the cap only |
+| same | three failed attempts since the unit last passed and no open grant | `DELEGATION CAP` | an open grant from `authorize_attempts`, or `user_override: true` stored on the delegation |
+| same | an open grant and `user_override: true` on the same write | `AMBIGUOUS OVERRIDE` | drop one |
+| `set_unit_status { s: "ip", direct_fix }` | the unit was never delegated; `direct_fix` given with another status; three failed attempts | `DIRECT FIX BLOCKED`, `DIRECT FIX`, `DELEGATION CAP` | a grant or `user_override: true` for the cap only |
+| `authorize_attempts { attempts, reason, user_override: true }` | the unit is unregistered, passed, below the cap, or already has an open grant | `AUTHORIZE BLOCKED` | none |
 | `set_verdict { v: "pass" }` | unit has no brief | `VERDICT BLOCKED` | none |
-| same | three failed attempts since the last pass and the current attempt was not recorded with `user_override` | `DELEGATION CAP` | `user_override: true`, recorded as `cap_override` |
+| same | three failed attempts since the last pass and the current attempt was neither granted nor overridden | `DELEGATION CAP` | `user_override: true`, recorded as `cap_override` |
 | same | the unit was rejected or failed after its latest recorded attempt | `ATTEMPT REQUIRED` | `user_override: true`, recorded as `cap_override` |
 | same | phase scope has `has_tests: false` or `has_build: false` and `note` is short or absent | `ATTESTATION REQUIRED` | none |
 | `record_review` | a finding without a `classification` | `SCHEMA ERROR` | fix the call |
+| same | `stage: "verification"` without `completion: "complete"` and `evidence`, or `evidence` on another stage | `VERIFICATION INCOMPLETE`, `VERIFICATION EVIDENCE` | none |
 | `declare_phase_units` | neither `units` nor `retire` given | `DECLARE REQUIRED` | none |
 | same | merged set over 200, or the phase gate is `pass` | `DECLARE CAP`, `PHASE GATE BLOCKED` | none; reopen the gate first |
 | `set_phase_scope` | scope already set | `scope_already_set` | none |
 | `update_phase_gate { g: "pass" }` | declared id not registered; empty phase; a unit not `pass` | `PHASE GATE BLOCKED` | none |
 | same | flagged scope without `agent_class: "frontier"` | `SEAT MINIMUM` | `user_override: true` |
 | same | sidecar terminal outcome contradicts a pass | `DISCIPLINE ADHERENCE` | `user_override: true`, recorded in `discipline_overrides` |
-| same | no review at or after the latest verdict | `REVIEW REQUIRED` | `user_override: true`, recorded as `review_override` |
+| same | no independent review, and no eligible verification record, at or after the latest verdict; `cross_exam` records never count | `REVIEW REQUIRED` | `user_override: true`, recorded as `review_override` |
 | same | a current review has a `confirmed` finding | `CONFIRMED FINDINGS` | `user_override: true`, recorded as `confirmed_override` |
 | same | a current review is `partial`, `failed`, has zero findings with no `checked` list and no `completion: complete`, or carries a finding recorded before 0.6.4 without a classification | `INCOMPLETE REVIEW` | `user_override: true`, recorded as `incomplete_override` |
 | any write with a bad shape | field missing, wrong enum, over a limit | `SCHEMA ERROR` | fix the call |
