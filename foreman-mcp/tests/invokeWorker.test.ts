@@ -190,7 +190,7 @@ async function makeWorkspace(opts: { port?: number; writeEnv?: boolean; seedDele
       operation: "set_unit_status",
       phase: "4f",
       unit_id: "u1",
-      data: { s: "delegated", brief: "seed brief for delegated unit ok", tier: "standard" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "seed brief for delegated unit ok", tier: "standard" },
     })
   }
   return {
@@ -711,24 +711,16 @@ describe("PLAYBOOK", () => {
     "PATCH_APPLY_FAIL",
     "BLD_ERR",
     "W_REJ",
-    "WORKER_BINARY_NOT_FOUND",
-    "WORKER_DIRTY_TREE_REFUSAL",
-    "WORKER_AIDER_EXIT",
-    "WORKER_AIDER_LLM_ERROR",
   ] as const
 
-  it("has a non-empty hint for every one of the 21 stages", () => {
-    expect(Object.keys(PLAYBOOK).length).toBe(21)
+  it("has a non-empty hint for every one of the 17 stages", () => {
+    expect(Object.keys(PLAYBOOK).length).toBe(17)
     for (const stage of ALL_STAGES) {
       expect(typeof PLAYBOOK[stage]).toBe("string")
       expect(PLAYBOOK[stage].length).toBeGreaterThan(0)
     }
   })
 
-  it("never recommends stashing user-owned work after a dirty-tree refusal", () => {
-    expect(PLAYBOOK.WORKER_DIRTY_TREE_REFUSAL).toContain("Do not stash")
-    expect(PLAYBOOK.WORKER_DIRTY_TREE_REFUSAL).not.toContain("Commit or stash")
-  })
 })
 
 // ── 21. Listed-files enforcement [CWE-73] ─────────────────────────────────────────────
@@ -776,7 +768,7 @@ describe("invoke_worker — identifier bounding", () => {
       operation: "set_unit_status",
       phase: "4f",
       unit_id: longUnitId,
-      data: { s: "delegated", brief: "seed brief for delegated unit ok", tier: "standard" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "seed brief for delegated unit ok", tier: "standard" },
     })
 
     const text = await handleInvokeWorker(baseInput(ws, { unit_id: longUnitId }), ws.deps)

@@ -22,14 +22,14 @@ afterEach(async () => {
   await server?.close()
 })
 
-describe("list tools — verify all 27 present, update_bundle absent", () => {
+describe("list tools — verify all 26 present, update_bundle absent", () => {
   beforeEach(async () => {
     await setupServer()
   })
 
-  it("lists exactly 27 tools", async () => {
+  it("lists exactly 26 tools", async () => {
     const result = await client.listTools()
-    expect(result.tools).toHaveLength(27)
+    expect(result.tools).toHaveLength(26)
   })
 
   it("includes all required tool names", async () => {
@@ -60,7 +60,7 @@ describe("list tools — verify all 27 present, update_bundle absent", () => {
     expect(names).toContain("retrieve_original")
     expect(names).toContain("preview_diagram")
     expect(names).toContain("invoke_worker")
-    expect(names).toContain("aider_worker")
+    expect(names).not.toContain("aider_worker")
   })
 
   it("invoke_worker carries EXPERIMENTAL description and open-world annotation", async () => {
@@ -69,17 +69,6 @@ describe("list tools — verify all 27 present, update_bundle absent", () => {
     expect(tool).toBeDefined()
     expect(tool!.description).toContain("EXPERIMENTAL")
     expect(tool!.annotations?.title).toBe("Invoke Patch Worker (EXPERIMENTAL)")
-    expect(tool!.annotations?.readOnlyHint).toBe(false)
-    expect(tool!.annotations?.destructiveHint).toBe(false)
-    expect(tool!.annotations?.openWorldHint).toBe(true)
-  })
-
-  it("aider_worker carries EXPERIMENTAL description and open-world annotation", async () => {
-    const result = await client.listTools()
-    const tool = result.tools.find((t) => t.name === "aider_worker")
-    expect(tool).toBeDefined()
-    expect(tool!.description).toContain("EXPERIMENTAL")
-    expect(tool!.annotations?.title).toBe("Invoke Aider Patch Worker (EXPERIMENTAL)")
     expect(tool!.annotations?.readOnlyHint).toBe(false)
     expect(tool!.annotations?.destructiveHint).toBe(false)
     expect(tool!.annotations?.openWorldHint).toBe(true)
@@ -127,7 +116,7 @@ describe("list tools — verify all 27 present, update_bundle absent", () => {
     const tool = result.tools.find((t) => t.name === "session_orient")
     expect(tool).toBeDefined()
     expect(tool!.description).toBe(
-      "Returns ledger-authoritative Foreman resume state, including action, resume target, phase/unit, gate retry, blockers, and ledger/progress drift. Call first at session start."
+      "Returns ledger-authoritative Foreman resume state, including action, resume target, phase/unit, gate retry, blockers, and ledger/progress drift. Phase and unit ids order naturally (p2 before p10). last_completed_unit is the completion frontier (newest first-pass timestamp; re-verdicts do not move it); latest_pass_verdict_unit/ts is the newest pass verdict by timestamp. Call first at session start."
     )
   })
 
@@ -192,7 +181,7 @@ describe("Codex-only tool registration", () => {
   it("registers codex_agents_init only for the codex host", async () => {
     const result = await client.listTools()
     const tool = result.tools.find((entry) => entry.name === "codex_agents_init")
-    expect(result.tools).toHaveLength(28)
+    expect(result.tools).toHaveLength(27)
     expect(tool).toBeDefined()
     expect(tool?.annotations?.title).toBe("Init Codex Agent Roles")
     expect(tool?.annotations?.readOnlyHint).toBe(false)
@@ -640,6 +629,7 @@ describe("set_phase_scope round-trip via MCP", () => {
     expect(operationSchema.enum).toContain("declare_phase_units")
     expect(operationSchema.enum).toContain("update_phase_gate")
     expect(operationSchema.enum).toContain("record_review")
+    expect(operationSchema.enum).toContain("authorize_attempts")
   })
 })
 
@@ -670,7 +660,7 @@ describe("declare_phase_units round-trip via MCP", () => {
   async function passUnit(phase: string, unitId: string) {
     await writeLedgerTool({
       operation: "set_unit_status", phase, unit_id: unitId,
-      data: { s: "delegated", brief: "Worker brief long enough for the delegation gate" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "Worker brief long enough for the delegation gate" },
     })
     await writeLedgerTool({
       operation: "set_verdict", phase, unit_id: unitId, data: { v: "pass" },
@@ -695,6 +685,8 @@ describe("declare_phase_units round-trip via MCP", () => {
     expect(blockedText).toContain("u2")
 
     await passUnit("p1", "u2")
+    // gate requires ≥1 review (2026-09 R2)
+    await writeLedgerTool({ operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [], completion: "complete" } })
     const pass = await writeLedgerTool({
       operation: "update_phase_gate", phase: "p1", data: { g: "pass" },
     })

@@ -178,7 +178,7 @@ describe("handleReadLedger", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "Worker brief: implement unit u1 types and constants per spec", tier: "standard", route_reason: "default sonnet worker" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "Worker brief: implement unit u1 types and constants per spec", tier: "standard", route_reason: "default sonnet worker" },
     })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",
@@ -202,7 +202,7 @@ describe("handleReadLedger", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "Worker brief: implement unit u1 types and constants per spec" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "Worker brief: implement unit u1 types and constants per spec" },
     })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",
@@ -247,7 +247,7 @@ describe("handleReadLedger", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "Worker brief: implement a bounded ledger note regression test" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "Worker brief: implement a bounded ledger note regression test" },
     })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",
@@ -282,7 +282,7 @@ describe("handleReadLedger", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "Worker brief: short note stays untruncated" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "Worker brief: short note stays untruncated" },
     })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",
@@ -319,7 +319,7 @@ describe("handleReadLedger", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "Worker brief for unit u1 implementation work", tier: "cheap", route_reason: "mechanical rename" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "Worker brief for unit u1 implementation work", tier: "cheap", route_reason: "mechanical rename" },
     })
     const result = await handleReadLedger(ledgerPath, { phase: "p1", unit_id: "u1" })
     expect(result).toContain("tier: cheap")
@@ -345,7 +345,7 @@ describe("handleReadLedger", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "Worker brief: implement unit u1 types and constants per spec" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "Worker brief: implement unit u1 types and constants per spec" },
     })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",
@@ -365,7 +365,7 @@ describe("handleReadLedger", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "Worker brief: implement unit u1 types and constants per spec" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "Worker brief: implement unit u1 types and constants per spec" },
     })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",
@@ -373,6 +373,7 @@ describe("handleReadLedger", () => {
       unit_id: "u1",
       data: { v: "pass" },
     })
+    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [], completion: "complete" } })  // gate requires ≥1 review (2026-09 R2)
     await writeLedger(ledgerPath, {
       operation: "update_phase_gate",
       phase: "p1",
@@ -390,7 +391,7 @@ describe("handleReadLedger", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "Worker brief: implement unit u1 types and constants per spec" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "Worker brief: implement unit u1 types and constants per spec" },
     })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",
@@ -398,6 +399,7 @@ describe("handleReadLedger", () => {
       unit_id: "u1",
       data: { v: "pass" },
     })
+    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [], completion: "complete" } })  // gate requires ≥1 review (2026-09 R2)
     await writeLedger(ledgerPath, {
       operation: "update_phase_gate",
       phase: "p1",
@@ -413,7 +415,7 @@ describe("handleReadLedger", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "Worker brief: implement unit u1 types and constants per spec" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "Worker brief: implement unit u1 types and constants per spec" },
     })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",
@@ -421,6 +423,7 @@ describe("handleReadLedger", () => {
       unit_id: "u1",
       data: { v: "pass" },
     })
+    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [], completion: "complete" } })  // gate requires ≥1 review (2026-09 R2)
     await writeLedger(ledgerPath, {
       operation: "update_phase_gate",
       phase: "p1",

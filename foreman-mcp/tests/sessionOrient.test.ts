@@ -278,7 +278,7 @@ describe("sessionOrient", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "worker brief long enough to clear the 20 char minimum" },
     })
     await writeLedger(ledgerPath, {
       operation: "set_verdict",
@@ -286,6 +286,7 @@ describe("sessionOrient", () => {
       unit_id: "u1",
       data: { v: "pass" },
     })
+    await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [], completion: "complete" } })  // gate requires ≥1 review (2026-09 R2)
     await writeLedger(ledgerPath, {
       operation: "update_phase_gate",
       phase: "p1",
@@ -358,7 +359,10 @@ describe("sessionOrient", () => {
 
     expect(result).toContain("action: retry_phase_gate")
     expect(result).toContain("resume_target: V20-P0/phase_gate")
-    expect(result).toContain("state_drift: progress:P4/U4.2;ledger:V20-P0/phase_gate")
+    // 0.6.5: a progress entry the ledger does not know is an advisory, not a stop —
+    // pointer-order disagreement between unrelated id schemes never blocked for a real reason.
+    expect(result).toContain("state_drift: none")
+    expect(result).toContain("progress_advisories: orphan:P4/U4.2")
   })
 
   it("uses verdict timestamps rather than lexical unit ids for last_completed_unit", async () => {

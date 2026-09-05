@@ -44,7 +44,7 @@ import readline from "node:readline"
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
 
-// The 27 tools the live registry (src/server.ts) is expected to expose.
+// The 26 tools the live registry (src/server.ts) is expected to expose.
 // Keep in sync manually — tests/releaseInvariants.test.ts fails the build
 // the moment this drifts from the real tool list.
 export const EXPECTED_TOOLS = [
@@ -74,10 +74,9 @@ export const EXPECTED_TOOLS = [
   "preview_diagram",
   "invoke_worker",
   "invoke_council",
-  "aider_worker",
 ]
 
-const JSONRPC_TIMEOUT_MS = 30_000
+const JSONRPC_TIMEOUT_MS = 60_000
 
 function log(message) {
   console.log(`[publish-smoke] ${message}`)
@@ -136,6 +135,8 @@ function runToolsListCheck(shimPath, cwd, env) {
     let stderrBuf = ""
     let initializeResult = null
     let toolsListResult = null
+    let activationResult = null
+    let ethosResult = null
 
     const finish = (fn, value) => {
       if (settled) return
@@ -180,7 +181,15 @@ function runToolsListCheck(shimPath, cwd, env) {
         send("tools/list", {}, 2)
       } else if (message.id === 2 && message.result) {
         toolsListResult = message.result
-        finish(resolve, { initializeResult, toolsListResult })
+        // R3 (2026-09): tools/list alone cannot see a missing src/skills or dist/docs —
+        // activate one protocol and serve the ethos document from the INSTALLED package.
+        send("tools/call", { name: "pitboss_implementor", arguments: { context: "publish smoke" } }, 3)
+      } else if (message.id === 3 && message.result) {
+        activationResult = message.result
+        send("tools/call", { name: "ethos", arguments: {} }, 4)
+      } else if (message.id === 4 && message.result) {
+        ethosResult = message.result
+        finish(resolve, { initializeResult, toolsListResult, activationResult, ethosResult })
       } else if (message.id !== undefined && message.error) {
         finish(reject, new Error(`Server returned a JSON-RPC error: ${JSON.stringify(message.error)}`))
       }
@@ -293,8 +302,8 @@ async function main() {
       }
     }
 
-    log("speaking MCP JSON-RPC over stdio (initialize -> initialized -> tools/list)")
-    const { initializeResult, toolsListResult } = await runToolsListCheck(shimPath, runCwd, childEnv)
+    log("speaking MCP JSON-RPC over stdio (initialize -> initialized -> tools/list -> activate -> ethos)")
+    const { initializeResult, toolsListResult, activationResult, ethosResult } = await runToolsListCheck(shimPath, runCwd, childEnv)
 
     const version = initializeResult?.serverInfo?.version
     if (typeof version !== "string" || version.length === 0) {
@@ -314,6 +323,61 @@ async function main() {
     }
 
     log(`tools/list matched all ${expectedNames.length} expected tools`)
+
+    // ── R3: the runtime reads Markdown and assets from the package at run time ──
+    const activationText = activationResult?.content?.[0]?.text ?? ""
+    if (!activationText.includes("## Core Rules") || activationText.includes("{{") || activationText.includes("[MISSING")) {
+      throw new Error(
+        "pitboss_implementor activation from the installed package did not render cleanly " +
+          "(src/skills missing from the tarball, or an unresolved include/placeholder):\n" +
+          activationText.slice(0, 400)
+      )
+    }
+    log("protocol activation rendered from the installed src/skills")
+
+    const ethosText = ethosResult?.content?.[0]?.text ?? ""
+    if (!ethosText.includes("# Engineering Ethos") || ethosText.includes("{{stack:")) {
+      throw new Error("ethos did not render from the installed dist/docs:\n" + ethosText.slice(0, 400))
+    }
+    log("ethos rendered from the installed dist/docs")
+
+    const pkgRoot = path.join(installDir, "node_modules", "@malindarathnayake", "foreman-mcp")
+    const mustShip = [
+      "package.json",
+      "dist/server.js",
+      "dist/docs/engineering-ethos.md",
+      "dist/preview/template.html",
+      "dist/preview/mermaid.min.js",
+      "src/skills/implementor.md",
+      "src/skills/_common-protocol.md",
+    ]
+    for (const rel of mustShip) {
+      try {
+        await access(path.join(pkgRoot, rel))
+      } catch {
+        throw new Error(`runtime file missing from the installed package: ${rel}`)
+      }
+    }
+    const mustNotShip = ["bench", "scripts", "tests", "vendor", "src/server.ts", "src/preview", "src/docs", "tsconfig.json"]
+    for (const rel of mustNotShip) {
+      let present = true
+      try {
+        await access(path.join(pkgRoot, rel))
+      } catch {
+        present = false
+      }
+      if (present) throw new Error(`non-runtime path shipped in the package: ${rel}`)
+    }
+    log("installed package contains the runtime files and nothing else")
+
+    const diag = await runCommand(shimPath, ["--diag"], { cwd: runCwd, env: childEnv, shell: useShell })
+    // Diagnostics go to stderr: stdout is reserved for MCP framing.
+    const diagText = diag.stdout + diag.stderr
+    if (!/skills dir[\s\S]*?exists\s+true/.test(diagText)) {
+      throw new Error("foreman-mcp --diag from the installed package did not resolve the skills dir:\n" + diagText.slice(0, 800))
+    }
+    log("--diag resolves the installed skills dir")
+
     log("publish smoke check PASSED")
   } finally {
     for (const dir of tempDirs) {

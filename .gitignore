@@ -25,7 +25,7 @@ Test_dojo/**
 foreman-mcp/.npm-cache/
 foreman-mcp/*.tgz
 
-# Python harness bytecode (foreman-mcp/scripts/aider_harness.py)
+# Python bytecode
 __pycache__/
 *.pyc
 
@@ -51,7 +51,9 @@ temp/
 tmp/
 .tmp/
 *.tmp
-.aider.chat.history.md
-.aider.input.history
 dojo/T1-semver/local-repaired/semver.mjs
 .vscode/.checkmarxIgnored
+
+# Local aider CLI history (tool state, never repo content)
+.aider.chat.history.md
+.aider.input.history

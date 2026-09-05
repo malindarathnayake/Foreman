@@ -15,29 +15,16 @@ const sidebars: SidebarsConfig = {
     },
     {
       type: 'category',
-      label: 'Concepts',
+      label: 'How it works',
       collapsed: false,
       items: [
-        'concepts/not-another-agent-framework',
-        'concepts/coding-harness',
-        'concepts/lifecycle',
-        'concepts/protocols',
-        'concepts/when-to-use-it',
-      ],
-    },
-    {
-      type: 'category',
-      label: 'Enforcement',
-      items: [
+        'how-it-works/protocols',
+        'how-it-works/unit-life',
+        'how-it-works/phase-gates',
         'enforcement/what-foreman-enforces',
-        'enforcement/engineering-ethos',
-        'enforcement/state-and-recovery',
+        'how-it-works/ledger-files',
+        'how-it-works/resuming',
       ],
-    },
-    {
-      type: 'category',
-      label: 'Execution',
-      items: ['execution/worker-backends', 'execution/advisor-seats'],
     },
     {
       type: 'category',
@@ -45,9 +32,8 @@ const sidebars: SidebarsConfig = {
       items: [
         'reference/tool-surface',
         'reference/host-compatibility',
-        'reference/architecture',
+        'reference/configuration',
         'reference/privacy-and-security',
-        'reference/mission-boundary',
       ],
     },
     {

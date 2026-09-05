@@ -38,13 +38,14 @@ import {
   type NetResult,
 } from "../lib/chatTransport.js"
 
-// The closed 21-value failure taxonomy is owned by the sidecar envelope — reuse it
-// verbatim so telemetry and this tool can never drift apart.
+// The closed 17-value failure taxonomy is owned by the sidecar envelope — reuse it
+// verbatim so telemetry and this tool can never drift apart. (The four aider-only
+// stages left with aider_worker in 0.6.3; old sidecars keep reading them.)
 export type FailureStage = SidecarFailureStage
 
 /**
  * Recovery hint per failure stage. Unit 4h sources this const for the HOST-CONTRACT
- * catalog, so EVERY one of the 21 stages carries an entry — including the four this
+ * catalog, so EVERY one of the 17 stages carries an entry — including the four this
  * tool never emits itself (ED_STALE / PATCH_APPLY_FAIL / BLD_ERR / W_REJ), whose hints
  * describe the pitboss-side `write_ledger add_rejection` flow that owns them.
  */
@@ -83,14 +84,6 @@ export const PLAYBOOK: Record<FailureStage, string> = {
     "The patch applied but the build/typecheck failed. Record it with write_ledger add_rejection (include the build error) and re-delegate a fix.",
   W_REJ:
     "A reviewer rejected the applied patch. Record it with write_ledger add_rejection and re-delegate addressing the review findings.",
-  WORKER_BINARY_NOT_FOUND:
-    "aider or its python interpreter was not found (capability probe failed). Install aider (pip install aider-chat) or set FOREMAN_AIDER_PYTHON; until resolved this tier fails open with a recorded waiver.",
-  WORKER_DIRTY_TREE_REFUSAL:
-    "The editable/read-only set was not tracked-and-clean at delegation (incoherent base for the host CAS). Do not stash, commit, reset, or rewrite user-owned repository state. Wait for an owner-approved stable base or use a patch-only path that preserves the current files; this one counts.",
-  WORKER_AIDER_EXIT:
-    "aider (or the Python harness) exited non-zero with no parseable result — a crash or opaque exit (exit code / traceback class in detail). Re-delegate; if it recurs on one model, raise FOREMAN_WORKER_ACTIVITY_TIMEOUT_MS or switch tier.",
-  WORKER_AIDER_LLM_ERROR:
-    "aider's own call to the serving endpoint failed (status in detail). Check the headroom-proxy/vLLM route and FOREMAN_API_BASE, then re-delegate; nothing counts against the model.",
 }
 
 // ─── Input schema (mirrors the inline zod in server.ts registration) ─────────────
@@ -316,7 +309,7 @@ async function runDelegation(
     return (
       `status: error\n\n` +
       `unit '${unit_id}' in phase '${phase}' has no recorded delegation. Record it first, then re-run invoke_worker:\n` +
-      `  write_ledger set_unit_status { phase: '${phase}', unit_id: '${unit_id}', data: { s: 'delegated', brief: '<worker brief summary>', tier: '${tier}' } }\n`
+      `  write_ledger set_unit_status { phase: '${phase}', unit_id: '${unit_id}', data: { s: 'delegated', brief: '<worker brief summary>', tier: '${tier}', preflight: { symbols_grepped: <N>, self_consistent: true } } }\n`
     )
   }
   const latest = delegations[delegations.length - 1]

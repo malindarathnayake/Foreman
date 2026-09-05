@@ -36,7 +36,7 @@ describe("handleWriteLedger — v0.3.1 tier telemetry + record_review (Zod path)
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "Worker brief for u1 — implement per spec", tier: "premium", route_reason: "high-risk unit" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "Worker brief for u1 — implement per spec", tier: "premium", route_reason: "high-risk unit" },
     })
     const unit = (await readLedger(ledgerPath)).phases.p1.units.u1
     expect(unit.tier).toBe("premium")
@@ -50,7 +50,7 @@ describe("handleWriteLedger — v0.3.1 tier telemetry + record_review (Zod path)
         operation: "set_unit_status",
         phase: "p1",
         unit_id: "u1",
-        data: { s: "delegated", brief: "Worker brief for u1 — implement per spec", tier: "turbo" },
+        data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "Worker brief for u1 — implement per spec", tier: "turbo" },
       })
     ).rejects.toThrow()
   })
@@ -122,7 +122,7 @@ describe("handleWriteLedger", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "Worker brief: implement unit u1 types and constants per spec" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "Worker brief: implement unit u1 types and constants per spec" },
     })
     const result = await handleWriteLedger(ledgerPath, {
       operation: "set_verdict",
@@ -141,7 +141,7 @@ describe("handleWriteLedger", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "worker brief long enough to clear the 20 char minimum" },
     })
     await handleWriteLedger(ledgerPath, {
       operation: "set_verdict",
@@ -149,6 +149,7 @@ describe("handleWriteLedger", () => {
       unit_id: "u1",
       data: { v: "pass" },
     })
+    await handleWriteLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [], completion: "complete" } })  // gate requires ≥1 review (2026-09 R2)
     const result = await handleWriteLedger(ledgerPath, {
       operation: "update_phase_gate",
       phase: "p1",
@@ -437,6 +438,212 @@ This has a high impact on the system and a low chance of being a false alarm.`
   })
 })
 
+// ─── field feedback 2026-09 #3: real advisor layouts must not collapse ──────
+describe("normalizeReview — advisor layouts (field feedback #3)", () => {
+  it("numbered list with **[SEV]** markers → one finding per item, preamble unparsed", () => {
+    const rawText = `Findings:
+
+1. **[HIGH]** src/lib/foo.ts:42 — Missing null check on config.port before parseInt.
+2. **[MEDIUM]** src/lib/foo.ts:88 — Error path swallows the original cause; wrap instead.
+3. **[MEDIUM]** src/tools/bar.ts:12 — Test expects 404 but implementation returns 400.
+4. **[LOW]** src/tools/bar.ts:130 — Unused import.
+5. **[HIGH]** src/lib/baz.ts:7 — [CWE-117] log key 'level' collides with GELF reserved field.
+6. **[LOW]** tests/foo.test.ts:9 — Assertion message misleading.
+`
+    const { data } = normalizeReview("codex", rawText)
+    expect(data.findings).toHaveLength(6)
+    expect(data.unparsed_lines).toBe(1)
+    expect(data.findings.map((f) => f.severity)).toEqual(["high", "medium", "medium", "low", "high", "low"])
+    expect(data.findings[0]).toMatchObject({ file: "src/lib/foo.ts", line: "42" })
+    expect(data.findings[0].description).toBe("Missing null check on config.port before parseInt.")
+    // CWE prefix survives intact — the ledger rule says it must stay in the description.
+    expect(data.findings[4].description).toMatch(/^\[CWE-117\] log key/)
+  })
+
+  it("'### Finding N' + 'Severity:' + 'File:' block layout → one finding per block", () => {
+    const rawText = `### Finding 1
+Severity: HIGH
+File: src/lib/foo.ts:42
+Missing null check on config.port.
+
+### Finding 2
+**Severity**: medium
+Location — src/lib/foo.ts:88
+Error path swallows the original cause.
+`
+    const { data } = normalizeReview("codex", rawText)
+    expect(data.findings).toHaveLength(2)
+    expect(data.findings[0]).toMatchObject({ severity: "high", file: "src/lib/foo.ts", line: "42" })
+    expect(data.findings[0].description).toBe("Missing null check on config.port.")
+    expect(data.findings[1]).toMatchObject({ severity: "medium", file: "src/lib/foo.ts", line: "88" })
+    expect(data.findings[1].description).toBe("Error path swallows the original cause.")
+    expect(data.unparsed_lines).toBe(0)
+  })
+
+  it("dash bullets with bold severity and [**SEV**] order → all captured", () => {
+    const rawText = `- **High** — src/lib/foo.ts:42: Missing null check.
+- **Medium** — src/lib/foo.ts:88: Error path swallows cause.
+- [**Low**] src/tools/bar.ts:130: Unused import.
+`
+    const { data } = normalizeReview("gemini", rawText)
+    expect(data.findings).toHaveLength(3)
+    expect(data.findings.map((f) => f.severity)).toEqual(["high", "medium", "low"])
+    expect(data.findings[0].description).toBe("Missing null check.")
+    expect(data.findings[2]).toMatchObject({ file: "src/tools/bar.ts", line: "130" })
+  })
+
+  it("trailing (SEV) tokens on paragraph openers → separate findings", () => {
+    const rawText = `src/lib/foo.ts:42 — Missing null check on config.port. (HIGH)
+
+src/lib/foo.ts:88 — Error path swallows the original cause. (MEDIUM)
+
+src/tools/bar.ts:130 — Unused import. [LOW]
+`
+    const { data } = normalizeReview("codex", rawText)
+    expect(data.findings).toHaveLength(3)
+    expect(data.findings.map((f) => f.severity)).toEqual(["high", "medium", "low"])
+    expect(data.findings[1]).toMatchObject({ file: "src/lib/foo.ts", line: "88" })
+    expect(data.findings[1].description).toBe("Error path swallows the original cause.")
+  })
+
+  it("unmarked prose never becomes a finding — 'checked … no findings' normalizes to zero", () => {
+    const rawText = `Checked contract behavior in src/a.ts and tests.
+No findings.`
+    const { data, text } = normalizeReview("gemini", rawText)
+    expect(data.findings).toHaveLength(0)
+    expect(data.unparsed_lines).toBe(2)
+    expect(text).toContain("findings: 0")
+    expect(text).toContain("unparsed_lines: 2")
+    expect(text).not.toContain("findings_json")
+  })
+
+  it("a second paragraph with a file reference stays inside the same finding", () => {
+    const rawText = `HIGH: src/lib/foo.ts:42 — Missing null check.
+
+Impact also reaches src/lib/bar.ts:9 where the value is dereferenced.
+`
+    const { data } = normalizeReview("codex", rawText)
+    expect(data.findings).toHaveLength(1)
+    expect(data.findings[0]).toMatchObject({ file: "src/lib/foo.ts", line: "42" })
+    expect(data.findings[0].description).toContain("src/lib/bar.ts:9")
+  })
+
+  it("'Highlight' and 'HIGH-level' prose do not open findings; 'High —' does", () => {
+    const { data } = normalizeReview("r", "Highlights of the review follow.\nHigh — src/a.ts:1 real issue")
+    expect(data.findings).toHaveLength(1)
+    expect(data.findings[0].severity).toBe("high")
+    expect(data.unparsed_lines).toBe(1)
+  })
+
+  // ─── round 3: layouts the reporter's 0.6.1 run still collapsed ──────────────
+  it("bold-wrapped numbered items with 'Severity:' mid-line and the location on the next line", () => {
+    const rawText = `**1. Missing null check** — Severity: High
+   src/lib/foo.ts:42 — config.port is parsed without a guard.
+**2. Error path swallows cause** — Severity: Medium
+   src/lib/foo.ts:88 — wrap instead of rethrowing a string.
+`
+    const { data } = normalizeReview("codex", rawText)
+    expect(data.findings).toHaveLength(2)
+    expect(data.findings[0]).toMatchObject({ severity: "high", file: "src/lib/foo.ts", line: "42" })
+    expect(data.findings[0].description).toBe("Missing null check config.port is parsed without a guard.")
+    expect(data.findings[1]).toMatchObject({ severity: "medium", file: "src/lib/foo.ts", line: "88" })
+    expect(data.unparsed_lines).toBe(0)
+  })
+
+  it("'1. **Title** (file:line) — HIGH: desc' with the token after the location", () => {
+    const rawText = `1. **Null deref** (src/a.ts:42) — HIGH: config.port may be undefined.
+2. **Unused import** (src/b.ts:3) — LOW: remove it.
+`
+    const { data } = normalizeReview("codex", rawText)
+    expect(data.findings.map((f) => f.severity)).toEqual(["high", "low"])
+    expect(data.findings[0]).toMatchObject({ file: "src/a.ts", line: "42" })
+    expect(data.findings[0].description).toBe("Null deref config.port may be undefined.")
+  })
+
+  it("item line with location, 'Severity:' on the NEXT line → one finding per item", () => {
+    const rawText = `1. src/a.ts:42 — config.port parsed without a guard
+   Severity: HIGH
+2. src/b.ts:7 — log key collides with reserved field
+   Severity: MEDIUM
+`
+    const { data } = normalizeReview("gemini", rawText)
+    expect(data.findings).toHaveLength(2)
+    expect(data.findings[0]).toMatchObject({ severity: "high", file: "src/a.ts", line: "42" })
+    expect(data.findings[1]).toMatchObject({ severity: "medium", file: "src/b.ts", line: "7" })
+    expect(data.findings[1].description).toBe("log key collides with reserved field")
+  })
+
+  it("exact [P0]–[P3] levels map to severities only when the item names a location", () => {
+    const rawText = `- [P1] src/a.ts:42 — null deref
+- [P3] src/b.ts:9 — naming
+- [P2] general remark with no location
+`
+    const { data } = normalizeReview("codex", rawText)
+    expect(data.findings.map((f) => f.severity)).toEqual(["high", "low"])
+    expect(data.unparsed_lines).toBe(1)
+  })
+
+  it("sentence-ending 'Severity: high.' on an item with a location", () => {
+    const { data } = normalizeReview("codex", "- src/a.ts:42 — config.port parsed without a guard. Severity: high.")
+    expect(data.findings).toHaveLength(1)
+    expect(data.findings[0]).toMatchObject({ severity: "high", file: "src/a.ts", line: "42" })
+    expect(data.findings[0].description).toBe("config.port parsed without a guard.")
+  })
+
+  it("markdown table rows with a severity cell; header and separator rows are not findings", () => {
+    const rawText = `| Severity | Location | Finding |
+|---|---|---|
+| HIGH | src/a.ts:42 | config.port parsed without a guard |
+| LOW | src/b.ts:9 | naming |
+`
+    const { data } = normalizeReview("codex", rawText)
+    expect(data.findings).toHaveLength(2)
+    expect(data.findings[0]).toMatchObject({ severity: "high", file: "src/a.ts", line: "42", description: "config.port parsed without a guard" })
+    expect(data.unparsed_lines).toBe(2)
+  })
+
+  it("consecutive '### N. Title (SEV)' headings with no blank line between them", () => {
+    const rawText = `### 1. Null deref (HIGH)
+src/a.ts:42 — config.port parsed without a guard.
+### 2. Unused import (LOW)
+src/b.ts:3 — remove it.
+`
+    const { data } = normalizeReview("codex", rawText)
+    expect(data.findings).toHaveLength(2)
+    expect(data.findings[1]).toMatchObject({ severity: "low", file: "src/b.ts", line: "3" })
+  })
+
+  it("'- **High severity**:' leaves no residue in the description", () => {
+    const { data } = normalizeReview("codex", "- **High severity**: src/a.ts:42 — config.port parsed without a guard.")
+    expect(data.findings[0].description).toBe("config.port parsed without a guard.")
+  })
+
+  it("false-positive guards: 'Default severity: high' prose and unmarked numbered items never become findings", () => {
+    const rawText = `- Default severity: high for audit events, low for debug.
+1. src/a.ts:42 — config.port parsed without a guard
+2. src/b.ts:7 — log key collides with reserved field
+`
+    const { data } = normalizeReview("codex", rawText)
+    expect(data.findings).toHaveLength(0)
+    expect(data.unparsed_lines).toBe(3)
+  })
+
+  it("pipes are escaped in the table and preserved in findings_json; description capped at 10000", () => {
+    const long = "x".repeat(12000)
+    const rawText = `HIGH: src/a.ts:1 uses a | b ${long}`
+    const { data, text } = normalizeReview("codex", rawText)
+    expect(data.findings).toHaveLength(1)
+    expect(data.findings[0].description.length).toBe(10000)
+    const tableLine = text.split("\n").find((l) => l.startsWith("high | "))!
+    expect(tableLine.split(" | ")).toHaveLength(4)
+    expect(tableLine).toContain("a ¦ b")
+    const jsonLine = text.split("\n").find((l) => l.startsWith("findings_json: "))!
+    const parsed = JSON.parse(jsonLine.slice("findings_json: ".length))
+    expect(parsed[0].description).toContain("a | b")
+    expect(parsed[0].file).toBe("src/a.ts")
+  })
+})
+
 describe("NormalizeReviewInputSchema caps", () => {
   it("rejects reviewer exceeding 200 chars", () => {
     expect(() =>
@@ -552,7 +759,7 @@ describe("handleWriteLedger — set_verdict via/note end-to-end", () => {
       operation: "set_unit_status",
       phase: "p1",
       unit_id: unit,
-      data: { s: "delegated", brief: "worker brief long enough to clear the 20 char minimum" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "worker brief long enough to clear the 20 char minimum" },
     })
   }
 
@@ -975,6 +1182,7 @@ describe("WriteLedgerInputSchema — set_unit_status user_override (anti-strip)"
       unit_id: "u1",
       data: {
         s: "delegated",
+        preflight: { symbols_grepped: 1, self_consistent: true },
         brief: "worker brief long enough to clear the 20 char minimum",
         user_override: true,
       },
@@ -1389,7 +1597,7 @@ describe("handleWriteLedger — P5 discipline-adherence gate (default-on)", () =
       operation: "set_unit_status",
       phase: "p1",
       unit_id: "u1",
-      data: { s: "delegated", brief },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief },
     })
     await handleWriteLedger(ledgerPath, {
       operation: "set_verdict",
@@ -1453,7 +1661,7 @@ describe("declare_phase_units", () => {
       operation: "set_unit_status",
       phase,
       unit_id: unitId,
-      data: { s: "delegated", brief: "Worker brief long enough for the delegation gate" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "Worker brief long enough for the delegation gate" },
     })
     await handleWriteLedger(ledgerPath, {
       operation: "set_verdict",
@@ -1507,6 +1715,7 @@ describe("declare_phase_units", () => {
 
   it("is blocked while the phase gate is 'pass'", async () => {
     await passUnit("p1", "u1")
+    await handleWriteLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [], completion: "complete" } })  // gate requires ≥1 review (2026-09 R2)
     await handleWriteLedger(ledgerPath, {
       operation: "update_phase_gate", phase: "p1", data: { g: "pass" },
     })
@@ -1576,6 +1785,7 @@ describe("declare_phase_units", () => {
       })
     ).rejects.toThrow(/declares units never registered.*u2/)
     await passUnit("p1", "u2")
+    await handleWriteLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "test-seat", findings: [], completion: "complete" } })  // gate requires ≥1 review (2026-09 R2)
     await handleWriteLedger(ledgerPath, {
       operation: "update_phase_gate", phase: "p1", data: { g: "pass" },
     })

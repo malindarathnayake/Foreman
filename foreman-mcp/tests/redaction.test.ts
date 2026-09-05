@@ -273,6 +273,7 @@ describe("scrub chokepoints (4b)", () => {
         unit_id: "u1",
         data: {
           s: "delegated",
+          preflight: { symbols_grepped: 1, self_consistent: true },
           brief: "Worker brief: connect using fixture_value_4b00000a as the credential",
         },
       })
@@ -384,7 +385,7 @@ describe("scrub chokepoints (4b)", () => {
         operation: "set_unit_status",
         phase: "p1",
         unit_id: "u1",
-        data: { s: "delegated", brief },
+        data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief },
       })
 
       const raw = await fs.readFile(ledgerPath, "utf-8")

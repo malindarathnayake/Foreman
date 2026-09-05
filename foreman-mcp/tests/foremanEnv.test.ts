@@ -3,7 +3,7 @@ import fs from "fs/promises"
 import os from "os"
 import path from "path"
 import { execFileSync } from "node:child_process"
-import { loadForemanEnv, aiderEditFormat } from "../src/lib/foremanEnv.js"
+import { loadForemanEnv } from "../src/lib/foremanEnv.js"
 import { scrub, resetForTest } from "../src/lib/redaction.js"
 import { initSession } from "../src/lib/journal.js"
 
@@ -66,21 +66,18 @@ function expectHappyPathConfig(config: unknown): void {
         editFormat: "whole_file",
         reasoningEffort: "high",
         workerKind: "remote-chat",
-        maxReflections: 3,
       },
       standard: {
         model: "zhipu/glm-4.5",
         workerClass: "capable",
         editFormat: "unified_diff",
         workerKind: "remote-chat",
-        maxReflections: 3,
       },
       premium: {
         model: "anthropic/claude-sonnet-4.6",
         workerClass: "frontier",
         editFormat: "unified_diff",
         workerKind: "remote-chat",
-        maxReflections: 3,
       },
     },
   })
@@ -460,23 +457,6 @@ describe("loadForemanEnv", () => {
   })
 
   describe("worker_kind axis (unit 1a)", () => {
-    it("recognizes an aider-cli tier config (loads ok)", async () => {
-      const dir = await makeTempDir()
-      await writeForemanEnv(
-        dir,
-        "schema_version=1\n" +
-          "FOREMAN_API_BASE=https://openrouter.ai/api/v1\n" +
-          "FOREMAN_API_KEY=${ENV:OPENROUTER_API_KEY}\n" +
-          "FOREMAN_TIER_CHEAP=qwen/qwen3-30b\n" +
-          "FOREMAN_WORKER_CLASS_CHEAP=compact\n" +
-          "FOREMAN_WORKER_KIND_CHEAP=aider-cli\n" +
-          "FOREMAN_NUM_CTX_CHEAP=262144\n" +
-          "FOREMAN_MAX_REFLECTIONS_CHEAP=3\n" +
-          "FOREMAN_REASONING_TAG_CHEAP=think\n"
-      )
-      const result = await loadForemanEnv({ dir, env: { OPENROUTER_API_KEY: "fixture_key_1a000001" } })
-      expect(result.status).toBe("ok")
-    })
 
     it("recognizes a remote-chat worker_kind", async () => {
       const dir = await makeTempDir()
@@ -508,12 +488,12 @@ describe("loadForemanEnv", () => {
       expect(result.status).toBe("config_error")
       if (result.status !== "config_error") return
       expect(result.message).toContain("unsupported value for 'FOREMAN_WORKER_KIND_CHEAP'")
-      expect(result.message).toContain("Supported values: remote-chat, aider-cli")
+      expect(result.message).toContain("Supported values: remote-chat")
     })
 
     it("tier-suffix typo is rejected as unknown", async () => {
       const dir = await makeTempDir()
-      await writeForemanEnv(dir, "schema_version=1\nFOREMAN_WORKER_KIND_CHEEP=aider-cli\n")
+      await writeForemanEnv(dir, "schema_version=1\nFOREMAN_WORKER_KIND_CHEEP=remote-chat\n")
       const result = await loadForemanEnv({ dir })
       expect(result.status).toBe("config_error")
       if (result.status !== "config_error") return
@@ -527,43 +507,12 @@ describe("loadForemanEnv", () => {
       expect(result.status).toBe("config_error")
       if (result.status !== "config_error") return
       expect(result.message).toContain("FOREMAN_WORKER_KIND_<CHEAP|STANDARD|PREMIUM>")
-      expect(result.message).toContain("FOREMAN_NUM_CTX_<CHEAP|STANDARD|PREMIUM>")
-      expect(result.message).toContain("FOREMAN_MAX_REFLECTIONS_<CHEAP|STANDARD|PREMIUM>")
-      expect(result.message).toContain("FOREMAN_REASONING_TAG_<CHEAP|STANDARD|PREMIUM>")
     })
   })
 
   describe("tier resolution (unit 1b)", () => {
-    it("aider-cli tier fully resolves", async () => {
-      const dir = await makeTempDir()
-      await writeForemanEnv(
-        dir,
-        "schema_version=1\n" +
-          "FOREMAN_API_BASE=http://localhost:8787/v1\n" +
-          "FOREMAN_API_KEY=${ENV:OPENROUTER_API_KEY}\n" +
-          "FOREMAN_TIER_CHEAP=qwen/qwen3-30b\n" +
-          "FOREMAN_WORKER_CLASS_CHEAP=compact\n" +
-          "FOREMAN_EDIT_FORMAT_CHEAP=whole_file\n" +
-          "FOREMAN_WORKER_KIND_CHEAP=aider-cli\n" +
-          "FOREMAN_NUM_CTX_CHEAP=262144\n" +
-          "FOREMAN_MAX_REFLECTIONS_CHEAP=5\n" +
-          "FOREMAN_REASONING_TAG_CHEAP=think\n"
-      )
-      const result = await loadForemanEnv({ dir, env: { OPENROUTER_API_KEY: "fixture_key_1b000001" } })
-      expect(result.status).toBe("ok")
-      if (result.status !== "ok") return
-      expect(result.config.tiers.cheap).toEqual({
-        model: "qwen/qwen3-30b",
-        workerClass: "compact",
-        editFormat: "whole_file",
-        workerKind: "aider-cli",
-        numCtx: 262144,
-        maxReflections: 5,
-        reasoningTag: "think",
-      })
-    })
 
-    it("absent worker_kind defaults to remote-chat with maxReflections 3", async () => {
+    it("absent worker_kind defaults to remote-chat", async () => {
       const dir = await makeTempDir()
       await writeForemanEnv(
         dir,
@@ -582,120 +531,13 @@ describe("loadForemanEnv", () => {
         workerClass: "capable",
         editFormat: "unified_diff",
         workerKind: "remote-chat",
-        maxReflections: 3,
       })
     })
 
-    it("aider-cli tier missing num_ctx is a corrected-call error", async () => {
-      const dir = await makeTempDir()
-      await writeForemanEnv(
-        dir,
-        "schema_version=1\n" +
-          "FOREMAN_API_BASE=http://localhost:8787/v1\n" +
-          "FOREMAN_API_KEY=${ENV:OPENROUTER_API_KEY}\n" +
-          "FOREMAN_TIER_CHEAP=qwen/qwen3-30b\n" +
-          "FOREMAN_WORKER_CLASS_CHEAP=compact\n" +
-          "FOREMAN_WORKER_KIND_CHEAP=aider-cli\n"
-      )
-      const result = await loadForemanEnv({ dir, env: { OPENROUTER_API_KEY: "fixture_key_1b000001" } })
-      expect(result.status).toBe("config_error")
-      if (result.status !== "config_error") return
-      expect(result.message).toContain("FOREMAN_NUM_CTX_CHEAP")
-      expect(result.message).toContain("aider-cli")
-    })
 
-    it("non-integer num_ctx", async () => {
-      const dir = await makeTempDir()
-      await writeForemanEnv(
-        dir,
-        "schema_version=1\n" +
-          "FOREMAN_API_BASE=http://localhost:8787/v1\n" +
-          "FOREMAN_API_KEY=${ENV:OPENROUTER_API_KEY}\n" +
-          "FOREMAN_TIER_CHEAP=qwen/qwen3-30b\n" +
-          "FOREMAN_WORKER_CLASS_CHEAP=compact\n" +
-          "FOREMAN_WORKER_KIND_CHEAP=aider-cli\n" +
-          "FOREMAN_NUM_CTX_CHEAP=lots\n"
-      )
-      const result = await loadForemanEnv({ dir, env: { OPENROUTER_API_KEY: "fixture_key_1b000001" } })
-      expect(result.status).toBe("config_error")
-      if (result.status !== "config_error") return
-      expect(result.message).toContain("unsupported value for 'FOREMAN_NUM_CTX_CHEAP'")
-    })
 
-    it("non-integer max_reflections", async () => {
-      const dir = await makeTempDir()
-      await writeForemanEnv(
-        dir,
-        "schema_version=1\n" +
-          "FOREMAN_API_BASE=https://openrouter.ai/api/v1\n" +
-          "FOREMAN_API_KEY=${ENV:OPENROUTER_API_KEY}\n" +
-          "FOREMAN_TIER_CHEAP=qwen/qwen3-30b\n" +
-          "FOREMAN_WORKER_CLASS_CHEAP=compact\n" +
-          "FOREMAN_MAX_REFLECTIONS_CHEAP=many\n"
-      )
-      const result = await loadForemanEnv({ dir, env: { OPENROUTER_API_KEY: "fixture_key_1b000001" } })
-      expect(result.status).toBe("config_error")
-      if (result.status !== "config_error") return
-      expect(result.message).toContain("unsupported value for 'FOREMAN_MAX_REFLECTIONS_CHEAP'")
-    })
 
-    it("remote-chat tier may carry num_ctx", async () => {
-      const dir = await makeTempDir()
-      await writeForemanEnv(
-        dir,
-        "schema_version=1\n" +
-          "FOREMAN_API_BASE=https://openrouter.ai/api/v1\n" +
-          "FOREMAN_API_KEY=${ENV:OPENROUTER_API_KEY}\n" +
-          "FOREMAN_TIER_STANDARD=zhipu/glm-4.5\n" +
-          "FOREMAN_WORKER_CLASS_STANDARD=capable\n" +
-          "FOREMAN_WORKER_KIND_STANDARD=remote-chat\n" +
-          "FOREMAN_NUM_CTX_STANDARD=131072\n"
-      )
-      const result = await loadForemanEnv({ dir, env: { OPENROUTER_API_KEY: "fixture_key_1b000001" } })
-      expect(result.status).toBe("ok")
-      if (result.status !== "ok") return
-      expect(result.config.tiers.standard?.numCtx).toBe(131072)
-      expect(result.config.tiers.standard?.workerKind).toBe("remote-chat")
-    })
 
-    it("loopback coherence: warns on non-loopback base, silent on loopback", async () => {
-      const spy = vi.spyOn(console, "error").mockImplementation(() => {})
-      try {
-        const dir1 = await makeTempDir()
-        await writeForemanEnv(
-          dir1,
-          "schema_version=1\n" +
-            "FOREMAN_API_BASE=https://openrouter.ai/api/v1\n" +
-            "FOREMAN_API_KEY=${ENV:OPENROUTER_API_KEY}\n" +
-            "FOREMAN_TIER_CHEAP=qwen/qwen3-30b\n" +
-            "FOREMAN_WORKER_CLASS_CHEAP=compact\n" +
-            "FOREMAN_WORKER_KIND_CHEAP=aider-cli\n" +
-            "FOREMAN_NUM_CTX_CHEAP=262144\n"
-        )
-        const result1 = await loadForemanEnv({ dir: dir1, env: { OPENROUTER_API_KEY: "fixture_key_1b000001" } })
-        expect(result1.status).toBe("ok")
-        expect(spy).toHaveBeenCalledWith(expect.stringContaining("not a loopback URL"))
-
-        spy.mockClear()
-
-        const dir2 = await makeTempDir()
-        await writeForemanEnv(
-          dir2,
-          "schema_version=1\n" +
-            "FOREMAN_API_BASE=http://localhost:8787/v1\n" +
-            "FOREMAN_API_KEY=${ENV:OPENROUTER_API_KEY}\n" +
-            "FOREMAN_TIER_CHEAP=qwen/qwen3-30b\n" +
-            "FOREMAN_WORKER_CLASS_CHEAP=compact\n" +
-            "FOREMAN_WORKER_KIND_CHEAP=aider-cli\n" +
-            "FOREMAN_NUM_CTX_CHEAP=262144\n"
-        )
-        const result2 = await loadForemanEnv({ dir: dir2, env: { OPENROUTER_API_KEY: "fixture_key_1b000001" } })
-        expect(result2.status).toBe("ok")
-        expect(spy).not.toHaveBeenCalledWith(expect.stringContaining("not a loopback URL"))
-      } finally {
-        spy.mockRestore()
-      }
-    })
 
     it("orphan new-axis key names the missing FOREMAN_TIER_<T> line", async () => {
       const dir = await makeTempDir()
@@ -704,151 +546,17 @@ describe("loadForemanEnv", () => {
         "schema_version=1\n" +
           "FOREMAN_API_BASE=https://openrouter.ai/api/v1\n" +
           "FOREMAN_API_KEY=${ENV:OPENROUTER_API_KEY}\n" +
-          "FOREMAN_NUM_CTX_CHEAP=262144\n"
+          "FOREMAN_WORKER_KIND_CHEAP=remote-chat\n"
       )
       const result = await loadForemanEnv({ dir, env: { OPENROUTER_API_KEY: "fixture_key_1b000001" } })
       expect(result.status).toBe("config_error")
       if (result.status !== "config_error") return
-      expect(result.message).toContain("FOREMAN_NUM_CTX_CHEAP is set but tier 'cheap' is not configured")
+      expect(result.message).toContain("FOREMAN_WORKER_KIND_CHEAP is set but tier 'cheap' is not configured")
     })
   })
 
-  describe("p1 hardening (checkpoint fixes)", () => {
-    it("empty max_reflections rejected", async () => {
-      const dir = await makeTempDir()
-      await writeForemanEnv(
-        dir,
-        "schema_version=1\n" +
-          "FOREMAN_API_BASE=http://localhost:8787/v1\n" +
-          "FOREMAN_API_KEY=${ENV:OPENROUTER_API_KEY}\n" +
-          "FOREMAN_TIER_CHEAP=qwen/qwen3-30b\n" +
-          "FOREMAN_WORKER_CLASS_CHEAP=compact\n" +
-          "FOREMAN_MAX_REFLECTIONS_CHEAP=\n"
-      )
-      const result = await loadForemanEnv({ dir, env: { OPENROUTER_API_KEY: "fixture_key_hard001" } })
-      expect(result.status).toBe("config_error")
-      if (result.status !== "config_error") return
-      expect(result.message).toContain("unsupported value for 'FOREMAN_MAX_REFLECTIONS_CHEAP'")
-    })
-
-    it("empty num_ctx rejected on aider-cli", async () => {
-      const dir = await makeTempDir()
-      await writeForemanEnv(
-        dir,
-        "schema_version=1\n" +
-          "FOREMAN_API_BASE=http://localhost:8787/v1\n" +
-          "FOREMAN_API_KEY=${ENV:OPENROUTER_API_KEY}\n" +
-          "FOREMAN_TIER_CHEAP=qwen/qwen3-30b\n" +
-          "FOREMAN_WORKER_CLASS_CHEAP=compact\n" +
-          "FOREMAN_WORKER_KIND_CHEAP=aider-cli\n" +
-          "FOREMAN_NUM_CTX_CHEAP=\n"
-      )
-      const result = await loadForemanEnv({ dir, env: { OPENROUTER_API_KEY: "fixture_key_hard001" } })
-      expect(result.status).toBe("config_error")
-      if (result.status !== "config_error") return
-      expect(result.message).toContain("unsupported value for 'FOREMAN_NUM_CTX_CHEAP'")
-    })
-
-    it("scientific-notation num_ctx is rejected", async () => {
-      const dir = await makeTempDir()
-      await writeForemanEnv(
-        dir,
-        "schema_version=1\n" +
-          "FOREMAN_API_BASE=http://localhost:8787/v1\n" +
-          "FOREMAN_API_KEY=${ENV:OPENROUTER_API_KEY}\n" +
-          "FOREMAN_TIER_CHEAP=qwen/qwen3-30b\n" +
-          "FOREMAN_WORKER_CLASS_CHEAP=compact\n" +
-          "FOREMAN_WORKER_KIND_CHEAP=aider-cli\n" +
-          "FOREMAN_NUM_CTX_CHEAP=1e3\n"
-      )
-      const result = await loadForemanEnv({ dir, env: { OPENROUTER_API_KEY: "fixture_key_hard001" } })
-      expect(result.status).toBe("config_error")
-      if (result.status !== "config_error") return
-      expect(result.message).toContain("unsupported value for 'FOREMAN_NUM_CTX_CHEAP'")
-    })
-
-    it("hex-notation max_reflections is rejected", async () => {
-      const dir = await makeTempDir()
-      await writeForemanEnv(
-        dir,
-        "schema_version=1\n" +
-          "FOREMAN_API_BASE=http://localhost:8787/v1\n" +
-          "FOREMAN_API_KEY=${ENV:OPENROUTER_API_KEY}\n" +
-          "FOREMAN_TIER_CHEAP=qwen/qwen3-30b\n" +
-          "FOREMAN_WORKER_CLASS_CHEAP=compact\n" +
-          "FOREMAN_MAX_REFLECTIONS_CHEAP=0x2\n"
-      )
-      const result = await loadForemanEnv({ dir, env: { OPENROUTER_API_KEY: "fixture_key_hard001" } })
-      expect(result.status).toBe("config_error")
-      if (result.status !== "config_error") return
-      expect(result.message).toContain("unsupported value for 'FOREMAN_MAX_REFLECTIONS_CHEAP'")
-    })
-
-    it("127.0.0.0/8 is treated as loopback (no warning)", async () => {
-      const spy = vi.spyOn(console, "error").mockImplementation(() => {})
-      try {
-        const dir = await makeTempDir()
-        await writeForemanEnv(
-          dir,
-          "schema_version=1\n" +
-            "FOREMAN_API_BASE=http://127.0.0.2:8787/v1\n" +
-            "FOREMAN_API_KEY=${ENV:OPENROUTER_API_KEY}\n" +
-            "FOREMAN_TIER_CHEAP=qwen/qwen3-30b\n" +
-            "FOREMAN_WORKER_CLASS_CHEAP=compact\n" +
-            "FOREMAN_WORKER_KIND_CHEAP=aider-cli\n" +
-            "FOREMAN_NUM_CTX_CHEAP=262144\n"
-        )
-        const result = await loadForemanEnv({ dir, env: { OPENROUTER_API_KEY: "fixture_key_hard001" } })
-        expect(result.status).toBe("ok")
-        for (const call of spy.mock.calls) {
-          for (const arg of call) {
-            expect(String(arg)).not.toContain("is not a loopback URL")
-          }
-        }
-      } finally {
-        spy.mockRestore()
-      }
-    })
-
-    it("[CWE-532] warning does not echo embedded credentials", async () => {
-      const spy = vi.spyOn(console, "error").mockImplementation(() => {})
-      try {
-        const dir = await makeTempDir()
-        await writeForemanEnv(
-          dir,
-          "schema_version=1\n" +
-            "FOREMAN_API_BASE=https://user:supersecret@example.com/v1?token=abc123\n" +
-            "FOREMAN_API_KEY=${ENV:OPENROUTER_API_KEY}\n" +
-            "FOREMAN_TIER_CHEAP=qwen/qwen3-30b\n" +
-            "FOREMAN_WORKER_CLASS_CHEAP=compact\n" +
-            "FOREMAN_WORKER_KIND_CHEAP=aider-cli\n" +
-            "FOREMAN_NUM_CTX_CHEAP=262144\n"
-        )
-        const result = await loadForemanEnv({ dir, env: { OPENROUTER_API_KEY: "fixture_key_hard001" } })
-        expect(result.status).toBe("ok")
-
-        expect(spy).toHaveBeenCalledWith(expect.stringContaining("is not a loopback URL"))
-
-        for (const call of spy.mock.calls) {
-          for (const arg of call) {
-            const s = String(arg)
-            expect(s).not.toContain("supersecret")
-            expect(s).not.toContain("abc123")
-            expect(s).not.toContain("user:")
-          }
-        }
-      } finally {
-        spy.mockRestore()
-      }
-    })
-  })
 
   describe("edit_format seam (unit 1c)", () => {
-    it("aiderEditFormat maps internal edit_format names to aider CLI names", () => {
-      expect(aiderEditFormat("whole_file")).toBe("whole")
-      expect(aiderEditFormat("search_replace")).toBe("diff")
-      expect(aiderEditFormat("unified_diff")).toBe("udiff")
-    })
 
     it("compact tier defaults to whole_file when edit_format is unset", async () => {
       const dir = await makeTempDir()

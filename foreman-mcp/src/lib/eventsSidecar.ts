@@ -27,8 +27,6 @@ export type EventType =
   | "worker_completed"
   | "patch_checked"
   | "validation_completed"
-  | "worktree_created"
-  | "worktree_torn_down"
 
 export type FailureStage =
   | "BRIEF_TOO_LARGE"
@@ -48,25 +46,19 @@ export type FailureStage =
   | "PATCH_APPLY_FAIL"
   | "BLD_ERR"
   | "W_REJ"
-  | "WORKER_BINARY_NOT_FOUND"
-  | "WORKER_DIRTY_TREE_REFUSAL"
-  | "WORKER_AIDER_EXIT"
-  | "WORKER_AIDER_LLM_ERROR"
 
 export type FinishReasonClass = "stop" | "length" | "content_filter" | "other"
 export type Tier = "cheap" | "standard" | "premium"
 export type CapabilityClass = "frontier" | "capable" | "compact"
 export type EditFormat = "unified_diff" | "search_replace" | "whole_file"
 export type Outcome = "pass" | "fail" | "inconclusive"
-export type WorkerKind = "remote-chat" | "aider-cli"
+export type WorkerKind = "remote-chat"
 
 const EVENT_TYPES = new Set<string>([
   "delegation_started",
   "worker_completed",
   "patch_checked",
   "validation_completed",
-  "worktree_created",
-  "worktree_torn_down",
 ])
 
 export const FAILURE_STAGES = new Set<string>([
@@ -87,10 +79,6 @@ export const FAILURE_STAGES = new Set<string>([
   "PATCH_APPLY_FAIL",
   "BLD_ERR",
   "W_REJ",
-  "WORKER_BINARY_NOT_FOUND",
-  "WORKER_DIRTY_TREE_REFUSAL",
-  "WORKER_AIDER_EXIT",
-  "WORKER_AIDER_LLM_ERROR",
 ])
 
 // Refunded stages: pre-send + transport-infra failures that never count against model
@@ -104,10 +92,17 @@ export const REFUNDED_STAGES: ReadonlySet<FailureStage> = new Set<FailureStage>(
   "WORKER_AUTH_FAIL",
   "WORKER_QUOTA_FAIL",
   "WORKER_MODEL_NOT_FOUND",
+])
+
+// Read-only legacy set (0.6.3): the four stages the removed aider_worker emitted. They
+// are no longer accepted on append, but sidecars written before 0.6.3 still carry them,
+// and they were refunded then — reclassifying them as counted model failures on read
+// would rewrite history. delegationMetrics.ts unions this with REFUNDED_STAGES.
+export const LEGACY_REFUNDED_STAGES: ReadonlySet<string> = new Set<string>([
   "WORKER_BINARY_NOT_FOUND",
+  "WORKER_DIRTY_TREE_REFUSAL",
   "WORKER_AIDER_EXIT",
   "WORKER_AIDER_LLM_ERROR",
-  "WORKER_DIRTY_TREE_REFUSAL",
 ])
 
 const FINISH_REASON_CLASSES = new Set<string>(["stop", "length", "content_filter", "other"])
@@ -115,7 +110,7 @@ const TIERS = new Set<string>(["cheap", "standard", "premium"])
 const CAPABILITY_CLASSES = new Set<string>(["frontier", "capable", "compact"])
 const EDIT_FORMATS = new Set<string>(["unified_diff", "search_replace", "whole_file"])
 const OUTCOMES = new Set<string>(["pass", "fail", "inconclusive"])
-const WORKER_KINDS = new Set<string>(["remote-chat", "aider-cli"])
+const WORKER_KINDS = new Set<string>(["remote-chat"])
 
 // ─── Envelope shape ────────────────────────────────────────────────────────────
 // Input accepted by appendEvent — everything in the envelope EXCEPT the two
@@ -150,7 +145,6 @@ export interface SidecarEventInput {
   worker_kind?: WorkerKind
   base_commit?: string
   editable_count?: number
-  aider_edited_files_count?: number
   num_malformed_responses?: number
   num_reflections?: number
   num_exhausted_context_windows?: number
@@ -201,7 +195,6 @@ const OPTIONAL_FIELDS = [
   "worker_kind",
   "base_commit",
   "editable_count",
-  "aider_edited_files_count",
   "num_malformed_responses",
   "num_reflections",
   "num_exhausted_context_windows",
@@ -353,9 +346,6 @@ function validateEnvelope(event: Record<string, unknown>): void {
     throw new Error("eventsSidecar: 'worker_confidence' must be a number")
   }
   if (event.editable_count !== undefined) validateNonNegativeInt("editable_count", event.editable_count)
-  if (event.aider_edited_files_count !== undefined) {
-    validateNonNegativeInt("aider_edited_files_count", event.aider_edited_files_count)
-  }
   if (event.num_malformed_responses !== undefined) {
     validateNonNegativeInt("num_malformed_responses", event.num_malformed_responses)
   }
@@ -729,7 +719,7 @@ export function resolveUnitDelegation(
 
   // Strict reconciliation (checkpoint review + user arbitration 2026-07-08; spec §320/§322).
   // The ONLY clean terminal is a validation_completed event with outcome 'pass'. Every other
-  // terminal — a non-'pass' outcome (INCLUDING refunded-infra failures like WORKER_AIDER_EXIT),
+  // terminal — a non-'pass' outcome (INCLUDING refunded-infra failures like WORKER_TIMEOUT),
   // or a 'pass' carried on a non-validation_completed event — is a contradiction the gate must
   // reconcile. Refunded EARLIER attempts don't taint a later clean pass: only the LATEST
   // delegation is inspected, and in the legitimate flow its terminal IS the validation_completed{pass}.

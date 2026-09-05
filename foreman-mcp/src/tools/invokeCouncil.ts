@@ -882,6 +882,7 @@ function renderCouncil(r: RenderInput): string {
           phase: r.phase,
           data: {
             advisor: `council:${label}`,
+            stage: "independent",
             findings: kept,
             packet_hash: r.packetHash,
             ...(tokens > 0 ? { tokens } : {}),

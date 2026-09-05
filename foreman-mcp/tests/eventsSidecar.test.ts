@@ -11,6 +11,8 @@ import {
   boundIdentifier,
   resolveUnitDelegation,
   REFUNDED_STAGES,
+  LEGACY_REFUNDED_STAGES,
+  FAILURE_STAGES,
   type SidecarEventInput,
 } from "../src/lib/eventsSidecar.js"
 import { resetForTest } from "../src/lib/redaction.js"
@@ -354,86 +356,7 @@ describe("eventsSidecar", () => {
     })
   })
 
-  describe("aider-cli envelope extension", () => {
-    it("worktree_created with base_commit + editable_count appends and reads back intact", async () => {
-      const shaLike = "a".repeat(40)
-      await appendEvent(
-        sidecarPath,
-        fixtureEvent({
-          event_id: "e1",
-          event_type: "worktree_created",
-          base_commit: shaLike,
-          editable_count: 3,
-        })
-      )
-
-      const { events, warning } = await readEvents(sidecarPath)
-      expect(warning).toBeUndefined()
-      expect(events).toHaveLength(1)
-      expect(events[0].base_commit).toBe(shaLike)
-      expect(events[0].editable_count).toBe(3)
-    })
-
-    it("worktree_torn_down with torn_down_ok true or false appends/reads back", async () => {
-      await appendEvent(
-        sidecarPath,
-        fixtureEvent({ event_id: "e1", event_type: "worktree_torn_down", torn_down_ok: true })
-      )
-      await appendEvent(
-        sidecarPath,
-        fixtureEvent({ event_id: "e2", event_type: "worktree_torn_down", torn_down_ok: false })
-      )
-
-      const { events, warning } = await readEvents(sidecarPath)
-      expect(warning).toBeUndefined()
-      expect(events).toHaveLength(2)
-      expect(events[0].torn_down_ok).toBe(true)
-      expect(events[1].torn_down_ok).toBe(false)
-    })
-
-    it("worker_completed with aider-cli diagnostics appends and reads back all values intact", async () => {
-      const event = fixtureEvent({
-        event_id: "e1",
-        event_type: "worker_completed",
-        worker_kind: "aider-cli",
-        aider_edited_files_count: 4,
-        num_malformed_responses: 1,
-        num_reflections: 2,
-        num_exhausted_context_windows: 0,
-        reflections_capped: true,
-        total_cost: 0.0123,
-        tokens_sent: 1000,
-        tokens_received: 250,
-      })
-      await appendEvent(sidecarPath, event)
-
-      const { events, warning } = await readEvents(sidecarPath)
-      expect(warning).toBeUndefined()
-      expect(events).toHaveLength(1)
-      const e = events[0]
-      expect(e.worker_kind).toBe("aider-cli")
-      expect(e.aider_edited_files_count).toBe(4)
-      expect(e.num_malformed_responses).toBe(1)
-      expect(e.num_reflections).toBe(2)
-      expect(e.num_exhausted_context_windows).toBe(0)
-      expect(e.reflections_capped).toBe(true)
-      expect(e.total_cost).toBe(0.0123)
-      expect(e.tokens_sent).toBe(1000)
-      expect(e.tokens_received).toBe(250)
-    })
-
-    it("worker_kind accepts remote-chat and aider-cli; invalid value throws mentioning worker_kind", async () => {
-      await expect(
-        appendEvent(sidecarPath, fixtureEvent({ event_id: "e1", worker_kind: "remote-chat" }))
-      ).resolves.toBeDefined()
-      await expect(
-        appendEvent(sidecarPath, fixtureEvent({ event_id: "e2", worker_kind: "aider-cli" }))
-      ).resolves.toBeDefined()
-
-      const bad = fixtureEvent({ event_id: "e3", worker_kind: "local" })
-      await expect(appendEvent(sidecarPath, bad)).rejects.toThrow(/worker_kind/)
-    })
-
+  describe("envelope extension (remote-chat)", () => {
     it("negative or non-integer values for editable_count and num_reflections throw", async () => {
       await expect(
         appendEvent(sidecarPath, fixtureEvent({ editable_count: -1 }))
@@ -476,107 +399,6 @@ describe("eventsSidecar", () => {
       expect(result.base_commit).toBe("b".repeat(40))
     })
 
-    it("full aider delegation chain appends in order with a valid hash chain", async () => {
-      const delegationId = "del_aider0001"
-
-      const e1 = await appendEvent(
-        sidecarPath,
-        fixtureEvent({
-          event_id: "aider_e1",
-          event_type: "delegation_started",
-          delegation_id: delegationId,
-          worker_kind: "aider-cli",
-        })
-      )
-      const e2 = await appendEvent(
-        sidecarPath,
-        fixtureEvent({
-          event_id: "aider_e2",
-          event_type: "worktree_created",
-          delegation_id: delegationId,
-          base_commit: "c".repeat(40),
-          editable_count: 5,
-        })
-      )
-      const e3 = await appendEvent(
-        sidecarPath,
-        fixtureEvent({
-          event_id: "aider_e3",
-          event_type: "worker_completed",
-          delegation_id: delegationId,
-          worker_kind: "aider-cli",
-          aider_edited_files_count: 3,
-          num_malformed_responses: 0,
-          num_reflections: 1,
-          num_exhausted_context_windows: 0,
-          reflections_capped: false,
-          total_cost: 0.045,
-          tokens_sent: 500,
-          tokens_received: 120,
-        })
-      )
-      const e4 = await appendEvent(
-        sidecarPath,
-        fixtureEvent({
-          event_id: "aider_e4",
-          event_type: "patch_checked",
-          delegation_id: delegationId,
-          diff_bytes: 512,
-          patch_sha256: "d".repeat(64),
-        })
-      )
-      const e5 = await appendEvent(
-        sidecarPath,
-        fixtureEvent({
-          event_id: "aider_e5",
-          event_type: "worktree_torn_down",
-          delegation_id: delegationId,
-          torn_down_ok: true,
-        })
-      )
-      const e6 = await appendEvent(
-        sidecarPath,
-        fixtureEvent({
-          event_id: "aider_e6",
-          event_type: "validation_completed",
-          delegation_id: delegationId,
-          outcome: "pass",
-        })
-      )
-
-      const { events, warning } = await readEvents(sidecarPath)
-      expect(warning).toBeUndefined()
-      expect(events).toHaveLength(6)
-      expect(events.map((e) => e.event_id)).toEqual([
-        "aider_e1",
-        "aider_e2",
-        "aider_e3",
-        "aider_e4",
-        "aider_e5",
-        "aider_e6",
-      ])
-      expect(events.every((e) => e.delegation_id === delegationId)).toBe(true)
-
-      expect(events[0].prev_event_hash).toBeUndefined()
-      expect(events[1].prev_event_hash).toBe(events[0].event_hash)
-      expect(events[2].prev_event_hash).toBe(events[1].event_hash)
-      expect(events[3].prev_event_hash).toBe(events[2].event_hash)
-      expect(events[4].prev_event_hash).toBe(events[3].event_hash)
-      expect(events[5].prev_event_hash).toBe(events[4].event_hash)
-
-      for (const e of events) {
-        const { event_hash, ...rest } = e
-        const recomputed = createHash("sha256").update(canonicalStringify(rest), "utf-8").digest("hex")
-        expect(event_hash).toBe(recomputed)
-      }
-
-      expect(e1.event_hash).toBe(events[0].event_hash)
-      expect(e2.event_hash).toBe(events[1].event_hash)
-      expect(e3.event_hash).toBe(events[2].event_hash)
-      expect(e4.event_hash).toBe(events[3].event_hash)
-      expect(e5.event_hash).toBe(events[4].event_hash)
-      expect(e6.event_hash).toBe(events[5].event_hash)
-    })
   })
 
   describe("boundIdentifier", () => {
@@ -603,12 +425,12 @@ describe("eventsSidecar", () => {
   })
 
   describe("REFUNDED_STAGES", () => {
-    it("contains all four new CLI-transport stages and has size 11", () => {
-      expect(REFUNDED_STAGES.has("WORKER_BINARY_NOT_FOUND")).toBe(true)
-      expect(REFUNDED_STAGES.has("WORKER_DIRTY_TREE_REFUSAL")).toBe(true)
-      expect(REFUNDED_STAGES.has("WORKER_AIDER_EXIT")).toBe(true)
-      expect(REFUNDED_STAGES.has("WORKER_AIDER_LLM_ERROR")).toBe(true)
-      expect(REFUNDED_STAGES.size).toBe(11)
+    it("holds the seven transport-infra stages; the four aider-era stages live in the read-only legacy set", () => {
+      expect(REFUNDED_STAGES.size).toBe(7)
+      for (const legacy of ["WORKER_BINARY_NOT_FOUND", "WORKER_DIRTY_TREE_REFUSAL", "WORKER_AIDER_EXIT", "WORKER_AIDER_LLM_ERROR"]) {
+        expect(FAILURE_STAGES.has(legacy)).toBe(false)
+        expect(LEGACY_REFUNDED_STAGES.has(legacy)).toBe(true)
+      }
     })
   })
 
@@ -714,7 +536,7 @@ describe("eventsSidecar", () => {
       expect(result).toEqual({ kind: "pass", delegationId: "del_pass" })
     })
 
-    it("a refunded-infra failure_stage (e.g. WORKER_AIDER_EXIT) now resolves to contradiction, not clean", async () => {
+    it("a refunded-infra failure_stage (e.g. WORKER_TIMEOUT) now resolves to contradiction, not clean", async () => {
       await appendEvent(
         sidecarPath,
         fixtureEvent({
@@ -734,7 +556,7 @@ describe("eventsSidecar", () => {
           delegation_id: "del_refund",
           event_type: "validation_completed",
           outcome: "fail",
-          failure_stage: "WORKER_AIDER_EXIT",
+          failure_stage: "WORKER_TIMEOUT",
         })
       )
       const { events } = await readEvents(sidecarPath)
@@ -744,7 +566,7 @@ describe("eventsSidecar", () => {
         kind: "contradiction",
         delegationId: "del_refund",
         outcome: "fail",
-        failureStage: "WORKER_AIDER_EXIT",
+        failureStage: "WORKER_TIMEOUT",
       })
     })
 
@@ -835,7 +657,7 @@ describe("eventsSidecar", () => {
           delegation_id: "del_first",
           event_type: "validation_completed",
           outcome: "fail",
-          failure_stage: "WORKER_AIDER_EXIT",
+          failure_stage: "WORKER_TIMEOUT",
         })
       )
       await appendEvent(

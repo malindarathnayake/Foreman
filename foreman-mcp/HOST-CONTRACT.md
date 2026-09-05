@@ -62,7 +62,6 @@ Six capabilities, each rated READY / DECLARED / EXPERIMENTAL. READY means the be
 - **Do not use when:** single-seat sequential work on one tree (isolation is then a no-op).
 - **NOT-claims:**
   - "For host-native seats, the Foreman capability layer validates isolation declarations; the host creates and destroys their worktrees."
-  - "`aider_worker` is the exception: that MCP tool creates and tears down its own isolated detached worktree."
   - "Foreman does not intercept a host-native agent's Git commands. The host/brief MUST deny Git mutations (`stash`, `reset`, `checkout`, `switch`, `clean`, staging, commits, ref/index/stash changes), and the pitboss MUST compare branch/HEAD/stash/index/dirty-path state before running tests. A mismatch is a hard stop; Foreman never performs automatic recovery."
 - **Smoke:** seat-declaration shape validation (contract, from P3 onward).
 
@@ -86,6 +85,7 @@ Six capabilities, each rated READY / DECLARED / EXPERIMENTAL. READY means the be
 - [ ] **Shared-tree mutation denylist** — implementation workers use read-only Git inspection only; repository/index/stash/ref changes are forbidden.
 - [ ] **Before/after state guard** — branch, HEAD, stash ref/list, staged diff, and pre-existing dirty paths are compared before tests or verdict.
 - [ ] **Artifacts, not shared trees** — work crosses seats only as well-formed artifacts (patches/reports), never shared mutable trees.
+- [ ] **Line endings** — worktrees are created with `git -c core.autocrlf=false worktree add` so the checkout matches the index; `.gitattributes` is authoritative. A repo with `core.autocrlf=true` and no eol attributes for the delegated files serializes editing seats instead of parallelizing. Returned diffs pass `git apply --check` and are rejected when their endings disagree with the target path's `git ls-files --eol` attributes; the presence of CR alone is not a defect.
 - [ ] **State-root separation by path classification** — project tree vs Foreman state vs scratch — a write outside the declared class is a defect.
 
 ## Seat declaration

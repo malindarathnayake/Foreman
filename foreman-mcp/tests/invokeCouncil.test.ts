@@ -163,3 +163,73 @@ describe("invoke_council — fan-out ceiling", () => {
     expect(text).toContain("FOREMAN_COUNCIL_MAX_CALLS")
   })
 })
+
+// ─── R2 regression (2026-09): a configured seat works end to end over loopback ──────
+// Every other case in this file is decided before the network. This one proves the
+// council can actually talk to an OpenAI-compatible endpoint: home-store credentials,
+// bearer auth, streamed SSE reply, seat-schema parsing, and the ledger-ready payload.
+// It exists so shared worker code (foremanEnv, chatTransport, redaction) can be refactored
+// without silently breaking the council.
+import http from "http"
+import type { AddressInfo } from "net"
+
+describe("invoke_council — configured seat over a loopback endpoint", () => {
+  it("authenticates, streams, parses the seat reply, and prints a record_review payload", async () => {
+    const seen: { auth?: string; path?: string; body?: Record<string, unknown> } = {}
+    const reply = {
+      completion: "complete",
+      findings: [{ severity: "high", file: "x.ts", line: "1", description: "const a is assigned and never read", confidence: "high" }],
+      checked: ["x.ts"],
+      limitations: [],
+    }
+    const server = http.createServer((req, res) => {
+      let raw = ""
+      req.on("data", (chunk) => (raw += chunk))
+      req.on("end", () => {
+        seen.auth = req.headers.authorization
+        seen.path = req.url
+        seen.body = JSON.parse(raw)
+        res.writeHead(200, { "content-type": "text/event-stream" })
+        const frame = JSON.stringify({
+          choices: [{ delta: { content: JSON.stringify(reply) }, finish_reason: "stop" }],
+          usage: { prompt_tokens: 10, completion_tokens: 20 },
+        })
+        res.end(`data: ${frame}\n\ndata: [DONE]\n\n`)
+      })
+    })
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve))
+    const port = (server.address() as AddressInfo).port
+
+    try {
+      const ws = await makeWorkspace()
+      const credentialsPath = path.join(ws.dir, "home.env")
+      await fs.writeFile(
+        credentialsPath,
+        [
+          `FOREMAN_API_BASE=http://127.0.0.1:${port}/v1`,
+          "FOREMAN_API_KEY=test-key-loopback-000001",
+          "FOREMAN_COUNCIL_SEAT_A=loopback/mock-model",
+        ].join("\n") + "\n",
+        "utf-8"
+      )
+
+      const text = await handleInvokeCouncil(baseInput({ lenses: ["contract"] }), {
+        journalPath: ws.journalPath,
+        envDir: ws.dir,
+        credentialsPath,
+      })
+
+      expect(text).toContain("status: ok")
+      expect(text).toContain("seats_ok: 1/1")
+      expect(text).toContain("record_review")
+      expect(text).toContain("const a is assigned and never read")
+      expect(seen.path).toBe("/v1/chat/completions")
+      expect(seen.auth).toBe("Bearer test-key-loopback-000001")
+      expect(seen.body?.stream).toBe(true)
+      // The key is a registered secret: it must never surface in tool output.
+      expect(text).not.toContain("test-key-loopback-000001")
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    }
+  })
+})

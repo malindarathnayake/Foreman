@@ -10,9 +10,9 @@ describe("failure-stage taxonomy parity", () => {
   const playbookKeys = Object.keys(PLAYBOOK).sort()
   const setMembers = Array.from(FAILURE_STAGES).sort()
 
-  it("both mirrors hold exactly 21 stages", () => {
-    expect(playbookKeys.length).toBe(21)
-    expect(setMembers.length).toBe(21)
+  it("both mirrors hold exactly 17 stages", () => {
+    expect(playbookKeys.length).toBe(17)
+    expect(setMembers.length).toBe(17)
   })
 
   it("PLAYBOOK keys and FAILURE_STAGES members are byte-for-byte identical", () => {

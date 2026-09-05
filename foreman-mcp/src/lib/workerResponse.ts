@@ -7,7 +7,7 @@
 
 import { containsRedactionMarker } from "./redaction.js"
 
-// Internal edit_format names; the aider-CLI name mapping lives in foremanEnv.aiderEditFormat (spec R1).
+// Internal edit_format names.
 export type EditFormat = "unified_diff" | "search_replace" | "whole_file"
 export type FinishReasonClass = "stop" | "length" | "content_filter" | "other"
 export type ResponseClassification =

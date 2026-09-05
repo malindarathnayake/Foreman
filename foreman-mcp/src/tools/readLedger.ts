@@ -2,7 +2,7 @@ import path from "path"
 import { computeGateUnitsHash, readLedgerWithStatus } from "../lib/ledger.js"
 import { toKeyValue, toTable } from "../lib/toon.js"
 import { renderDelegationMetrics } from "../lib/delegationMetrics.js"
-import type { ReadLedgerInput } from "../types.js"
+import type { ReadLedgerInput, Unit } from "../types.js"
 
 const DEFAULT_PAGE_LIMIT = 50
 const MAX_PAGE_LIMIT = 100
@@ -53,6 +53,14 @@ function boundNonPageOutput(text: string, query: string, phase?: string): string
   })
 }
 
+/** The newest owner grant on a unit, as one line: open with what is left, or closed with how it was spent. */
+function describeGrant(unit: Unit): string {
+  const g = unit.cap_grants?.[unit.cap_grants.length - 1]
+  if (!g) return "none"
+  const used = `${g.granted - g.remaining}/${g.granted} used`
+  return g.closed ? `#${g.id} closed (${g.closed.reason}), ${used}` : `#${g.id} open, ${g.remaining} of ${g.granted} remaining`
+}
+
 export async function handleReadLedger(filePath: string, input: ReadLedgerInput): Promise<string> {
   // Read-only: never rename a corrupt ledger from a read path
   const { ledger, corrupt } = await readLedgerWithStatus(filePath, { readOnly: true })
@@ -88,7 +96,12 @@ export async function handleReadLedger(filePath: string, input: ReadLedgerInput)
       note: unit.note ?? "n/a",
       worker: unit.w ?? "none",
       delegations: String(unit.delegations?.length ?? 0),
+      direct_fixes: String(unit.direct_fixes?.length ?? 0),
       rejections: String(unit.rej.length),
+      attempts: String(unit.attempt_seq ?? unit.delegations?.length ?? 0),
+      failed_since_pass: unit.epoch_failed === undefined ? "n/a" : String(unit.epoch_failed),
+      needs_attempt: unit.needs_attempt ? "true" : "false",
+      cap_grant: describeGrant(unit),
     }), "unit", input.phase)
   }
 
@@ -142,7 +155,13 @@ export async function handleReadLedger(filePath: string, input: ReadLedgerInput)
       for (const [phaseId, phase] of phaseEntries) {
         for (const review of phase.reviews ?? []) {
           if (review.findings.length === 0) {
-            rows.push([phaseId, review.advisor, "", "", "(no findings)"])
+            // Silence is only approval when the seat says what it examined.
+            const meta = [
+              review.completion ? `completion=${review.completion}` : null,
+              review.checked ? `checked=${review.checked.length}` : null,
+              review.stage ? `stage=${review.stage}` : null,
+            ].filter(Boolean).join("; ")
+            rows.push([phaseId, review.advisor, "", "", meta ? `(no findings; ${meta})` : "(no findings)"])
             continue
           }
           for (const f of review.findings) {

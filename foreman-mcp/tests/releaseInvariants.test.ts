@@ -1,5 +1,7 @@
 import { describe, it, expect, afterEach } from "vitest"
 import fs from "fs/promises"
+import { execFileSync } from "child_process"
+import { fileURLToPath } from "url"
 import { Client } from "@modelcontextprotocol/client"
 import { InMemoryTransport, type McpServer } from "@modelcontextprotocol/server"
 import { createServer } from "../src/server.js"
@@ -37,6 +39,72 @@ async function readRootChangelog(): Promise<string> {
 async function readRootFile(name: string): Promise<string> {
   return fs.readFile(new URL(`../../${name}`, import.meta.url), "utf-8")
 }
+
+// R3 (2026-09): the tarball ships only what the runtime reads. `files` in package.json
+// is the whitelist; this test pins the packed manifest so a benchmark, fixture, planning
+// note, source map, or stale compiled module cannot leak back in. Runs `npm pack --dry-run`
+// against the built tree (CI builds before testing).
+describe("packed manifest", () => {
+  const packageDir = fileURLToPath(new URL("..", import.meta.url))
+  const npm = process.platform === "win32" ? "npm.cmd" : "npm"
+
+  function packedPaths(): string[] {
+    const out = execFileSync(npm, ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+      cwd: packageDir,
+      shell: process.platform === "win32",
+      encoding: "utf-8",
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+    const manifest = JSON.parse(out) as Array<{ files: Array<{ path: string }> }>
+    return manifest[0].files.map((f) => f.path)
+  }
+
+  it("ships the runtime files and the bundled dependencies", () => {
+    const paths = packedPaths()
+    for (const required of [
+      "package.json",
+      "README.md",
+      "LICENSE",
+      "HOST-CONTRACT.md",
+      "dist/server.js",
+      "dist/docs/engineering-ethos.md",
+      "dist/preview/template.html",
+      "dist/preview/mermaid.min.js",
+      "src/skills/implementor.md",
+      "src/skills/_common-protocol.md",
+      "src/skills/_assists.md",
+    ]) {
+      expect(paths, required).toContain(required)
+    }
+    expect(paths.some((p) => p.startsWith("node_modules/zod/")), "bundled zod").toBe(true)
+    expect(paths.some((p) => p.startsWith("node_modules/context-crush/")), "bundled context-crush").toBe(true)
+  })
+
+  it("ships nothing the runtime does not read", () => {
+    const own = packedPaths().filter((p) => !p.startsWith("node_modules/"))
+    const forbidden: Array<[string, RegExp]> = [
+      ["bench", /^bench\//],
+      ["scripts", /^scripts\//],
+      ["tests", /^tests\//],
+      ["TypeScript sources", /^src\/.*\.ts$/],
+      ["src/preview duplicate", /^src\/preview\//],
+      ["src/docs duplicate", /^src\/docs\//],
+      ["vendor tree", /^vendor\//],
+      ["source maps", /\.map$/],
+      ["declarations", /\.d\.ts$/],
+      ["tarballs", /\.tgz$/],
+      ["planning notes", /CONTEXT-BOUNDARY/],
+      ["tsconfig", /^tsconfig/],
+      ["vitest config", /^vitest\.config/],
+      ["python bytecode", /\.pyc$|__pycache__/],
+      ["aider remnants (removed in 0.6.3)", /aider/i],
+    ]
+    for (const [label, re] of forbidden) {
+      const hits = own.filter((p) => re.test(p))
+      expect(hits, label).toEqual([])
+    }
+  })
+})
 
 describe("release invariants", () => {
   it("package.json version === server-reported version", async () => {

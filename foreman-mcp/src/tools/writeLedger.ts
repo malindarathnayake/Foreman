@@ -1,6 +1,7 @@
 import path from "path"
-import { WriteLedgerInputSchema, type WriteLedgerInput, type LedgerFile } from "../types.js"
+import { WriteLedgerInputSchema, LedgerOperationDataSchemas, type WriteLedgerInput, type LedgerFile } from "../types.js"
 import { writeLedger } from "../lib/ledger.js"
+import { formatSchemaError, isZodError } from "../lib/schemaError.js"
 import { toKeyValue } from "../lib/toon.js"
 import { appendEvent, boundIdentifier, openDelegation, followUpEventInput, type SidecarEventInput } from "../lib/eventsSidecar.js"
 import { drainCcrStats } from "../lib/compression.js"
@@ -10,7 +11,13 @@ import { drainCcrStats } from "../lib/compression.js"
  * returns TOON key/value confirmation.
  */
 export async function handleWriteLedger(filePath: string, rawInput: unknown): Promise<string> {
-  const parsed = WriteLedgerInputSchema.parse(rawInput)
+  let parsed: WriteLedgerInput
+  try {
+    parsed = WriteLedgerInputSchema.parse(rawInput)
+  } catch (err) {
+    if (isZodError(err)) throw new Error(formatSchemaError("write_ledger", err, rawInput, LedgerOperationDataSchemas))
+    throw err
+  }
   const { ledger, warning } = await writeLedger(filePath, parsed, foldCcrStats)
 
   // Return confirmation with key details

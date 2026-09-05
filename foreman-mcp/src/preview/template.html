@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>{{TITLE}}</title>
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="/assets/style.css" />
+    <link rel="stylesheet" href="/assets/style.css?v={{V}}" />
   </head>
   <body data-id="{{ID}}" data-token="{{TOKEN}}" data-theme="{{THEME}}">
     <header>
@@ -27,7 +27,7 @@
     </main>
     <pre id="error" class="error" hidden></pre>
     <!-- No inline script (CSP script-src 'self'). Both scripts are same-origin assets. -->
-    <script src="/assets/mermaid.min.js"></script>
-    <script src="/assets/app.js"></script>
+    <script src="/assets/mermaid.min.js?v={{V}}"></script>
+    <script src="/assets/app.js?v={{V}}"></script>
   </body>
 </html>

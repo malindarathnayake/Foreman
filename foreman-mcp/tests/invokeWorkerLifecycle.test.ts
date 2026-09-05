@@ -139,7 +139,7 @@ async function makeWorkspace(opts: { port?: number; writeEnv?: boolean; seedDele
       operation: "set_unit_status",
       phase: "4g",
       unit_id: "u1",
-      data: { s: "delegated", brief: "seed brief for delegated unit ok", tier: "standard" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "seed brief for delegated unit ok", tier: "standard" },
     })
   }
   return {
@@ -511,7 +511,7 @@ describe("write_ledger sidecar hook — two rejections on one attempt, then a se
       operation: "set_unit_status",
       phase: "4g",
       unit_id: "u1",
-      data: { s: "delegated", brief: "second attempt worker brief long enough to pass validation", tier: "standard" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "second attempt worker brief long enough to pass validation", tier: "standard" },
     })
 
     // Attempt 2: a second success chain — a SECOND delegation_id in the same file.
@@ -553,7 +553,7 @@ describe("write_ledger sidecar hook — long unit_id digest-bounded chain", () =
       operation: "set_unit_status",
       phase: "4g",
       unit_id: longUnitId,
-      data: { s: "delegated", brief: "seed brief for delegated unit ok", tier: "standard" },
+      data: { s: "delegated", preflight: { symbols_grepped: 1, self_consistent: true }, brief: "seed brief for delegated unit ok", tier: "standard" },
     })
 
     const invokeText = await handleInvokeWorker(baseInput(ws, { unit_id: longUnitId }), ws.deps)
@@ -646,6 +646,7 @@ describe("write_ledger terminal hook → discipline gate (P5 5c integration)", (
 
     // The REAL discipline gate (default-on, no injected sidecarReader): resolves u1's
     // latest delegation to the hook-written terminal 'pass' and reconciles cleanly.
+    await handleWriteLedger(ws.ledgerPath, { operation: "record_review", phase: "4g", data: { advisor: "test-seat", findings: [], completion: "complete" } })  // gate requires ≥1 review (2026-09 R2)
     const gateText = await handleWriteLedger(ws.ledgerPath, {
       operation: "update_phase_gate",
       phase: "4g",

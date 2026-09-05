@@ -12,6 +12,21 @@ export interface Rejection {
 
 export type Tier = "cheap" | "standard" | "premium"
 
+/**
+ * Step 4.5 Brief Preflight attestation, recorded on the delegated write. Required for
+ * s:'delegated' since v0.6.1 (field feedback 2026-09 round 2) — makes the preflight as
+ * mechanical as the brief rule. `self_consistent` must be literally true: a brief that
+ * contradicts itself is not delegated, it is rewritten.
+ */
+export interface DelegationPreflight {
+  /** Number of brief symbols grepped across spec.md (Step 4.5 steps 1–4). ≥1. */
+  symbols_grepped: number
+  /** Every test expectation in the brief agrees with its implementation instruction (step 6). */
+  self_consistent: true
+  /** Custom telemetry names checked against the stack profile (step 7), or n/a when the unit emits no signals. */
+  telemetry?: "checked" | "n/a"
+}
+
 /** One delegation attempt. Appended per (re-)delegation so retry history survives the `w` overwrite. */
 export interface Delegation {
   brief: string
@@ -21,6 +36,39 @@ export interface Delegation {
   attempt: number
   /** True when the delegation-cap was overridden by explicit user approval (D2a). */
   user_override?: boolean
+  /** Brief Preflight attestation. Absent on delegations recorded before v0.6.1. */
+  preflight?: DelegationPreflight
+  /** The cap grant this attempt was charged to (v0.6.5). */
+  cap_grant_id?: number
+}
+
+/**
+ * Owner authorization for attempts past the cap (v0.6.5, field feedback round 5). One
+ * recorded decision instead of a user_override on every later write. The newest entry is
+ * the active one; closed entries are the audit trail of how each decision was spent.
+ */
+export interface CapGrant {
+  id: number
+  ts: string
+  /** attempt_seq when the grant was issued. */
+  at_attempt: number
+  /** epoch_failed when the grant was issued. */
+  failed_at_issue: number
+  granted: number
+  remaining: number
+  /** Attempt ids allocated against this grant. */
+  consumed: number[]
+  reason: string
+  closed?: { ts: string; reason: "exhausted" | "pass" }
+}
+
+/** A pit-boss literal substitution recorded as an attempt (implementor Direct Fix rule). Absent before v0.6.4. */
+export interface DirectFix {
+  attempt: number
+  what: string
+  ts: string
+  /** The cap grant this attempt was charged to (v0.6.5). */
+  cap_grant_id?: number
 }
 
 export interface Unit {
@@ -28,6 +76,8 @@ export interface Unit {
   v: "pass" | "fail" | "pending" | "inconclusive"
   /** ISO timestamp of the latest set_verdict (R1). Absent on ledgers written before v0.5.0. */
   v_ts?: string
+  /** ISO timestamp of the FIRST pass verdict — set once, never overwritten by re-verdicts. Completion-frontier signal for session_orient. Absent before v0.6.0. */
+  first_pass_ts?: string
   via?: "worker" | "pitboss-direct" | "n/a"
   note?: string
   w: string | null
@@ -37,6 +87,25 @@ export interface Unit {
   route_reason?: string
   /** Append-only delegation history. Optional: ledgers written before v0.3.1 lack it. */
   delegations?: Delegation[]
+  // ── Attempt accounting (v0.6.4). Server-authored scalars: rej[] and delegations[] are
+  // capped at 20 with the oldest dropped, so neither can carry the enforcement count.
+  // Absent on older ledgers; derived from the stamps on the first write that touches the unit.
+  /** Monotonic count of recorded attempts: worker delegations plus direct fixes. */
+  attempt_seq?: number
+  /** Distinct attempts that failed (rejection or fail verdict) since the unit last passed. Reset to 0 on pass. */
+  epoch_failed?: number
+  /** Attempt id that last raised epoch_failed, so a second rejection of one attempt does not count twice. */
+  last_failed_attempt?: number
+  /** True from a rejection or fail verdict until a new attempt is recorded; a pass verdict is refused while set. */
+  needs_attempt?: boolean
+  /** Attempt id recorded with user_override past the cap; a pass on that attempt needs no second override. */
+  cap_override_attempt?: number
+  /** Direct fixes recorded as attempts, newest last, capped at 20. */
+  direct_fixes?: DirectFix[]
+  /** A pass verdict that waived ATTEMPT REQUIRED or the cap through data.user_override. */
+  cap_override?: { ts: string; attempt: number; failed: number; waived: Array<"cap" | "attempt"> }
+  /** Owner grants for attempts past the cap, newest last, capped at 20. Enforcement reads the newest only. */
+  cap_grants?: CapGrant[]
 }
 
 /** A single classified review finding. Shared with normalize_review output. */
@@ -55,6 +124,16 @@ export interface PhaseReview {
   findings: ReviewFinding[]
   packet_hash?: string
   tokens?: number
+  /** Seat completion as judged by the moderator. 'partial' = zero findings with no account of what was examined. Absent before v0.6.0. */
+  completion?: "complete" | "partial" | "failed"
+  /** What the seat says it examined (files/functions/categories). Silence without this list is not approval. */
+  checked?: string[]
+  /** Seat-reported limitations (timeouts, unread files, refused categories). */
+  limitations?: string
+  /** 'independent' = first, blind pass (counts toward seat independence); 'cross_exam' = re-prompt informed by another seat's claims (never a second independent vote); 'verification' = pit-boss re-verification of direct fixes with evidence (v0.6.5; counts for the gate only under verificationIneligibility in lib/ledger.ts). */
+  stage?: "independent" | "cross_exam" | "verification"
+  /** Present on stage:'verification' only. */
+  evidence?: VerificationEvidence
 }
 
 export interface Phase {
@@ -72,6 +151,12 @@ export interface Phase {
   gate_units_hash?: { hash: string; ts: string }
   /** Units whose discipline-adherence contradiction was overridden at gate-pass via data.user_override (durable, auditable — P5 5a). Absent when no override occurred. */
   discipline_overrides?: { discipline_override: true; unit_id: string; delegation_id: string }[]
+  /** Gate passed with zero record_review entries via data.user_override (durable, auditable). Absent when at least one review was recorded. */
+  review_override?: { ts: string }
+  /** Gate passed via data.user_override while the current reviews carried `findings` confirmed findings (durable, auditable). Absent when no confirmed finding was waived. */
+  confirmed_override?: { ts: string; findings: number }
+  /** Gate passed via data.user_override while `reviews` current reviews were partial, failed, or silent without an examined list (durable, auditable). */
+  incomplete_override?: { ts: string; reviews: number }
 }
 
 export interface PhaseScope {
@@ -103,6 +188,15 @@ const SetUnitStatusInput = z.object({
     tier: z.enum(["cheap", "standard", "premium"]).optional(),
     route_reason: z.string().max(2000).optional(),
     user_override: z.boolean().optional(),
+    // Optional at the schema so non-delegating statuses need nothing; the ledger
+    // refuses s:'delegated' without it (see PREFLIGHT REQUIRED in lib/ledger.ts).
+    preflight: z.object({
+      symbols_grepped: z.number().int().min(1),
+      self_consistent: z.literal(true),
+      telemetry: z.enum(["checked", "n/a"]).optional(),
+    }).optional(),
+    // With s:'ip' only: records a pit-boss literal substitution as an attempt (Direct Fix rule).
+    direct_fix: z.string().min(10).max(2000).optional(),
   }),
 })
 
@@ -114,6 +208,8 @@ const SetVerdictInput = z.object({
     v: z.enum(["pass", "fail", "pending", "inconclusive"]),
     via: z.enum(["worker", "pitboss-direct", "n/a"]).optional(),
     note: z.string().max(10000).optional(),
+    // Waives ATTEMPT REQUIRED and the delegation cap on a pass; recorded as cap_override.
+    user_override: z.boolean().optional(),
   }),
 })
 
@@ -180,14 +276,63 @@ const ReviewFindingSchema = z.object({
   classification: z.enum(["confirmed", "rejected", "unverified"]).optional(),
 })
 
+// v0.6.4 (Codex, field feedback round 4): the gate blocks only on `confirmed`, so a
+// finding recorded without a classification slipped past it. The moderator's call is
+// required on every recorded finding; the parser's output (above) stays unclassified.
+const ClassifiedFindingSchema = ReviewFindingSchema.extend({
+  classification: z.enum(["confirmed", "rejected", "unverified"]),
+})
+
+// v0.6.5 (Codex, field feedback round 5): a pit-boss re-verification of direct fixes,
+// recorded with structured evidence. The gate accepts it in place of a fresh seat only
+// under the predicates in lib/ledger.ts verificationIneligibility; the ledger cannot
+// check the evidence, so the record's value is that it is linked to exact attempts and
+// to the independent review it extends.
+const TestsEvidence = z.discriminatedUnion("outcome", [
+  z.object({ outcome: z.literal("pass"), command: z.string().max(2000), result: z.string().max(2000) }),
+  z.object({ outcome: z.literal("n/a"), reason: z.string().min(10).max(2000) }),
+])
+const ProbeEvidence = z.discriminatedUnion("outcome", [
+  z.object({ outcome: z.literal("pass"), method: z.string().max(2000), result: z.string().max(2000) }),
+  z.object({ outcome: z.literal("n/a"), reason: z.string().min(10).max(2000) }),
+])
+const VerificationEvidenceSchema = z.object({
+  baseline_review_ts: z.string().max(100),
+  units: z.array(z.object({ unit_id: z.string().max(200), attempt: z.number().int().min(1) })).min(1).max(50),
+  files: z.array(z.string().max(4096)).min(1).max(50),
+  tests: TestsEvidence,
+  probe: ProbeEvidence,
+})
+export type VerificationEvidence = z.infer<typeof VerificationEvidenceSchema>
+
 const RecordReviewInput = z.object({
   operation: z.literal("record_review"),
   phase: z.string().max(10000),
   data: z.object({
     advisor: z.string().max(200),
-    findings: z.array(ReviewFindingSchema).max(100),
+    findings: z.array(ClassifiedFindingSchema).max(100),
     packet_hash: z.string().max(200).optional(),
     tokens: z.number().min(0).optional(),
+    completion: z.enum(["complete", "partial", "failed"]).optional(),
+    // 400 since 0.6.5: 200 bit on any review with real content (field feedback round 5).
+    checked: z.array(z.string().max(400)).max(50).optional(),
+    limitations: z.string().max(2000).optional(),
+    stage: z.enum(["independent", "cross_exam", "verification"]).optional(),
+    // Required with stage:'verification', refused with any other stage (lib/ledger.ts).
+    evidence: VerificationEvidenceSchema.optional(),
+  }),
+})
+
+// v0.6.5: the owner's decision to allow attempts past the cap, recorded once. Refused
+// below the cap (a grant issued early would defeat it) and while a grant is still open.
+const AuthorizeAttemptsInput = z.object({
+  operation: z.literal("authorize_attempts"),
+  unit_id: z.string().max(10000),
+  phase: z.string().max(10000),
+  data: z.object({
+    attempts: z.number().int().min(1).max(10),
+    reason: z.string().min(10).max(2000),
+    user_override: z.literal(true),
   }),
 })
 
@@ -199,6 +344,7 @@ export const WriteLedgerInputSchema = z.discriminatedUnion("operation", [
   UpdatePhaseGateInput,
   SetPhaseScopeInput,
   RecordReviewInput,
+  AuthorizeAttemptsInput,
 ])
 
 export type WriteLedgerInput = z.infer<typeof WriteLedgerInputSchema>
@@ -316,6 +462,14 @@ export const WriteProgressInputSchema = z.discriminatedUnion("operation", [
 
 export type WriteProgressInput = z.infer<typeof WriteProgressInputSchema>
 
+/** Per-operation `data` schemas for write_progress (schema-error hints; see lib/schemaError.ts). */
+export const ProgressOperationDataSchemas = {
+  update_status: UpdateStatusData,
+  complete_unit: CompleteUnitData,
+  log_error: LogErrorData,
+  start_phase: StartPhaseData,
+} as const
+
 // ─── Journal Types ──────────────────────────────────────────────────────────
 
 export interface JournalEnv {
@@ -386,16 +540,18 @@ export interface JournalFile {
 
 // ─── Journal Zod Schemas ────────────────────────────────────────────────────
 
+// Anomaly-only, and only codes something actually emits: the implementor's friction table
+// (11), TOOL_ERR from the write_journal description, SEC_BLOCK from the .foremanenv loader,
+// EGRESS_NOTICE from the worker and council tools, and ED_STALE for a stale patch base.
+// 0.6.3 removed twelve codes no protocol text or code path ever emitted, plus CAP_WAIVER
+// (aider-only). Journals written earlier still parse: readJournal does not revalidate.
 export const JournalEventCode = z.enum([
-  "W_FAIL", "W_REJ", "W_RETRY", "W_DRIFT",
-  "CX_ERR", "CX_FP",
-  "ED_FAIL", "ED_STALE",
-  "T_FLAKE", "T_INFRA",
-  "BLD_ERR", "CTX_OVF", "CTX_COMP",
-  "SPEC_AMB", "GATE_FIX", "TOOL_ERR",
-  "USR_INT", "MODEL_DEG", "PERM_DENY",
-  "HOOK_BLOCK", "DEP_MISS", "SCHEMA_DRIFT", "MERGE_CONF",
-  "SEC_BLOCK", "EGRESS_NOTICE", "CAP_WAIVER",
+  "W_FAIL", "W_REJ", "W_RETRY",
+  "CX_ERR", "ED_STALE",
+  "T_FLAKE", "BLD_ERR",
+  "SPEC_AMB", "SPEC_GAP", "GATE_FIX", "GATE_OVERRIDE",
+  "TOOL_ERR", "USR_INT",
+  "SEC_BLOCK", "EGRESS_NOTICE",
 ])
 
 const InitSessionData = z.object({
@@ -422,7 +578,7 @@ const LogEventData = z.object({
   t: JournalEventCode,
   u: z.string().max(200),
   tok: z.number().min(0),
-  msg: z.string().max(200),
+  msg: z.string().max(400),
   wait: z.number().min(0).optional(),
   gate: z.string().max(10).optional(),
 })
@@ -449,6 +605,28 @@ export const WriteJournalInputSchema = z.discriminatedUnion("operation", [
 ])
 
 export type WriteJournalInput = z.infer<typeof WriteJournalInputSchema>
+
+/**
+ * Per-operation `data` schemas, keyed by operation name. The MCP tool inputSchema
+ * cannot express "data depends on operation", so server.ts renders these into the
+ * tool descriptions (lib/schemaDoc.ts) and a contract test keeps them in sync.
+ */
+export const JournalOperationDataSchemas = {
+  init_session: InitSessionData,
+  log_event: LogEventData,
+  end_session: EndSessionData,
+} as const
+
+export const LedgerOperationDataSchemas = {
+  set_unit_status: SetUnitStatusInput.shape.data,
+  set_verdict: SetVerdictInput.shape.data,
+  add_rejection: AddRejectionInput.shape.data,
+  declare_phase_units: DeclarePhaseUnitsInput.shape.data,
+  update_phase_gate: UpdatePhaseGateInput.shape.data,
+  set_phase_scope: SetPhaseScopeInput.shape.data,
+  record_review: RecordReviewInput.shape.data,
+  authorize_attempts: AuthorizeAttemptsInput.shape.data,
+} as const
 
 export const ReadJournalInputSchema = z.object({
   last_n: z.number().min(1).max(100).optional(),

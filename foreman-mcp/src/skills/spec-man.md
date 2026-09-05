@@ -80,6 +80,8 @@ Store atlas output as evidence references, not copied payloads. If the atlas and
 
 ## Re-evaluation Flow
 
+For a single-gap correction discovered during implementation, use the implementor's Spec amendment rule (`SPEC_GAP`: one atomic change, one Decisions row, no per-section callouts). Use this ladder when the plan as a whole has drifted or the change is material.
+
 Use re-evaluation mode when an existing Foreman plan, lighttask plan, implementation spec, or machine spec may no longer match the current repo.
 
 Re-evaluation steps:

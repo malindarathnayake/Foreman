@@ -8,7 +8,11 @@ export interface ExternalCliResult {
   stderr: string
   timedOut: boolean
   exitCode: number
+  /** Either stream hit MAX_OUTPUT. Kept for callers that predate the per-stream flags. */
   truncated: boolean
+  /** Per-stream truncation (v0.6.1). Lets formatters drop a noisy-but-complete stderr when stdout is intact. */
+  stdoutTruncated?: boolean
+  stderrTruncated?: boolean
 }
 
 export function runExternalCli(
@@ -77,9 +81,9 @@ export function runExternalCli(
       if (settled) return
       settled = true
       if (timedOut) {
-        resolve({ stdout, stderr, timedOut: true, exitCode: -1, truncated: stdoutTruncated || stderrTruncated })
+        resolve({ stdout, stderr, timedOut: true, exitCode: -1, truncated: stdoutTruncated || stderrTruncated, stdoutTruncated, stderrTruncated })
       } else {
-        resolve({ stdout, stderr, timedOut: false, exitCode: code ?? 1, truncated: stdoutTruncated || stderrTruncated })
+        resolve({ stdout, stderr, timedOut: false, exitCode: code ?? 1, truncated: stdoutTruncated || stderrTruncated, stdoutTruncated, stderrTruncated })
       }
     })
   })
@@ -245,87 +249,11 @@ export function runWithStdin(
       if (settled) return
       settled = true
       if (timedOut) {
-        resolve({ stdout, stderr, timedOut: true, exitCode: -1, truncated: stdoutTruncated || stderrTruncated })
+        resolve({ stdout, stderr, timedOut: true, exitCode: -1, truncated: stdoutTruncated || stderrTruncated, stdoutTruncated, stderrTruncated })
       } else {
-        resolve({ stdout, stderr, timedOut: false, exitCode: code ?? 1, truncated: stdoutTruncated || stderrTruncated })
+        resolve({ stdout, stderr, timedOut: false, exitCode: code ?? 1, truncated: stdoutTruncated || stderrTruncated, stdoutTruncated, stderrTruncated })
       }
     })
   })
 }
 
-// ── Python resolution + aider capability probe (Unit 3a) ───────────────────────
-
-/**
- * Resolve a Python interpreter, preferring an explicit override, then `python3`, then
- * `python`. Returns the first that resolves. `python3` is not present on every host
- * (e.g. Windows installs only `python`), so we try both.
- */
-export async function resolvePython(preferred?: string): Promise<ResolveResult> {
-  const candidates = [preferred, "python3", "python"].filter(
-    (c): c is string => typeof c === "string" && c.trim().length > 0,
-  )
-  let lastReason = "no python interpreter candidate configured"
-  for (const cand of candidates) {
-    const r = await resolveInvocation(cand)
-    if (r.ok) return r
-    lastReason = r.reason
-  }
-  return { ok: false, reason: lastReason }
-}
-
-export type AiderProbeResult =
-  | { ok: true; plan: SpawnPlan }
-  | { ok: false; missing: "python" | "aider"; reason: string }
-
-/**
- * capability_check-style pre-flight for the aider transport (decision #2, FAIL OPEN).
- * Resolves a python interpreter, then runs `<python> <harnessPath> --probe` (empty stdin)
- * and reads the sentinel exit code: 0 => aider importable; anything else => aider absent.
- * Returns the resolved SpawnPlan on success so the caller reuses it for the real run.
- * NEVER throws — a probe failure is a fail-open signal, not an error.
- */
-export async function probeAiderCapability(
-  pythonCmd: string | undefined,
-  harnessPath: string,
-  timeoutMs: number,
-  env?: NodeJS.ProcessEnv,
-): Promise<AiderProbeResult> {
-  const resolved = await resolvePython(pythonCmd)
-  if (!resolved.ok) return { ok: false, missing: "python", reason: resolved.reason }
-  const res = await runWithStdin(
-    resolved.plan.command,
-    [...resolved.plan.args, harnessPath, "--probe"],
-    "",
-    timeoutMs,
-    env,
-  )
-  if (!res.timedOut && res.exitCode === 0) return { ok: true, plan: resolved.plan }
-  return { ok: false, missing: "aider", reason: `aider probe exit ${res.exitCode}` }
-}
-
-/**
- * Build a child-process environment for the harness/probe spawn that strips secret-
- * bearing variables ([CWE-200] Threat Model "Python harness process" row). The API key
- * reaches the harness ONLY via the stdin request (the harness self-injects it into
- * OPENAI_API_KEY), so the child never needs a secret via env. This is a DENYLIST (not an
- * allowlist) so OS-runtime vars and non-secret vars pass through unchanged — an allowlist
- * would drop platform-specific runtime vars and break spawns.
- *
- * Stripped: any var named in `secretVarNames` (case-insensitive), plus any var whose NAME
- * matches a secret pattern (KEY/TOKEN/SECRET/PASSWORD/PASSWD/CREDENTIAL/APIKEY/_AUTH).
- */
-export function buildFilteredChildEnv(
-  secretVarNames: string[] = [],
-  source: NodeJS.ProcessEnv = process.env,
-): NodeJS.ProcessEnv {
-  const deny = new Set(secretVarNames.filter(Boolean).map((s) => s.toUpperCase()))
-  const SECRET_NAME_RE = /KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|APIKEY|_AUTH/i
-  const out: NodeJS.ProcessEnv = {}
-  for (const [k, v] of Object.entries(source)) {
-    if (v === undefined) continue
-    if (deny.has(k.toUpperCase())) continue
-    if (SECRET_NAME_RE.test(k)) continue
-    out[k] = v
-  }
-  return out
-}
