@@ -72,8 +72,8 @@ describe("formatAdvisorResult — gemini served-model check", () => {
     expect(text).toContain("STDOUT\n[LOW] src/a.ts:7 typo")
   })
 
-  it("other CLIs are untouched by the check", () => {
-    const text = formatAdvisorResult("codex", { ...OK, stdout: geminiJson("gemini-3.5-flash") }, "the prompt")
+  it("the claude CLI is untouched by the check (codex has its own header check)", () => {
+    const text = formatAdvisorResult("claude", { ...OK, stdout: geminiJson("gemini-3.5-flash") }, "the prompt")
     expect(text).not.toContain("model_served")
     expect(text).not.toContain("completion: failed")
   })

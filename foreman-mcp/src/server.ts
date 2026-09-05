@@ -40,7 +40,7 @@ import {
 import { renderShape } from "./lib/schemaDoc.js"
 import { formatSchemaError, isZodError } from "./lib/schemaError.js"
 import { readJournal, initSession, logEvent, endSession } from "./lib/journal.js"
-import { invokeAdvisor, formatAdvisorResult, GEMINI_ADVISOR_MODEL } from "./tools/invokeAdvisor.js"
+import { invokeAdvisor, formatAdvisorResult, GEMINI_ADVISOR_MODEL, CODEX_ADVISOR_MODEL } from "./tools/invokeAdvisor.js"
 import { sessionOrient } from "./tools/sessionOrient.js"
 import { renderIncludes, loadSkill } from "./lib/skillLoader.js"
 import { hostStatus } from "./tools/hostStatus.js"
@@ -306,7 +306,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     "invoke_advisor",
     {
       title: "Invoke Advisor",
-      description: "Invoke claude|codex|gemini CLI via stdin. Resolves binaries cross-platform and wraps .cmd shims on win32. Claude runs headless with Fable 5 at max effort and no tools. Exit 0 with empty stdout, or stdout equal to the prompt, is reported as completion: failed with the stderr tail — not a clean seat; record it as failed and retry once. Gemini runs with JSON output: the meta block names model_requested and model_served, and a served model other than the pinned one is completion: failed (model_substituted). Failed calls may be compressed; if a failed call's summary is insufficient, call retrieve_original with the <<ccr:HASH>> marker for the full diagnostic.",
+      description: "Invoke claude|codex|gemini CLI via stdin. Resolves binaries cross-platform and wraps .cmd shims on win32. Claude runs headless with Fable 5 at max effort and no tools; Codex runs gpt-6-astra at xhigh reasoning (codex-cli 0.153.4 or newer) and the meta block echoes model_served and reasoning_effort from its header. Exit 0 with empty stdout, or stdout equal to the prompt, is reported as completion: failed with the stderr tail — not a clean seat; record it as failed and retry once. Gemini runs with JSON output: the meta block names model_requested and model_served, and a served model other than the pinned one is completion: failed (model_substituted). Failed calls may be compressed; if a failed call's summary is insufficient, call retrieve_original with the <<ccr:HASH>> marker for the full diagnostic.",
       inputSchema: z.strictObject({
         cli: z.enum(ADVISOR_CLIS),
         prompt: z.string().max(100000),
@@ -323,7 +323,8 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const result = await invokeAdvisor(args.cli, args.prompt, args.timeout_ms)
-      const formatted = formatAdvisorResult(args.cli, result, args.prompt, args.cli === "gemini" ? GEMINI_ADVISOR_MODEL : undefined)
+      const pinned = args.cli === "gemini" ? GEMINI_ADVISOR_MODEL : args.cli === "codex" ? CODEX_ADVISOR_MODEL : undefined
+      const formatted = formatAdvisorResult(args.cli, result, args.prompt, pinned)
       // Successful advisor output is PROSE — never lossy-compress it (silent loss of the
       // recommendations). A FAILED call is an unpredictable diagnostic dump: let the normal
       // compression path handle it; the agent sees exit_code != 0 and can retrieve_original.

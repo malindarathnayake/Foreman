@@ -15,6 +15,22 @@ import type { AdvisorCli } from "../lib/advisorCli.js"
  */
 export const GEMINI_ADVISOR_MODEL = "gemini-3.1-pro-preview"
 
+/**
+ * Codex seat model (0.6.8). Verified through the CLI on 2026-09-05: codex-cli 0.152.0 answers
+ * "requires a newer version of Codex" for this id, 0.153.4 runs it at reasoning effort xhigh
+ * and echoes `model: gpt-6-astra` in its header. Every other *-astra spelling is refused
+ * outright on a ChatGPT account, so acceptance here is not a silent fallback.
+ */
+export const CODEX_ADVISOR_MODEL = "gpt-6-astra"
+export const CODEX_ADVISOR_REASONING = "xhigh"
+
+/** Codex prints `model: <id>` and `reasoning effort: <level>` in its stderr header. */
+export function parseCodexHeader(stderr: string): { model?: string; reasoningEffort?: string } {
+  const model = /^model:\s*(\S+)\s*$/m.exec(stderr)?.[1]
+  const reasoningEffort = /^reasoning effort:\s*(\S+)\s*$/m.exec(stderr)?.[1]
+  return { model, reasoningEffort }
+}
+
 /** What one gemini run reports in `--output-format json`. */
 export interface GeminiRun {
   response: string
@@ -78,8 +94,8 @@ const ADVISOR_CONFIGS: Record<AdvisorCli, { buildArgs: () => string[] }> = {
   codex: {
     buildArgs: () => [
       "exec", "--skip-git-repo-check", "-s", "read-only",
-      "-m", "gpt-5.6-sol",
-      "-c", "model_reasoning_effort=xhigh",
+      "-m", CODEX_ADVISOR_MODEL,
+      "-c", `model_reasoning_effort=${CODEX_ADVISOR_REASONING}`,
       "-c", "hide_agent_reasoning=true", "-"
     ],
   },
@@ -144,6 +160,19 @@ export function formatAdvisorResult(
     ? result.stdout.slice(TRUNCATION_SENTINEL.length)
     : result.stdout
   let failureReason: "empty_stdout" | "echoed_prompt" | "model_substituted" | null = null
+
+  // 0.6.8: codex echoes the model and reasoning effort it ran with in its stderr header,
+  // before stderr is dropped on success. Report both; a model other than the pinned one is
+  // a failed seat, the same rule as gemini below.
+  if (cli === "codex" && result.exitCode === 0) {
+    const header = parseCodexHeader(result.stderr)
+    if (requestedModel !== undefined) metaLines.push(`model_requested: ${requestedModel}`)
+    metaLines.push(`model_served: ${header.model ?? "unknown"}`)
+    if (header.reasoningEffort !== undefined) metaLines.push(`reasoning_effort: ${header.reasoningEffort}`)
+    if (requestedModel !== undefined && header.model !== undefined && header.model !== requestedModel) {
+      failureReason = "model_substituted"
+    }
+  }
 
   // 0.6.7: gemini answers in JSON so the seat can say which model actually served the main
   // request. On one account the CLI served gemini-3.5-flash for a pinned 3.8-flash with exit 0

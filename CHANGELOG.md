@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.8 - 2026-09-05
+
+- **The Codex seat runs `gpt-6-astra` at `xhigh`.** Verified through the CLI first: codex-cli 0.152.0 answers "requires a newer version of Codex" for this id and refuses every other `*-astra` spelling outright on a ChatGPT account; 0.153.4 runs it and echoes `model: gpt-6-astra` and `reasoning effort: xhigh` in its header. `invoke_advisor` now reads that header and reports `model_served` and `reasoning_effort`; a model other than the pinned one is a failed seat (`model_substituted`), the same rule as the Gemini seat. Needs codex-cli 0.153.4 or newer.
+- Bumped package to `0.6.8`.
+
 ## 0.6.7 - 2026-09-04
 
 - **The Gemini seat is pinned to `gemini-3.1-pro-preview`, and the served model is checked.** 0.6.6 pinned `gemini-3.8-flash` on the strength of a probe that only proved the id was accepted. The run stats told the truth: on that account the CLI served `gemini-3.5-flash` for the main request, silently, with exit 0 and a plausible answer, and did the same for `3.7-flash`. `gemini-3.1-pro-preview` is served faithfully and the API defaults Pro to thinking level `high`. `invoke_advisor` and `capability_check` now run gemini with `--output-format json`, read `model_served` and the thinking tokens from the stats, and treat a served model other than the pinned one as a failed seat (`model_substituted`), text kept for the record. Non-JSON output from an older CLI is handled as before with `model_served: unknown`.
