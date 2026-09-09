@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.9 - 2026-09-08
+
+Field-feedback round 6: the paid review loop at the phase gate. A pit-boss on another project ran six review rounds (two seats each, well over a million advisor tokens) on one phase because every LOW fix re-verdicted a unit, which staled the review, which demanded a fresh seat. Codex (`gpt-6-astra`) replayed the ledger against the diagnosis and found four enforcement holes; all four are closed here, and two of the proposed fixes (a non-gating `accepted` classification, a diff-only "delta" seat) were rejected as loopholes and did not ship.
+
+- **`REVIEW REQUIRED` says whether the verification path is open.** The gate error now ends with `VERIFICATION ELIGIBLE` and the exact `record_review { stage: "verification", ... }` shape to write, baseline timestamp and direct-fix attempts filled in, or `VERIFICATION NOT ELIGIBLE` with the one blocker. The check runs the same predicates the gate applies to a submitted record, and also confirms that recording the verification would not evict its own baseline.
+- **A verification baseline must be a complete seat.** A `completion: failed` or `partial` review, or a silent one (zero findings, no `checked[]`), can no longer anchor a `stage: verification` record. Before, the failed record went stale after the direct-fix re-verdict, the INCOMPLETE check stopped seeing it, and the gate passed with no completed independent review.
+- **Every attempt since the baseline must be a direct fix.** A worker delegation, or an `invoke_worker` attempt in the sidecar, recorded between the baseline review and the final literal fix is refused. Before, only the unit's current attempt was inspected, so a behaviour-changing worker attempt sandwiched between two reviews received no seat.
+- **Retention never evicts a record the gate is blocking on.** The 20-record cap stays, but a current review with a confirmed finding, an unsuperseded failed or silent seat, a current verification record, and the baseline it names are never dropped; oldest evictable records go first. Before, twenty clean reviews appended after a confirmed HIGH pushed it out of history and the gate passed with no waiver.
+- **A failed or silent seat is superseded by re-running it.** A later `completion: complete` record from the same advisor at the same stage clears the INCOMPLETE REVIEW block; a different advisor, a cross_exam, or another incomplete record does not, and a confirmed finding on the superseded record still blocks. Before, the only ways past a timed-out seat were a re-verdict (which staled every review) or an owner override.
+- Implementor checkpoint text names the hint and the re-run rule. New regression file `tests/fieldFeedback2026-09e.test.ts` mirrors each replayed sequence.
+- Bumped package to `0.6.9`.
+
 ## 0.6.8 - 2026-09-05
 
 - **The Codex seat runs `gpt-6-astra` at `xhigh`.** Verified through the CLI first: codex-cli 0.152.0 answers "requires a newer version of Codex" for this id and refuses every other `*-astra` spelling outright on a ChatGPT account; 0.153.4 runs it and echoes `model: gpt-6-astra` and `reasoning effort: xhigh` in its header. `invoke_advisor` now reads that header and reports `model_served` and `reasoning_effort`; a model other than the pinned one is a failed seat (`model_substituted`), the same rule as the Gemini seat. Needs codex-cli 0.153.4 or newer.

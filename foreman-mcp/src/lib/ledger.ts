@@ -268,29 +268,121 @@ async function disciplineAdherenceGate(
   }
 }
 
-// ─── Verification eligibility (round 5, Codex) ───────────────────────────────
+// ─── Review enforcement helpers (round 6) ────────────────────────────────────
+// Shared by the phase gate, review retention, and the verification predicates so all
+// three agree on what a blocking record is. Field feedback 2026-09 round 6: a pitboss
+// ran six paid review rounds on one phase because every LOW fix re-verdicted a unit,
+// which staled the review, which demanded a fresh seat; the replay also showed four
+// enforcement holes (failed baseline, hidden worker attempt, eviction of a blocking
+// record, an unsupersedable failed seat). Each helper below closes one of them.
+
+/** Newest unit verdict timestamp in the phase; "" when no unit has one. */
+function latestVerdictTs(phaseObj: Phase): string {
+  return Object.values(phaseObj.units).reduce((max, u) => (u.v_ts && u.v_ts > max ? u.v_ts : max), "")
+}
+
+/** Why a review does not cover the phase (partial/failed, unclassified findings, silent), else null. */
+export function reviewIncompleteness(r: PhaseReview): string | null {
+  if (r.completion === "partial" || r.completion === "failed") return `completion=${r.completion}`
+  // Reviews recorded before 0.6.4 could carry unclassified findings; the gate blocks only
+  // on 'confirmed', so an unclassified real finding slipped past.
+  const unclassified = r.findings.filter((f) => f.classification === undefined).length
+  if (unclassified > 0) return `${unclassified} finding(s) without a classification`
+  if (r.findings.length === 0 && !(r.checked && r.checked.length > 0) && r.completion !== "complete") {
+    return "zero findings with no examined list"
+  }
+  return null
+}
+
+function hasConfirmed(r: PhaseReview): boolean {
+  return r.findings.some((f) => f.classification === "confirmed")
+}
+
+function effectiveStage(r: PhaseReview): NonNullable<PhaseReview["stage"]> {
+  return r.stage ?? "independent"
+}
+
+/**
+ * An incomplete record is superseded when the SAME advisor at the SAME stage later
+ * recorded a complete one — the prescribed "record the failure, re-run the seat"
+ * recovery. Before round 6 a failed seat blocked until a re-verdict staled it, and that
+ * re-verdict demanded fresh seats. Supersession is narrow: it clears only the
+ * incompleteness; a confirmed finding on the superseded record still blocks.
+ */
+function isSuperseded(r: PhaseReview, pool: PhaseReview[]): boolean {
+  return pool.some(
+    (s) => s !== r && s.ts > r.ts && s.advisor === r.advisor && effectiveStage(s) === effectiveStage(r) && reviewIncompleteness(s) === null
+  )
+}
+
+/** Whether a CURRENT record (at/after the latest verdict) blocks the gate. */
+function blocksGate(r: PhaseReview, current: PhaseReview[]): boolean {
+  return hasConfirmed(r) || (reviewIncompleteness(r) !== null && !isSuperseded(r, current))
+}
+
+export const REVIEW_RETENTION = 20
+
+/**
+ * Review retention. The cap bounds the on-disk history, but enforcement state must not
+ * live only in a bounded presentation list (the rule attempt counters already follow):
+ * a record that currently blocks the gate, and the baseline of a current verification
+ * record, are never evicted. Oldest evictable records go first; when every record is
+ * protected the list keeps them all rather than forgetting a block.
+ */
+export function trimReviews(reviews: PhaseReview[], verdictTs: string): PhaseReview[] {
+  if (reviews.length <= REVIEW_RETENTION) return reviews
+  const current = reviews.filter((r) => r.ts >= verdictTs)
+  const verifications = current.filter((r) => r.stage === "verification")
+  const baselines = new Set(verifications.map((r) => r.evidence?.baseline_review_ts))
+  // Protected: a current blocking record, a current verification record (the seat the
+  // gate may be resting on), and the baseline such a record names.
+  const protectedSet = new Set(
+    reviews.filter((r) => baselines.has(r.ts) || verifications.includes(r) || (r.ts >= verdictTs && blocksGate(r, current)))
+  )
+  const kept: PhaseReview[] = []
+  let excess = reviews.length - REVIEW_RETENTION
+  for (const r of reviews) {
+    if (excess > 0 && !protectedSet.has(r)) {
+      excess--
+      continue
+    }
+    kept.push(r)
+  }
+  return kept
+}
+
+// ─── Verification eligibility (round 5, Codex; round 6 predicates) ───────────
 // A stage:'verification' record stands in for an independent seat only when it is a
 // tightly linked, low-risk extension of one: every predicate below is checkable from
 // the ledger and the sidecar, and each one names the exact thing the reporter's
 // cross_exam loophole left unchecked. Returns null when eligible, else the reason.
-export function verificationIneligibility(
+
+interface VerificationTarget {
+  baseline_review_ts: string
+  units: Array<{ unit_id: string; attempt: number }>
+}
+
+/** The predicates over a (baseline, units) pair; `upperTs` closes the finding window (the record's ts, or now for a prospective check). */
+function verificationBlocker(
   phaseKey: string,
   phaseObj: Phase,
-  review: PhaseReview,
+  target: VerificationTarget,
+  upperTs: string,
   allReviews: PhaseReview[],
   events: SidecarEvent[]
 ): string | null {
-  const ev = review.evidence
-  if (!ev) return "no evidence recorded"
   const baseline = allReviews.find(
-    (r) => r.ts === ev.baseline_review_ts && (r.stage === undefined || r.stage === "independent")
+    (r) => r.ts === target.baseline_review_ts && (r.stage === undefined || r.stage === "independent")
   )
-  if (!baseline) return `baseline_review_ts ${ev.baseline_review_ts} is not a retained independent review`
+  if (!baseline) return `baseline_review_ts ${target.baseline_review_ts} is not a retained independent review`
+  // Round 6: a failed, partial, or silent seat is not coverage and cannot anchor a verification.
+  const incomplete = reviewIncompleteness(baseline)
+  if (incomplete) return `baseline review ${baseline.advisor}@${baseline.ts} is not a complete seat (${incomplete})`
   if (phaseObj.scope?.hot_path || phaseObj.scope?.security_boundary) {
     return "phase is scoped hot_path or security_boundary; those need a seat"
   }
   const serious = allReviews
-    .filter((r) => r.ts >= baseline.ts && r.ts <= review.ts)
+    .filter((r) => r.ts >= baseline.ts && r.ts <= upperTs)
     .flatMap((r) => r.findings.filter((f) => f.classification === "confirmed" && f.severity !== "low"))
   if (serious.length > 0) return `${serious.length} confirmed finding(s) above LOW since the baseline review`
   const changed = Object.entries(phaseObj.units).filter(([, u]) => u.v_ts !== undefined && u.v_ts > baseline.ts)
@@ -300,17 +392,83 @@ export function verificationIneligibility(
     if (u.v !== "pass" || u.via !== "pitboss-direct") {
       return `unit '${unitId}' was re-verdicted after the baseline but not as a passing direct fix`
     }
+    // Round 6: EVERY attempt since the baseline must be a direct fix. A worker attempt
+    // sandwiched between the baseline and the final literal fix received no seat.
+    const worker = (u.delegations ?? []).find((d) => d.ts > baseline.ts)
+    if (worker) return `unit '${unitId}' had a worker delegation (attempt #${worker.attempt}) after the baseline review`
     const fix = u.direct_fixes?.find((d) => d.attempt === u.attempt_seq)
     if (!fix) return `unit '${unitId}' has no direct_fix record at its current attempt #${u.attempt_seq}`
-    if (!ev.units.some((x) => x.unit_id === unitId && x.attempt === u.attempt_seq)) {
+    if (!target.units.some((x) => x.unit_id === unitId && x.attempt === u.attempt_seq)) {
       return `evidence.units does not name '${unitId}' attempt #${u.attempt_seq}`
     }
     const boundedUnit = boundIdentifier(unitId)
-    if (events.some((e) => e.phase === boundedPhase && e.unit_id === boundedUnit && e.attempt === u.attempt_seq)) {
+    const unitEvents = events.filter((e) => e.phase === boundedPhase && e.unit_id === boundedUnit)
+    if (unitEvents.some((e) => e.attempt === u.attempt_seq)) {
       return `unit '${unitId}' attempt #${u.attempt_seq} is an invoke_worker delegation in the sidecar, not a direct fix`
     }
+    const remote = unitEvents.find((e) => typeof e.ts === "string" && e.ts > baseline.ts)
+    if (remote) return `unit '${unitId}' has an invoke_worker delegation (attempt #${remote.attempt}) after the baseline review`
   }
   return null
+}
+
+export function verificationIneligibility(
+  phaseKey: string,
+  phaseObj: Phase,
+  review: PhaseReview,
+  allReviews: PhaseReview[],
+  events: SidecarEvent[]
+): string | null {
+  const ev = review.evidence
+  if (!ev) return "no evidence recorded"
+  return verificationBlocker(phaseKey, phaseObj, ev, review.ts, allReviews, events)
+}
+
+/**
+ * Round 6: when the gate answers REVIEW REQUIRED it states whether a stage:'verification'
+ * record would satisfy it right now — the exact record shape when it would, the single
+ * blocker when it would not — so a pitboss neither pays for a seat the ledger would have
+ * accepted a verification for, nor writes a record the ledger is about to refuse.
+ */
+function prospectiveVerification(
+  phaseKey: string,
+  phaseObj: Phase,
+  allReviews: PhaseReview[],
+  events: SidecarEvent[],
+  verdictTs: string
+): string {
+  const notEligible = (why: string) => `VERIFICATION NOT ELIGIBLE (a fresh seat is needed): ${why}.`
+  const candidates = allReviews
+    .filter((r) => (r.stage === undefined || r.stage === "independent") && r.ts < verdictTs && reviewIncompleteness(r) === null)
+    .sort((a, b) => (a.ts < b.ts ? 1 : a.ts > b.ts ? -1 : 0))
+  if (candidates.length === 0) return notEligible("no complete independent review predates the latest unit verdict")
+  const baseline = candidates[0]
+  const units = Object.entries(phaseObj.units)
+    .filter(([, u]) => u.v_ts !== undefined && u.v_ts > baseline.ts)
+    .map(([unit_id, u]) => ({ unit_id, attempt: u.attempt_seq ?? 0 }))
+  if (units.length > 50) return notEligible(`${units.length} units were re-verdicted since the baseline; verification evidence names at most 50`)
+  const now = new Date().toISOString()
+  const why = verificationBlocker(phaseKey, phaseObj, { baseline_review_ts: baseline.ts, units }, now, allReviews, events)
+  if (why) return notEligible(why)
+  // Recording the verification must not evict its own baseline from the retained history.
+  const synthetic = {
+    advisor: "pitboss",
+    ts: now,
+    findings: [],
+    stage: "verification",
+    completion: "complete",
+    evidence: { baseline_review_ts: baseline.ts, units },
+  } as unknown as PhaseReview
+  if (!trimReviews([...allReviews, synthetic], verdictTs).includes(baseline)) {
+    return notEligible("recording the verification would evict its baseline review from the retained history")
+  }
+  const unitList = units.map((u) => `{ unit_id: "${u.unit_id}", attempt: ${u.attempt} }`).join(", ")
+  return (
+    "VERIFICATION ELIGIBLE: a stage:'verification' record can stand in for a seat — " +
+    `write_ledger record_review { phase: "${phaseKey}", data: { advisor: "pitboss", stage: "verification", completion: "complete", findings: [], ` +
+    `checked: [<files re-read>], evidence: { baseline_review_ts: "${baseline.ts}", units: [${unitList}], files: [<files re-verified>], ` +
+    "tests: { outcome, command, result }, probe: { outcome, method, result } } } } — supply real test and probe evidence; the gate re-checks every predicate on the record."
+  )
 }
 
 // ─── Apply mutation ───────────────────────────────────────────────────────────
@@ -669,11 +827,8 @@ async function applyOperation(
         // every earlier block message is unchanged; overrides are durable on the phase.
         const gatePhase = ledger.phases[phase]
         const allReviews = gatePhase.reviews ?? []
-        const latestVerdictTs = Object.values(gatePhase.units).reduce(
-          (max, u) => (u.v_ts && u.v_ts > max ? u.v_ts : max),
-          ""
-        )
-        const currentReviews = allReviews.filter((r) => r.ts >= latestVerdictTs)
+        const verdictTs = latestVerdictTs(gatePhase)
+        const currentReviews = allReviews.filter((r) => r.ts >= verdictTs)
         // Round 5 (Codex): currency counted every current record, so a pit-boss cross_exam
         // written after a re-verdict satisfied the gate. A cross_exam never counts as a
         // seat; a verification record counts only under verificationIneligibility; an
@@ -682,8 +837,8 @@ async function applyOperation(
         const ineligible: string[] = []
         let eligibleVerification = false
         const verifications = currentReviews.filter((r) => r.stage === "verification")
+        const events = sidecarReader ? await sidecarReader() : []
         if (verifications.length > 0) {
-          const events = sidecarReader ? await sidecarReader() : []
           for (const r of verifications) {
             const why = verificationIneligibility(phase, gatePhase, r, allReviews, events)
             if (why === null) eligibleVerification = true
@@ -702,7 +857,8 @@ async function applyOperation(
               `REVIEW REQUIRED: phase '${phase}' has no record_review entry recorded at or after its latest unit verdict.${stale}${notSeats} ` +
               "Run the checkpoint deliberation and persist at least one advisor review " +
               "(write_ledger record_review) before the gate can pass, or set data.user_override: true " +
-              "to pass without independent review — the override is recorded on the phase."
+              "to pass without independent review — the override is recorded on the phase. " +
+              prospectiveVerification(phase, gatePhase, allReviews, events, verdictTs)
             )
           }
           gatePhase.review_override = { ts: new Date().toISOString() }
@@ -727,17 +883,13 @@ async function applyOperation(
           // Round 3 (Codex): a collapsed parse yields a review with zero findings and no
           // examined list, which used to satisfy the gate. Silence is approval only when
           // the seat says what it examined or the moderator marks it complete.
+          // Round 6: an incomplete record superseded by the same advisor's later complete
+          // record at the same stage no longer blocks — re-run the seat, never re-verdict
+          // to clear it. A confirmed finding on the superseded record still blocked above.
           const incomplete = currentReviews
             .map((r) => {
-              if (r.completion === "partial" || r.completion === "failed") return `${r.advisor}: completion=${r.completion}`
-              // Reviews recorded before 0.6.4 could carry unclassified findings; the gate
-              // blocks only on 'confirmed', so an unclassified real finding slipped past.
-              const unclassified = r.findings.filter((f) => f.classification === undefined).length
-              if (unclassified > 0) return `${r.advisor}: ${unclassified} finding(s) without a classification`
-              if (r.findings.length === 0 && !(r.checked && r.checked.length > 0) && r.completion !== "complete") {
-                return `${r.advisor}: zero findings with no examined list`
-              }
-              return null
+              const why = reviewIncompleteness(r)
+              return why !== null && !isSuperseded(r, currentReviews) ? `${r.advisor}: ${why}` : null
             })
             .filter((s): s is string => s !== null)
           if (incomplete.length > 0) {
@@ -818,7 +970,8 @@ async function applyOperation(
         stage: data.stage,
         ...(data.evidence !== undefined ? { evidence: data.evidence } : {}),
       })
-      if (p.reviews.length > 20) p.reviews = p.reviews.slice(-20)
+      // Round 6: bounded history that never evicts a record the gate is blocking on.
+      p.reviews = trimReviews(p.reviews, latestVerdictTs(p))
       break
     }
     case "authorize_attempts": {

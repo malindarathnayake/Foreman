@@ -594,7 +594,7 @@ describe("advisor compression (0.2.2)", () => {
     vi.mocked(invokeAdvisor).mockResolvedValue({
       stdout: "Here is my review.\n\nRecommendation: do X.",
       stderr:
-        "OpenAI Codex v0.139.0\n--------\nmodel: gpt-5.5\n\nuser\nreview this\n\ncodex\nHere is my review.\n\nRecommendation: do X.\ntokens used\n12,345",
+        "OpenAI Codex v0.139.0\n--------\nmodel: gpt-6-astra\n\nuser\nreview this\n\ncodex\nHere is my review.\n\nRecommendation: do X.\ntokens used\n12,345",
       exitCode: 0,
       timedOut: false,
       truncated: false,
