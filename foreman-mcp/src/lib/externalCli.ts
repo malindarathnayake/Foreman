@@ -15,11 +15,20 @@ export interface ExternalCliResult {
   stderrTruncated?: boolean
 }
 
+/** Hard ceiling on a caller-raised stdout budget (v0.6.12). */
+export const MAX_OUTPUT_CEILING = 2_000_000
+
 export function runExternalCli(
   command: string,
   args: string[],
   timeoutMs: number,
+  opts?: { maxStdout?: number },
 ): Promise<ExternalCliResult> {
+  // Advisor and test output is prose a model reads, so 16 KB is the right budget there.
+  // Machine-readable inventories (a repository's changed-path list) are bounded by the
+  // caller's own limit instead, and truncating them silently would be a correctness bug
+  // rather than a display one — hence an explicit, ceilinged opt-in.
+  const stdoutBudget = Math.min(Math.max(opts?.maxStdout ?? MAX_OUTPUT, MAX_OUTPUT), MAX_OUTPUT_CEILING)
   return new Promise((resolve) => {
     let stdout = ''
     let stderr = ''
@@ -37,8 +46,8 @@ export function runExternalCli(
 
     child.stdout.on('data', (chunk: Buffer) => {
       stdout += chunk.toString()
-      if (stdout.length > MAX_OUTPUT) {
-        stdout = '...(truncated)\n' + stdout.slice(-MAX_OUTPUT)
+      if (stdout.length > stdoutBudget) {
+        stdout = '...(truncated)\n' + stdout.slice(-stdoutBudget)
         stdoutTruncated = true
       }
     })

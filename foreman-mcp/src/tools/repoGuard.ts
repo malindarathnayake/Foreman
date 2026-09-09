@@ -26,6 +26,7 @@ export interface RepoGuardInput {
   unit_id: string
   files?: string[]
   allowed_files?: string[]
+  max_entries?: number
   project_dir?: string
 }
 
@@ -50,7 +51,7 @@ export async function handleRepoGuard(
         hint: "a baseline is frozen for the life of an attempt; record a new delegation for the next attempt, or run compare against this one",
       }))
     }
-    const outcome = await takeSnapshot(dir, input.files ?? [], input.allowed_files ?? [])
+    const outcome = await takeSnapshot(dir, input.files ?? [], input.allowed_files ?? [], input.max_entries)
     if (outcome.status !== "ok") {
       return scrub(toKeyValue({
         operation: "snapshot",
@@ -79,6 +80,7 @@ export async function handleRepoGuard(
         head: snapshot.head.slice(0, 12),
         stash: `${snapshot.stash_ref.slice(0, 12)} (${snapshot.stash_count} entries)`,
         changed_paths: snapshot.entries.length,
+        entry_limit: snapshot.entry_limit ?? 0,
         authorized_files: snapshot.allowed.length,
         autocrlf: snapshot.autocrlf,
         hash: snapshot.hash,
@@ -109,7 +111,7 @@ export async function handleRepoGuard(
     }))
   }
 
-  const outcome = await takeSnapshot(dir, input.files ?? [], before.snapshot.allowed ?? [])
+  const outcome = await takeSnapshot(dir, input.files ?? [], before.snapshot.allowed ?? [], before.snapshot.entry_limit)
   if (outcome.status !== "ok") {
     return scrub(toKeyValue({
       operation: "compare",

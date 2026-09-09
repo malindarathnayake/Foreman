@@ -12,7 +12,7 @@ import os from "os"
 import path from "path"
 import { execFileSync } from "child_process"
 import { readLedger, writeLedger } from "../src/lib/ledger.js"
-import { compareSnapshots, invalidPathReason, normalizePath, parsePorcelainZ, takeSnapshot, MAX_ENTRIES } from "../src/lib/repoGuard.js"
+import { compareSnapshots, invalidPathReason, normalizePath, parsePorcelainZ, takeSnapshot, ENTRY_CEILING, MAX_ENTRIES } from "../src/lib/repoGuard.js"
 import { handleRepoGuard } from "../src/tools/repoGuard.js"
 import type { RepoSnapshot } from "../src/types.js"
 
@@ -123,6 +123,27 @@ describe("NUL-delimited porcelain parsing", () => {
     expect(paths).toContain("src/n.ts")
     expect(paths).toContain("café.ts")
     expect(paths).not.toContain("src/")
+  })
+
+  it("works on a repository whose index is larger than the capture limit", async () => {
+    // Field failure the day after 0.6.10 shipped: the index fingerprints came from an
+    // unscoped `git ls-files -s`, whose output scales with REPOSITORY size rather than
+    // with the change being compared. It measured 13 KB against a 16 KB capture limit in
+    // this repo, so every test passed here and every snapshot on a larger repository was
+    // refused as truncated. 400 tracked files put the full index well past the limit.
+    for (let i = 0; i < 400; i++) {
+      await fs.writeFile(path.join(repoDir, `padding-file-number-${i}.ts`), `export const n${i} = ${i}\n`)
+    }
+    git(["add", "."])
+    git(["commit", "-q", "-m", "many files"])
+    expect(git(["ls-files", "-s"]).length).toBeGreaterThan(16000)
+
+    await fs.writeFile(path.join(repoDir, "a.ts"), "export const a = 2\n")
+    const out = await takeSnapshot(repoDir, ["a.ts"], ["a.ts"])
+    expect(out.status).toBe("ok")
+    if (out.status !== "ok") return
+    expect(out.snapshot.entries.map((e) => e.path)).toEqual(["a.ts"])
+    expect(out.snapshot.entries[0].idx).not.toBe("none")
   })
 
   it("ignores Foreman's own state files", async () => {
@@ -296,10 +317,31 @@ describe("compare names every ownership breach", () => {
     const snap = (n: number, truncated: boolean): RepoSnapshot => ({
       root: "/r", branch: "main", head: "abc", stash_ref: "none", stash_count: 0,
       autocrlf: "unset", eol: [], entries: Array.from({ length: n }, (_, i) => entry(i)),
-      truncated, allowed: [], hash: "h",
+      truncated, entry_limit: MAX_ENTRIES, allowed: [], hash: "h",
     })
     expect(compareSnapshots(snap(MAX_ENTRIES, false), snap(MAX_ENTRIES, false))).toEqual([])
     expect(compareSnapshots(snap(3, true), snap(3, true))[0]).toMatch(/comparison is incomplete/)
+    expect(compareSnapshots(snap(3, true), snap(3, true))[0]).toMatch(/raise repo_guard max_entries/)
+  })
+
+  it("the entry limit is raisable per call and bounded by the ceiling", async () => {
+    // The default is generous rather than a wall: a tree that legitimately carries more
+    // changes than 500 can still be guarded by asking for a bigger comparison.
+    for (let i = 0; i < 12; i++) await fs.writeFile(path.join(repoDir, `extra${i}.ts`), "x")
+    const tight = await takeSnapshot(repoDir, [], [], 5)
+    if (tight.status !== "ok") throw new Error("expected ok")
+    expect(tight.snapshot.entries).toHaveLength(5)
+    expect(tight.snapshot.truncated).toBe(true)
+    expect(tight.snapshot.entry_limit).toBe(5)
+
+    const roomy = await takeSnapshot(repoDir, [], [], 100)
+    if (roomy.status !== "ok") throw new Error("expected ok")
+    expect(roomy.snapshot.truncated).toBe(false)
+    expect(roomy.snapshot.entry_limit).toBe(100)
+
+    const absurd = await takeSnapshot(repoDir, [], [], 10_000_000)
+    if (absurd.status !== "ok") throw new Error("expected ok")
+    expect(absurd.snapshot.entry_limit).toBe(ENTRY_CEILING)
   })
 
   it("normalizePath makes separators comparable", () => {

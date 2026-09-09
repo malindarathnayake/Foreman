@@ -38,8 +38,15 @@ import type { RepoEntry, RepoSnapshot } from "../types.js"
 
 const GIT_TIMEOUT_MS = 10_000
 
-/** Entries retained per snapshot. Delegations cap at 20, so this bounds ledger growth. */
-export const MAX_ENTRIES = 200
+/**
+ * Changed paths retained per snapshot. Generous by default so ordinary work never hits
+ * it, and raisable per call (repo_guard `max_entries`) up to ENTRY_CEILING for a genuinely
+ * large change set — a fixed wall would refuse to guard the units that most need it.
+ * Delegations cap at 20, which is what bounds ledger growth.
+ */
+export const MAX_ENTRIES = 500
+/** Hard ceiling on a caller-raised entry limit. */
+export const ENTRY_CEILING = 5000
 /** Longest single path retained. */
 export const MAX_PATH_LEN = 400
 /** Most file arguments accepted for the line-ending probe. */
@@ -69,8 +76,8 @@ interface GitResult {
   truncated: boolean
 }
 
-async function git(dir: string, args: string[]): Promise<GitResult> {
-  const r = await runExternalCli("git", ["-C", dir, ...args], GIT_TIMEOUT_MS)
+async function git(dir: string, args: string[], maxStdout?: number): Promise<GitResult> {
+  const r = await runExternalCli("git", ["-C", dir, ...args], GIT_TIMEOUT_MS, maxStdout ? { maxStdout } : undefined)
   // Trailing whitespace only. `git status --porcelain` encodes status in the first two
   // columns, so a modified file's record begins with a space; trimming both ends would
   // eat it and every path would come back missing its first character.
@@ -137,18 +144,59 @@ async function worktreeFingerprint(dir: string, rel: string): Promise<string> {
   }
 }
 
-/** Staged blob ids from one `git ls-files -s -z` call: the index's own content identity. */
-function parseLsFiles(out: string): Map<string, string> {
-  const map = new Map<string, string>()
+/** Parse `git ls-files -s -z` records: "<mode> <sha> <stage>\t<path>". */
+function parseLsFiles(out: string, into: Map<string, string>): void {
   for (const rec of out.split("\0")) {
-    // "<mode> <sha> <stage>\t<path>"
     const tab = rec.indexOf("\t")
     if (tab === -1) continue
     const fields = rec.slice(0, tab).split(/\s+/)
     if (fields.length < 2) continue
-    map.set(normalizePath(rec.slice(tab + 1)), fields[1].slice(0, 16))
+    into.set(normalizePath(rec.slice(tab + 1)), fields[1].slice(0, 16))
   }
-  return map
+}
+
+/**
+ * Staged blob ids for the CHANGED paths only, in batches.
+ *
+ * v0.6.12: this used to list the whole index. `git ls-files -s` emits a row per tracked
+ * file, so its output scales with repository size, not with the size of the change — it
+ * passed every test here (13 KB against a 16 KB capture limit) and then failed on the
+ * first larger repository in the field, refusing every snapshot with a truncation error.
+ * Scoping to the changed paths keeps the output proportional to what is being compared.
+ * The paths come from git's own status output and are passed after `--`, so they cannot
+ * be read as options.
+ */
+/** Output budget for an inventory of `n` paths: a status/ls-files row plus slack. */
+export function outputBudget(n: number): number {
+  return Math.max(64_000, n * (MAX_PATH_LEN + 80))
+}
+
+async function stagedFingerprints(dir: string, paths: string[]): Promise<{ ok: boolean; map: Map<string, string> }> {
+  const map = new Map<string, string>()
+  if (paths.length === 0) return { ok: true, map }
+  // Batched on accumulated argument length: a long command line is a hard failure on
+  // Windows, and a large response would hit the same capture limit this call just fixed.
+  const BATCH_ARG_CHARS = 4000
+  let batch: string[] = []
+  let chars = 0
+  const flush = async (): Promise<boolean> => {
+    if (batch.length === 0) return true
+    const r = await git(dir, ["ls-files", "-s", "-z", "--", ...batch], outputBudget(batch.length))
+    batch = []
+    chars = 0
+    if (!r.ok || r.truncated) return false
+    parseLsFiles(r.out, map)
+    return true
+  }
+  for (const p of paths) {
+    if (chars + p.length > BATCH_ARG_CHARS && batch.length > 0) {
+      if (!(await flush())) return { ok: false, map }
+    }
+    batch.push(p)
+    chars += p.length + 1
+  }
+  if (!(await flush())) return { ok: false, map }
+  return { ok: true, map }
 }
 
 export function snapshotHash(s: Omit<RepoSnapshot, "hash">): string {
@@ -170,8 +218,10 @@ export type SnapshotOutcome =
 export async function takeSnapshot(
   dir: string,
   files: string[] = [],
-  allowed: string[] = []
+  allowed: string[] = [],
+  maxEntries: number = MAX_ENTRIES
 ): Promise<SnapshotOutcome> {
+  const entryLimit = Math.min(Math.max(Math.trunc(maxEntries) || MAX_ENTRIES, 1), ENTRY_CEILING)
   for (const f of [...files, ...allowed]) {
     const why = invalidPathReason(f)
     if (why) return { status: "refused", reason: `file '${f.slice(0, 120)}': ${why}` }
@@ -185,35 +235,32 @@ export async function takeSnapshot(
     return { status: "n/a", reason: "not inside a git work tree (or git is unavailable); the guard does not apply" }
   }
 
-  const [root, head, branch, stashRef, stashList, status, lsFiles, autocrlf] = await Promise.all([
+  const [root, head, branch, stashRef, stashList, status, autocrlf] = await Promise.all([
     git(dir, ["rev-parse", "--show-toplevel"]),
     git(dir, ["rev-parse", "HEAD"]),
     // symbolic-ref answers on an unborn branch, where rev-parse --abbrev-ref cannot.
     git(dir, ["symbolic-ref", "--short", "HEAD"]),
     git(dir, ["rev-parse", "--verify", "--quiet", "refs/stash"]),
     git(dir, ["stash", "list"]),
-    git(dir, ["-c", "core.quotepath=false", "status", "--porcelain", "-z", "-uall"]),
-    git(dir, ["ls-files", "-s", "-z"]),
+    git(dir, ["-c", "core.quotepath=false", "status", "--porcelain", "-z", "-uall"], outputBudget(entryLimit)),
     git(dir, ["config", "--get", "core.autocrlf"]),
   ])
 
   // A missing HEAD (no commits), a missing stash ref, and an unset config are STATES.
-  // A failing status, ls-files, toplevel, or stash-list is a failure to observe the tree.
+  // A failing toplevel, stash-list, or status is a failure to observe the tree.
   const failed = [
     ["rev-parse --show-toplevel", root],
     ["stash list", stashList],
     ["status --porcelain", status],
-    ["ls-files -s", lsFiles],
   ].find(([, r]) => !(r as GitResult).ok || (r as GitResult).truncated)
   if (failed) {
     const r = failed[1] as GitResult
     return {
       status: "failed",
-      reason: `git ${failed[0]} ${r.truncated ? "output exceeded the capture limit" : "failed or timed out"}; the tree could not be read completely`,
+      reason: r.truncated
+        ? `git ${failed[0]} output exceeded the capture limit; the working tree has more changed paths than one comparison can cover — commit or ignore unrelated changes, then take the baseline again`
+        : `git ${failed[0]} failed or timed out; the tree could not be read completely`,
     }
-  }
-  if (!branch.ok && !head.ok) {
-    // Unborn branch with no symbolic ref is still readable; only note it.
   }
 
   const eol = files.length > 0 ? await git(dir, ["ls-files", "--eol", "--", ...files]) : { ok: true, out: "", truncated: false }
@@ -221,10 +268,15 @@ export async function takeSnapshot(
     return { status: "failed", reason: "git ls-files --eol failed or truncated; the line-ending state could not be read" }
   }
 
-  const staged = parseLsFiles(lsFiles.out)
   const parsed = parsePorcelainZ(status.out).filter((e) => !isForemanState(e.path))
-  const truncated = parsed.length > MAX_ENTRIES
-  const kept = parsed.slice(0, MAX_ENTRIES)
+  const truncated = parsed.length > entryLimit
+  const kept = parsed.slice(0, entryLimit)
+
+  const stagedResult = await stagedFingerprints(dir, kept.map((e) => e.path))
+  if (!stagedResult.ok) {
+    return { status: "failed", reason: "git ls-files -s failed, timed out, or truncated for the changed paths; the index could not be read" }
+  }
+  const staged = stagedResult.map
 
   const entries: RepoEntry[] = []
   for (const e of kept) {
@@ -247,6 +299,7 @@ export async function takeSnapshot(
     eol: eol.out.split(/\r?\n/).filter((l) => l.trim().length > 0).slice(0, MAX_FILE_ARGS),
     entries,
     truncated,
+    entry_limit: entryLimit,
     allowed: allowed.map(normalizePath).slice(0, MAX_FILE_ARGS),
   }
   return { status: "ok", snapshot: { ...base, hash: snapshotHash(base) } }
@@ -282,7 +335,11 @@ export function compareSnapshots(before: RepoSnapshot, after: RepoSnapshot): str
     violations.push(`core.autocrlf changed: '${before.autocrlf}' -> '${after.autocrlf}'`)
   }
   if (before.truncated || after.truncated) {
-    violations.push(`more than ${MAX_ENTRIES} changed paths; the comparison is incomplete and cannot clear this unit`)
+    const limit = Math.max(before.entry_limit ?? MAX_ENTRIES, after.entry_limit ?? MAX_ENTRIES)
+    violations.push(
+      `more than ${limit} changed paths; the comparison is incomplete and cannot clear this unit ` +
+      `(raise repo_guard max_entries, up to ${ENTRY_CEILING}, or reduce the unrelated changes in the tree)`
+    )
   }
 
   const b = new Map(before.entries.map((e) => [e.path, e]))

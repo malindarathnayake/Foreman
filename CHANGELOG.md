@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.12 - 2026-09-09
+
+`repo_guard` was unusable on any repository larger than this one, reported from the field the day after it shipped.
+
+- **The index fingerprints are read for the changed paths, not the whole index.** They came from an unscoped `git ls-files -s`, which emits a row per *tracked file*, so its output scales with repository size rather than with the change being compared. It measured 13 KB against the 16 KB capture limit in this repo, which is why every test here passed, and it refused every snapshot on a larger repository with `output exceeded the capture limit`. The call is now scoped to the paths `git status` actually reported, batched by argument length so a long command line cannot fail on Windows.
+- **The changed-path limit is a default, not a wall.** `max_entries` on `snapshot` defaults to 500 and is raisable to 5000; `compare` reuses whatever the baseline was taken under, so both sides are measured the same way. A tree that legitimately carries more changes than the default can still be guarded by asking for a bigger comparison, and the truncation message now says so instead of only reporting that it gave up.
+- **Git output budgets are sized from that limit.** `runExternalCli` takes an optional `maxStdout` with a 2 MB ceiling. The default stays 16 KB, which is the right budget for advisor and test output because that is prose a model reads; a machine-readable inventory of changed paths is a different thing, and truncating one silently is a correctness bug rather than a display one.
+- Regression test: a repository whose full index exceeds the capture limit now snapshots correctly for a one-file change. That is the case the original test suite could not see, because both the temporary repositories it built and this repository fit under the limit.
+- Bumped package to `0.6.12`.
+
 ## 0.6.11 - 2026-09-08
 
 An adversarial review of 0.6.10 broke the repository guard in nine ways, each reproduced against a real repository before it was accepted. The headline defect: the comparison diffed **path sets**, so a file that was already dirty before the worker ran was still dirty afterwards, and a worker overwriting the user's uncommitted work in a file outside the brief returned `ok`. That is the exact loss the guard exists to prevent, so this release reworks the model rather than patching the symptoms.

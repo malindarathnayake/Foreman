@@ -27,7 +27,6 @@ export interface DelegationPreflight {
   telemetry?: "checked" | "n/a"
 }
 
-/** One delegation attempt. Appended per (re-)delegation so retry history survives the `w` overwrite. */
 /**
  * One changed path in a repository snapshot (v0.6.11). Content fingerprints are what make
  * an overwrite of an already-dirty file visible; comparing path sets alone did not.
@@ -62,8 +61,10 @@ export interface RepoSnapshot {
   /** `git ls-files --eol` rows for the unit's files. */
   eol: string[]
   entries: RepoEntry[]
-  /** True when more changed paths existed than the cap retains; blocks a clearance. */
+  /** True when more changed paths existed than the limit retains; blocks a clearance. */
   truncated: boolean
+  /** The entry limit this snapshot was taken under (v0.6.12). */
+  entry_limit?: number
   /** The authorized file set, frozen before the worker ran. */
   allowed: string[]
   /** Short sha256 over the fields above. */
@@ -85,6 +86,7 @@ export interface DelegationGuard {
   override?: { ts: string }
 }
 
+/** One delegation attempt. Appended per (re-)delegation so retry history survives the `w` overwrite. */
 export interface Delegation {
   brief: string
   tier?: Tier
