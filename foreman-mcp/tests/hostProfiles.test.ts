@@ -106,7 +106,10 @@ describe("hostProfiles — getProfile", () => {
     expect(codex.placeholders.advisor_a).toContain('model: "claude-fable-5"')
     expect(codex.placeholders.advisor_a).toContain("max")
     expect(codex.placeholders.advisor_b).toContain('cli: "gemini"')
-    expect(codex.placeholders.advisor_fallback).toContain("Non-independent")
+    // v0.6.13: the last rung is the same-model review fan, not a self-review pass. It is
+    // still not independence, and the placeholder has to keep saying so.
+    expect(codex.placeholders.advisor_fallback).toContain("Review fan")
+    expect(codex.placeholders.advisor_fallback).toContain("PERSPECTIVE, not independence")
     expect(codex.placeholders.autonomy).toContain("host-controlled")
   })
 

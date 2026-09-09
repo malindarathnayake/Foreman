@@ -868,6 +868,12 @@ async function applyOperation(
         // written after a re-verdict satisfied the gate. A cross_exam never counts as a
         // seat; a verification record counts only under verificationIneligibility; an
         // absent stage is independent (records written before stages existed).
+        //
+        // v0.6.13: a 'fan' record is the same-model subagent review fan a host runs when no
+        // advisor CLI is reachable. Separate contexts and one lens each buy perspective, not
+        // independence — one model's blind spots stay correlated — so it never counts as a
+        // seat either. It is recorded because the evidence is real and the owner decides the
+        // gate with it in hand, not because it replaces a seat.
         const independent = currentReviews.filter((r) => r.stage === undefined || r.stage === "independent")
         const ineligible: string[] = []
         let eligibleVerification = false
@@ -886,7 +892,7 @@ async function applyOperation(
               ? ` ${allReviews.length - currentReviews.length} older review(s) exist but predate the latest unit verdict — a review recorded before a re-verdict does not cover the current code; re-run the review.`
               : ""
             const notSeats = currentReviews.length > 0
-              ? ` ${currentReviews.length} current record(s) do not count as a seat: a cross_exam never does, and a verification counts only for direct-fix re-verdicts${ineligible.length > 0 ? ` (${ineligible.join("; ")})` : ""}.`
+              ? ` ${currentReviews.length} current record(s) do not count as a seat: a cross_exam never does, a fan never does (same-model perspective, not independence — present its report and take the owner's decision), and a verification counts only for direct-fix re-verdicts${ineligible.length > 0 ? ` (${ineligible.join("; ")})` : ""}.`
               : ""
             throw new Error(
               `REVIEW REQUIRED: phase '${phase}' has no record_review entry recorded at or after its latest unit verdict.${stale}${notSeats} ` +

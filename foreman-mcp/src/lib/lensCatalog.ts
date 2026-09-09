@@ -237,3 +237,83 @@ export function buildSeatPrompt(lens: LensCard): string {
     "Answer only your lens question. Findings that belong to another lens are noise here.",
   ].join("\n")
 }
+
+// ─── Same-model fan: verifier contract (v0.6.13) ─────────────────────────────
+//
+// A host with no independent advisor CLI can still run the lens fan against its OWN
+// subagents. That buys perspective diversity — separate contexts, one lens question
+// each, no shared reasoning — but NOT model independence: correlated blind spots stay
+// correlated. The verifier exists because of that. It is the pass that re-derives every
+// claim from the code rather than trusting the seat that made it, and it is what turns a
+// pile of same-model opinions into something a pit-boss can act on.
+//
+// It also writes the report. Splitting verification from reporting would send the whole
+// finding set through the orchestrator's context a second time to gain nothing: the
+// judgment and the compression run over the same data, and neither adds independence to
+// the other.
+
+export const VERIFIER_CONTRACT = [
+  "You are the verifier on a Foreman review fan. Reviewers on separate lenses have each",
+  "reported findings against this change. They ran on the same model you are running on, so",
+  "treat their output as claims to test, never as evidence. Your job is to keep only what",
+  "survives being checked against the code.",
+  "",
+  "For every finding:",
+  "- Open the cited file and read the actual lines. A finding whose file:line does not say",
+  "  what the reviewer claims is `rejected`, and say so plainly.",
+  "- Ask what concretely goes wrong: inputs, state, or timing that produce a wrong result,",
+  "  a crash, or lost data. A finding with no reachable failure is `rejected`.",
+  "- Check whether the code already handles it elsewhere, or documents the pattern on",
+  "  purpose. A pattern the code explains is not a defect.",
+  "- Set `classification`: `confirmed` when you reproduced the reasoning from the code,",
+  "  `rejected` when it does not hold, `unverified` when the evidence available cannot",
+  "  settle it. Never guess `confirmed` to be safe — an unverified finding is honest and a",
+  "  false confirmation costs a remediation round.",
+  "- Re-rate severity by blast radius, not by the reviewer's confidence. Downgrades are",
+  "  expected: an adversarial fan inflates.",
+  "",
+  "Merge duplicates across lenses into one finding, keeping the clearest description and",
+  "the strongest evidence. Report what you could not check in `limitations`.",
+  "",
+  "Report only the findings, not a narrative. The orchestrator sees your output and nothing",
+  "the reviewers said, so a finding you drop is gone: drop it only when you can say why.",
+].join("\n")
+
+/** JSON Schema for the verifier's report. Mirrors ledger record_review findings. */
+export const VERIFIER_RESPONSE_SCHEMA = {
+  type: "object",
+  additionalProperties: false,
+  required: ["completion", "findings", "checked", "limitations"],
+  properties: {
+    completion: { type: "string", enum: ["complete", "partial"] },
+    findings: {
+      type: "array",
+      items: {
+        type: "object",
+        additionalProperties: false,
+        required: ["severity", "file", "line", "description", "classification"],
+        properties: {
+          severity: { type: "string", enum: ["critical", "high", "medium", "low"] },
+          file: { type: "string" },
+          line: { type: "string" },
+          description: { type: "string", description: "The defect and the concrete failure it causes. Security findings keep their [CWE-###] prefix." },
+          classification: { type: "string", enum: ["confirmed", "rejected", "unverified"] },
+          lens: { type: "string", description: "Lens id the finding came from." },
+        },
+      },
+    },
+    checked: { type: "array", items: { type: "string" } },
+    limitations: { type: "array", items: { type: "string" } },
+  },
+} as const
+
+/** The verifier's full prompt. Pure — the reviewers' findings are supplied by the caller. */
+export function buildVerifierPrompt(lenses: LensId[]): string {
+  return [
+    VERIFIER_CONTRACT,
+    "",
+    `LENSES IN THIS FAN (catalog v${LENS_CATALOG_VERSION}): ${lenses.map((l) => `${l} — ${LENS_CATALOG[l].title}`).join("; ")}`,
+    "",
+    "Return only an object matching the verifier response schema.",
+  ].join("\n")
+}

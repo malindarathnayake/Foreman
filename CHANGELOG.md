@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.13 - 2026-09-09
+
+Codex host only. When a phase checkpoint needs an advisor review and neither the Claude nor the Gemini CLI is reachable, the last rung used to be two adversarial self-review passes in the pit-boss's own seat. On Codex that is one context talking to itself. It now runs a **review fan** on Codex's own subagents instead.
+
+- **`reviewer` and `verifier` join `codex_agents_init`.** Both are read-only, both are forbidden from writing files, spawning further agents, or producing a ledger verdict. The reviewer answers one risk lens and nothing else; the verifier is told in its own instructions that the findings it receives came from the same model it is running on, so they are claims to test rather than evidence.
+- **The fan is three steps.** Spawn one `reviewer` per lens, picking three to five from the versioned catalog that match the change; they run in parallel under `agents.max_threads`, each seeing only its lens question and the evidence it needs, and never each other's output. Then spawn one `verifier`, hand it every finding, and require it to open each cited `file:line`, classify `confirmed` / `rejected` / `unverified`, re-rate severity by blast radius, merge duplicates across lenses, and return one report. Then record it. `max_depth=1` still holds throughout.
+- **The orchestrator's context stays clean.** The reviewers do the reading, which is the expensive part, and only the verifier's report comes back to the main thread. A finding the verifier drops is gone, which is why its instructions say so explicitly.
+- **A fan is perspective, not independence, and the ledger says so.** `record_review` accepts a new `stage: 'fan'`. It is stored with its findings, its examined list, and a `limitations` note naming which advisor CLIs were unavailable — and, like `cross_exam`, it never counts as a seat for the phase gate. The `REVIEW REQUIRED` message names it and points at the owner's decision. Separate contexts and one lens each remove shared reasoning; they do not decorrelate one model's blind spots, and pretending otherwise would buy a green gate with nothing behind it. A confirmed finding recorded by a fan still blocks the gate exactly like any other.
+- The practical change for a Codex run with no advisor CLI: the same owner arbitration the protocol already required at that rung, now with a verified, lens-covered report attached instead of a self-review.
+- Bumped package to `0.6.13`.
+
 ## 0.6.12 - 2026-09-09
 
 `repo_guard` was unusable on any repository larger than this one, reported from the field the day after it shipped.

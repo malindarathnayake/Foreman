@@ -191,8 +191,8 @@ export interface PhaseReview {
   checked?: string[]
   /** Seat-reported limitations (timeouts, unread files, refused categories). */
   limitations?: string
-  /** 'independent' = first, blind pass (counts toward seat independence); 'cross_exam' = re-prompt informed by another seat's claims (never a second independent vote); 'verification' = pit-boss re-verification of direct fixes with evidence (v0.6.5; counts for the gate only under verificationIneligibility in lib/ledger.ts). */
-  stage?: "independent" | "cross_exam" | "verification"
+  /** 'independent' = first, blind pass (counts toward seat independence); 'cross_exam' = re-prompt informed by another seat's claims (never a second independent vote); 'verification' = pit-boss re-verification of direct fixes with evidence (v0.6.5; counts for the gate only under verificationIneligibility in lib/ledger.ts); 'fan' = a same-model subagent review fan with a verifier (v0.6.13) — perspective, not independence, so it never counts as a seat. */
+  stage?: "independent" | "cross_exam" | "verification" | "fan"
   /** Present on stage:'verification' only. */
   evidence?: VerificationEvidence
 }
@@ -378,7 +378,7 @@ const RecordReviewInput = z.object({
     // 400 since 0.6.5: 200 bit on any review with real content (field feedback round 5).
     checked: z.array(z.string().max(400)).max(50).optional(),
     limitations: z.string().max(2000).optional(),
-    stage: z.enum(["independent", "cross_exam", "verification"]).optional(),
+    stage: z.enum(["independent", "cross_exam", "verification", "fan"]).optional(),
     // Required with stage:'verification', refused with any other stage (lib/ledger.ts).
     evidence: VerificationEvidenceSchema.optional(),
   }),

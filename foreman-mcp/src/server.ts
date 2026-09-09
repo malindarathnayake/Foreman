@@ -711,16 +711,19 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
           "and creates .codex/config.toml with [agents] max_threads/max_depth only when that file is absent.",
           "Existing .codex/config.toml is never overwritten (may hold mcp_servers); a merge hint is returned instead.",
           "explorer/worker TOMLs override Codex built-in roles of those names to pin sandbox_mode.",
+          "reviewer/verifier are the read-only review-fan roles used when no advisor CLI is available.",
           "Model pins are optional — omit to let Codex choose. Call once per project before parallel fan-out.",
         ].join(" "),
         inputSchema: z.strictObject({
           project_dir: z.string().min(1).optional().describe("Project root (default: process.cwd())"),
           max_threads: z.number().int().min(1).max(12).optional().describe("Concurrent agent threads (default 6)"),
           max_depth: z.number().int().min(1).max(3).optional().describe("Nesting depth (default 1; >1 warns)"),
-          roles: z.array(z.enum(CODEX_AGENT_ROLES)).min(1).optional().describe("Roles to write (default: explorer, worker)"),
+          roles: z.array(z.enum(CODEX_AGENT_ROLES)).min(1).optional().describe("Roles to write (default: explorer, worker, reviewer, verifier)"),
           overwrite: z.boolean().optional().describe("Overwrite existing role TOMLs (default false). Never overwrites config.toml."),
           models: z
             .strictObject({
+              reviewer: z.string().min(1).optional(),
+              verifier: z.string().min(1).optional(),
               explorer: z.string().min(1).optional(),
               worker: z.string().min(1).optional(),
             })

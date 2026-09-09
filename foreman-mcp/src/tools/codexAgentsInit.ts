@@ -4,7 +4,7 @@ import { z } from "zod"
 import { atomicWriteFile } from "../lib/atomicWrite.js"
 import { toKeyValue } from "../lib/toon.js"
 
-export const CODEX_AGENT_ROLES = ["explorer", "worker"] as const
+export const CODEX_AGENT_ROLES = ["explorer", "worker", "reviewer", "verifier"] as const
 export type CodexAgentRole = (typeof CODEX_AGENT_ROLES)[number]
 
 export const CodexAgentsInitInputSchema = z.object({
@@ -18,6 +18,8 @@ export const CodexAgentsInitInputSchema = z.object({
     .object({
       explorer: z.string().min(1).optional(),
       worker: z.string().min(1).optional(),
+      reviewer: z.string().min(1).optional(),
+      verifier: z.string().min(1).optional(),
     })
     .optional(),
 })
@@ -33,6 +35,23 @@ const WORKER_INSTRUCTIONS = `Implement only the bounded worker brief you are giv
 Do not read or request the full spec, ledger, or progress file.
 Self-fix compile/import/type errors at most twice; return immediately on logic/spec issues.
 Do not spawn further subagents (max_depth=1).`
+
+const REVIEWER_INSTRUCTIONS = `You are one adversarial reviewer on a Foreman review fan.
+Answer ONLY the lens question you are given; findings from another lens are noise here.
+Cite file:line for every finding, from code you actually opened. Never invent a symbol or a line.
+Severity is blast radius, not confidence. Do not report style preferences at any severity.
+Zero findings is a valid answer, but you must still list what you examined — silence with no
+account of what was read is treated as a failed review, not an approval.
+Never write files. Never spawn further subagents. Never produce a Foreman ledger verdict.`
+
+const VERIFIER_INSTRUCTIONS = `You verify a Foreman review fan and write its single report.
+The reviewers ran on the same model you are running on, so their findings are claims to test,
+not evidence. Open every cited file:line and keep only what the code actually supports.
+Classify each finding confirmed / rejected / unverified, re-rate severity by blast radius, and
+merge duplicates across lenses. Prefer unverified over a guessed confirmation: a false
+confirmation costs a remediation round, and an honest unknown costs a sentence.
+The orchestrator sees your report and nothing the reviewers said, so a finding you drop is gone.
+Never write files. Never spawn further subagents. Never produce a Foreman ledger verdict.`
 
 function escapeTomlString(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')
@@ -120,6 +139,11 @@ export async function codexAgentsInit(raw: CodexAgentsInitInput): Promise<string
   hints.push(
     "explorer.toml and worker.toml override Codex built-in roles of the same name (intended — pins sandbox_mode)"
   )
+  if (roles.includes("reviewer") || roles.includes("verifier")) {
+    hints.push(
+      "reviewer/verifier are the review-fan roles: read-only, run in parallel under max_threads, and are a fallback for a missing advisor CLI — a same-model fan is perspective, never independence"
+    )
+  }
 
   const codexDir = path.join(projectDir, ".codex")
   const agentsDir = path.join(codexDir, "agents")
@@ -159,6 +183,16 @@ export async function codexAgentsInit(raw: CodexAgentsInitInput): Promise<string
       description: "Execution-focused worker for bounded implementation units.",
       sandboxMode: "workspace-write",
       instructions: WORKER_INSTRUCTIONS,
+    },
+    reviewer: {
+      description: "Read-only adversarial reviewer for one risk lens of a review fan.",
+      sandboxMode: "read-only",
+      instructions: REVIEWER_INSTRUCTIONS,
+    },
+    verifier: {
+      description: "Read-only verifier that re-derives fan findings from code and writes the report.",
+      sandboxMode: "read-only",
+      instructions: VERIFIER_INSTRUCTIONS,
     },
   }
 

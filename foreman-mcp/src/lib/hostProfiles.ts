@@ -91,7 +91,11 @@ const CODEX_PROFILE: HostProfile = {
     advisor_b:
       '**Advisor B (Gemini):** `mcp__foreman__invoke_advisor({ cli: "gemini", prompt: "<PROMPT>" })`',
     advisor_fallback:
-      "**Non-independent fallback (last rung):** With no council seats AND no CLI advisor, run TWO adversarial self-review passes in the Codex pitboss seat with DIFFERENT critic framings (e.g. one contract/correctness, one security/data-integrity), and record that independent review was unavailable.",
+      "**Review fan (last rung):** With no council seats AND no CLI advisor, run the fan on Codex's own subagents instead of a self-review pass. Call `codex_agents_init` once so `reviewer` and `verifier` exist. " +
+      "(1) FAN: `spawn_agent` one `reviewer` per risk lens — pick 3-5 lenses from the catalog that match the change (contract, architecture, state, security, data, tests, operability); they are read-only, run in parallel under `agents.max_threads`, and each gets ONLY its lens question plus the changed files and the spec excerpt it needs. Never give a reviewer another reviewer's output. " +
+      "(2) VERIFY: `spawn_agent` one `verifier`, hand it every finding the fan returned, and require it to open each cited file:line, classify `confirmed`/`rejected`/`unverified`, re-rate severity by blast radius, merge duplicates, and return ONE report. Expect it to reject a large share — an adversarial fan on one model inflates. " +
+      "(3) RECORD: `mcp__foreman__write_ledger record_review` with `stage: 'fan'`, the verifier's findings, its `checked` list, and `limitations` naming which advisor CLIs were unavailable and why. " +
+      "A fan is PERSPECTIVE, not independence: separate contexts and one lens each, but one model, so its blind spots are correlated. The ledger records it and the phase gate does NOT count it as a seat. When the fan is your only review, present its report to the user and get an explicit decision before `update_phase_gate` — the same arbitration the unavailable/unavailable row already requires, now with real evidence attached. Keep `max_depth=1`: reviewers and the verifier never spawn further agents.",
     autonomy:
       "Codex continuation is host-controlled: declare budgets and scope up front, stop at every phase gate, and re-enter after context reset through `session_orient`. Do not claim unattended continuation unless the active Codex host exposes and confirms it.",
   },
