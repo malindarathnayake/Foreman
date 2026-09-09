@@ -81,9 +81,16 @@ const CODEX_PROFILE: HostProfile = {
   placeholders: {
     host_name: "Codex",
     worker_invoke:
-      'Use Codex `spawn_agent` to create a disposable implementation subagent. Pass only the bounded worker brief — no spec, ledger, or progress file. Prefer the host-configured `gpt-5.6-luna` worker seat when Codex exposes subagent model selection; the current spawn contract may choose the model itself, so record the actual model and never attest Luna unless the host confirms it.' + SHARED_TREE_SAFETY,
+      'Use Codex `spawn_agent` to create a disposable implementation subagent. Pass only the bounded worker brief — no spec, ledger, or progress file. ' +
+      'PICK THE SEAT FROM THE UNIT, and record the same word as the ledger `tier`: ' +
+      '`worker_light` (tier cheap) when the brief names the exact edit — a literal substitution, rename, constant, test name, import path, or a mechanical repeat of a stated pattern; ' +
+      '`worker` (tier standard) for ordinary implementation where the brief states the behaviour and the seat chooses the code — this is the default, and an unclassifiable unit belongs here; ' +
+      '`worker_heavy` (tier premium) for concurrency, migrations, error-handling semantics, public contracts or schemas, security/authz paths, and any unit a lower seat already failed. ' +
+      'Escalate on evidence, never on a hunch: a fix worker moves up a tier only when `route_reason` cites the rejection, a refined brief, or an advisor diagnosis. Never start at premium to save a round. ' +
+      'Model pins live in `.codex/agents/<role>.toml` (written by `codex_agents_init`), so the seat is host configuration rather than a claim in this text; record the model Codex reports and never attest one the host did not confirm. ' +
+      'Reasoning effort is host-owned in this build: pass it at spawn time if your Codex exposes it — high for light and standard, xhigh for heavy — and do not assert an effort the host did not apply.' + SHARED_TREE_SAFETY,
     worker_fanout:
-      "When Step 2 batches to N workers: Codex `spawn_agent` workers share the repository and editing `worker` roles MUST run sequentially unless each has a proven isolated worktree/sandbox. Record `write_ledger` `s:'delegated'` before each spawn; validate its repository-state guard and verdict before the next editing worker. Read-only `explorer` roles may use `agents.max_threads` in parallel. Patch-only workers may run in parallel only for disjoint editable sets with a content-addressed apply check. Keep `agents.max_depth=1`; workers must not spawn further agents. Prefer `gpt-5.6-luna` only when host-confirmed, and call `codex_agents_init` if roles are missing.",
+      "When Step 2 batches to N workers: Codex `spawn_agent` workers share the repository and editing `worker` roles MUST run sequentially unless each has a proven isolated worktree/sandbox. Record `write_ledger` `s:'delegated'` before each spawn; validate its repository-state guard and verdict before the next editing worker. Read-only `explorer` roles may use `agents.max_threads` in parallel. Patch-only workers may run in parallel only for disjoint editable sets with a content-addressed apply check. Keep `agents.max_depth=1`; workers must not spawn further agents. Every editing seat in a batch is picked per unit (`worker_light` / `worker` / `worker_heavy`), not once for the batch. Call `codex_agents_init` if roles are missing.",
     advisor_checks:
       '`mcp__foreman__capability_check({ cli: "claude" })` and `mcp__foreman__capability_check({ cli: "gemini" })`',
     advisor_a:

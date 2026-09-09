@@ -4,7 +4,7 @@ import { z } from "zod"
 import { atomicWriteFile } from "../lib/atomicWrite.js"
 import { toKeyValue } from "../lib/toon.js"
 
-export const CODEX_AGENT_ROLES = ["explorer", "worker", "reviewer", "verifier"] as const
+export const CODEX_AGENT_ROLES = ["explorer", "worker_light", "worker", "worker_heavy", "reviewer", "verifier"] as const
 export type CodexAgentRole = (typeof CODEX_AGENT_ROLES)[number]
 
 export const CodexAgentsInitInputSchema = z.object({
@@ -18,6 +18,8 @@ export const CodexAgentsInitInputSchema = z.object({
     .object({
       explorer: z.string().min(1).optional(),
       worker: z.string().min(1).optional(),
+      worker_light: z.string().min(1).optional(),
+      worker_heavy: z.string().min(1).optional(),
       reviewer: z.string().min(1).optional(),
       verifier: z.string().min(1).optional(),
     })
@@ -35,6 +37,32 @@ const WORKER_INSTRUCTIONS = `Implement only the bounded worker brief you are giv
 Do not read or request the full spec, ledger, or progress file.
 Self-fix compile/import/type errors at most twice; return immediately on logic/spec issues.
 Do not spawn further subagents (max_depth=1).`
+
+/**
+ * Default model per implementation seat, matching Foreman's existing cost tiers.
+ * Every id below answered a live probe on codex-cli 0.153.4; note that the same family
+ * at a different version does NOT resolve — gpt-6-terra and gpt-6-sol are both refused
+ * on a ChatGPT account, so these are not interchangeable with a version bump. Override
+ * per role with the models input when an id rotates.
+ */
+export const CODEX_SEAT_MODELS: Partial<Record<CodexAgentRole, string>> = {
+  worker_light: "gpt-5.6-terra",
+  worker: "gpt-5.6-sol",
+  worker_heavy: "gpt-6-astra",
+}
+
+const WORKER_LIGHT_INSTRUCTIONS = `Implement one small, fully specified change.
+You were chosen because the brief names the exact edit: a literal substitution, a rename, a
+constant, a test name, an import path, or a mechanical repeat of a stated pattern.
+If the brief turns out to require a judgement call, a new branch, or a design decision,
+STOP and report that it needs a stronger seat rather than guessing.
+` + WORKER_INSTRUCTIONS
+
+const WORKER_HEAVY_INSTRUCTIONS = `Implement one demanding change that a smaller seat could not.
+You were chosen for concurrency, migrations, error-handling semantics, public contracts, or a
+unit that already failed at a lower tier — the brief says which.
+Spend the extra reasoning on the failure modes, not on scope: the brief's file list still binds.
+` + WORKER_INSTRUCTIONS
 
 const REVIEWER_INSTRUCTIONS = `You are one adversarial reviewer on a Foreman review fan.
 Answer ONLY the lens question you are given; findings from another lens are noise here.
@@ -184,6 +212,16 @@ export async function codexAgentsInit(raw: CodexAgentsInitInput): Promise<string
       sandboxMode: "workspace-write",
       instructions: WORKER_INSTRUCTIONS,
     },
+    worker_light: {
+      description: "Small mechanical implementation seat for fully specified edits.",
+      sandboxMode: "workspace-write",
+      instructions: WORKER_LIGHT_INSTRUCTIONS,
+    },
+    worker_heavy: {
+      description: "High-reasoning implementation seat for demanding or previously failed units.",
+      sandboxMode: "workspace-write",
+      instructions: WORKER_HEAVY_INSTRUCTIONS,
+    },
     reviewer: {
       description: "Read-only adversarial reviewer for one risk lens of a review fan.",
       sandboxMode: "read-only",
@@ -209,7 +247,7 @@ export async function codexAgentsInit(raw: CodexAgentsInitInput): Promise<string
       description: spec.description,
       sandboxMode: spec.sandboxMode,
       instructions: spec.instructions,
-      model: input.models?.[role],
+      model: input.models?.[role] ?? CODEX_SEAT_MODELS[role],
     })
     await atomicWriteFile(abs, body)
     written.push(rel)

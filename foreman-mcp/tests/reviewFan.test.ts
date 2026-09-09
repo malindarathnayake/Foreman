@@ -79,8 +79,13 @@ describe("codex_agents_init writes the fan roles", () => {
     expect(verifier).toMatch(/a finding you drop is gone/)
   })
 
-  it("the default role set still includes the worker roles", () => {
-    expect(CODEX_AGENT_ROLES).toEqual(["explorer", "worker", "reviewer", "verifier"])
+  it("the fan roles sit alongside the implementation seats", () => {
+    // The full ordering is pinned in codexSeatTiers.test.ts; here only the fan's own
+    // roles matter, plus the fact that they did not displace an implementation seat.
+    expect(CODEX_AGENT_ROLES).toContain("reviewer")
+    expect(CODEX_AGENT_ROLES).toContain("verifier")
+    expect(CODEX_AGENT_ROLES).toContain("worker")
+    expect(CODEX_AGENT_ROLES).toContain("explorer")
   })
 })
 

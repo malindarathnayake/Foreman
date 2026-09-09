@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.6.15 - 2026-09-09
+
+Codex host only. `claude-code`, `cursor` and `generic` are untouched, and a test asserts they never see the new seats.
+
+- **The pit-boss picks an implementation seat per unit** instead of using one seat for everything. `codex_agents_init` now writes `worker_light`, `worker` and `worker_heavy` alongside the existing roles.
+- **Each seat is pinned to a model verified by live probe** on codex-cli 0.153.4: `gpt-5.6-terra`, `gpt-5.6-sol`, `gpt-6-astra`. The version is load-bearing rather than cosmetic — `gpt-6-terra` and `gpt-6-sol` are both refused on a ChatGPT account, so a model family does not travel across a version bump and a newer-looking id is not automatically available. `CODEX_SEAT_MODELS` is the single source of those defaults and the `models` input still overrides any of them per role, because ids rotate.
+- **The seat maps onto Foreman's existing cost tiers**, which are already recorded on every delegation with a `route_reason`. Light is for a fully specified edit: a literal substitution, rename, constant, test name, import path, or a mechanical repeat of a stated pattern. Standard is the default, for ordinary implementation where the brief states the behaviour and the seat chooses the code, and it is where anything unclassifiable belongs. Heavy is for concurrency, migrations, error-handling semantics, public contracts or schemas, security and authorization paths, and any unit a lower seat already failed.
+- **Escalation stays bound to the rule that already existed**: a fix worker moves up a tier only when `route_reason` cites the rejection, a refined brief, or an advisor diagnosis. Starting at premium to save a round is called out as the thing not to do.
+- The light seat is told to stop and ask for a stronger seat rather than guess when a brief turns out to need judgement; the heavy seat is told the brief's file list still binds, so extra reasoning goes into failure modes rather than scope.
+- **The unverified `gpt-5.6-luna` reference is gone** from both the invoke and fan-out text. It had been carried since 0.5.7 with a hedge attached and never confirmed.
+- **Reasoning effort is not pinnable per role in this build.** Rather than invent a config field, the text says to pass effort at spawn time when Codex exposes it — high for light and standard, xhigh for heavy — and never to assert an effort the host did not apply.
+- `host_status` reports the Codex seat table rather than a single model slug scraped from prose, which no longer carries one.
+- Bumped package to `0.6.15`.
+
 ## 0.6.14 - 2026-09-09
 
 Foreman compresses `run_tests` and `invoke_advisor` output before the pit-boss reads it, and the pit-boss reads the failing `file:line` and the exit code out of exactly that text to reach a verdict. The only guard on the compressed digest was that a retrieval marker survived and the output was non-empty, so a digest could drop every location in a failure report and still be served.

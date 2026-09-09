@@ -28,7 +28,8 @@ describe("hostStatus — direct unit", () => {
     const out = hostStatus("codex")
     expect(out).toContain("host: codex")
     expect(out).toContain("display_name: Codex")
-    expect(out).toContain("worker_model: n/a")
+    // v0.6.15: the seat table replaces the single scraped slug for Codex.
+    expect(out).toContain("worker_light=gpt-5.6-terra")
     expect(out).toContain("advisor_a_model: claude-fable-5")
     expect(out).toContain("unsupported_capabilities: autonomy")
   })
@@ -95,7 +96,7 @@ describe("host_status — MCP round-trip", () => {
     const content = result.content as Array<{ type: string; text: string }>
     expect(content[0].text).toContain("host: codex")
     expect(content[0].text).toContain("spawn_agent")
-    expect(content[0].text).toContain("gpt-5.6-luna")
+    expect(content[0].text).toContain("worker_heavy")
     expect(content[0].text).toContain("claude-fable-5")
     expect(content[0].text).not.toContain("{{advisor_checks}}")
   })

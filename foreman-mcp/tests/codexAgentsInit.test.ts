@@ -18,7 +18,7 @@ describe("codexAgentsInit", () => {
   it("writes config.toml and explorer/worker role TOMLs", async () => {
     const out = await codexAgentsInit({ project_dir: tmpDir })
     expect(out).toContain("status: ok")
-    expect(out).toContain("files_written: .codex/config.toml,.codex/agents/explorer.toml,.codex/agents/worker.toml")
+    expect(out).toContain("files_written: .codex/config.toml,.codex/agents/explorer.toml,.codex/agents/worker_light.toml,.codex/agents/worker.toml,.codex/agents/worker_heavy.toml,.codex/agents/reviewer.toml,.codex/agents/verifier.toml")
 
     const config = await fs.readFile(path.join(tmpDir, ".codex", "config.toml"), "utf-8")
     expect(config).toContain("[agents]")
@@ -35,7 +35,9 @@ describe("codexAgentsInit", () => {
     expect(worker).toContain('name = "worker"')
     expect(worker).toContain('sandbox_mode = "workspace-write"')
     expect(worker).toContain("Do not spawn further subagents")
-    expect(worker).not.toContain("model =")
+    // v0.6.15: implementation seats carry a probe-verified model pin (explorer above
+    // still has none — it inherits the session's model).
+    expect(worker).toContain('model = "gpt-5.6-sol"')
   })
 
   it("skips existing role files when overwrite is false", async () => {
