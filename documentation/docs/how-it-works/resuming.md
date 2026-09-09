@@ -12,7 +12,7 @@ Every session starts the same way, whether it is the first, a planned continuati
 ```text
 bundle_status                                  version, and whether a skill override is active
 session_orient                                 the only resume authority
-read_progress                                  the descriptive checklist; never the resume target
+read_progress                                  the same ledger summary, followed by checklist notes
 read_ledger({ query: "verdicts", phase: "<current>", limit: 50 })   a bounded slice, never "full"
 write_journal({ operation: "init_session", ... })
 ```
@@ -64,7 +64,11 @@ missing_declared_units: none
 | `state_drift` | `progress:complete(<unit>);ledger:<target>` when the progress file marks a unit complete that the ledger has not passed, the one contradiction the file cannot honestly hold; `progress:<unit>;ledger:no_phases` when progress has units and the ledger has none. Where the progress pointer sits relative to the ledger target is never drift |
 | `progress_advisories` | Non-blocking: `stale:<paths>` for entries still open on units the ledger passed, `ahead:<paths>` for open entries later than the target, `orphan:<paths>` for entries the ledger does not know. Five per kind, then a count |
 | `missing_declared_units` | Declared ids with no ledger entry, up to ten |
+| `units_passed`, `units_total`, `units_remaining` | Passed verdicts versus the union of registered and declared units in the ledger. Declared units without entries count as remaining. Scope not yet declared in the ledger is not counted |
+| `phases_done`, `phases_total` | Passed phase gates versus ledger phases. Every unit passing does not finish the project while a phase gate remains pending |
 | `unsupported_capabilities` | What the active host profile cannot do, from the capability contract |
+
+`read_progress` uses this same calculation on every host profile. Its `LEDGER STATUS` section agrees with `session_orient` for the same stored state. The following `PLANNING CHECKLIST` section labels its own totals as `entries_marked_complete` and `entries_total`; these describe checklist coverage, not project completion. For example, all 67 checklist entries can be marked complete while the ledger reports 67 of 71 units passed, 9 of 13 phase gates passed, and a current unit still in progress. Reads display this difference without changing either file.
 
 Three example shapes:
 
@@ -81,7 +85,7 @@ action: complete              resume_target: null         -> nothing left
 - **`missing_declared_units` is not `none`:** seed each with `set_unit_status { s: "pending" }` before delegating. They are spec scope the ledger does not track yet.
 - **The current unit is `ip`:** treat it as not started. Re-read the files, rebuild the brief, respawn the worker. The previous worker's partial edit is not trusted; the repository-state guard in validation will catch anything it left behind.
 - **`blocked_on` is set:** read that unit's rejections with `read_ledger({ phase, unit_id })` before writing a fix brief.
-- **`attempt_blocks` names a unit:** `needs_attempt` means the next write for it is a delegation or a recorded direct fix, not a verdict. `cap(n)` means stop and bring the rejection history to the owner; the ledger refuses another attempt and a pass alike until the owner records a grant with `authorize_attempts` or a write carries `user_override`. A unit listed under `attempt_grants` is not blocked: charge the next attempt to the grant.
+- **`attempt_blocks` names a unit:** `needs_attempt` means the next write for it is a recorded worker delegation, not a verdict. `cap(n)` means stop and bring the rejection history to the owner; the ledger refuses another attempt and a pass alike until the owner records a grant with `authorize_attempts` or a write carries `user_override`. A unit listed under `attempt_grants` is not blocked: charge the next attempt to the grant.
 - **`stale_gates` is set:** a unit changed after its phase closed. The gate is not reopened for you; decide whether to re-run the checkpoint.
 
 ## Corrupt ledger
@@ -99,3 +103,13 @@ Reads never touch the file. The first write renames it to `.foreman-ledger.json.
 ## What still needs you
 
 Orientation tells the model where it is. It does not tell it whether the spec is still right, whether a stale gate should be reopened, or whether a three-times-rejected unit needs a fourth attempt or a redesign. Those come back to you as questions, and the procedure is written to stop for the answer.
+
+## Model ranks on resume
+
+During normal `write_journal init_session`, the pitboss declares `env.model` and `env.effort`. Foreman trusts the declaration and returns `model_rank` with a weight and explicit permissions. Unavailable, unknown or unmapped values grant no shortcuts and never block normal startup. No identity authentication or owner confirmation is added.
+
+Astra (`gpt-6-astra`) at `high`, `xhigh`, `max` or `ultra`, and Fable 5.1 receive Top weight 3; Opus and Terra receive Middle 2; Sonnet and Luna receive Standard 1. Other models, including Sol, receive Unknown 0 and normal protocol. Rank does not alter the configured seat capability or cost tier.
+
+`session_orient` and `read_progress` show the active declaration, rank, weight and `workflow_permissions`. A model/effort change calls `write_journal { operation: "declare_model", data: { model, effort } }` before the next action; both fields are replaced, so omission does not preserve a previous Top rank. Ending a session or restarting Foreman clears the active declaration. New sessions always declare again.
+
+A host or model switch keeps valid durable review evidence. The incoming rank determines the next action's permissions, and a previous host's worker ID is not presumed live. Reuse only a native worker in the same active session and original unit/file scope; otherwise start a fresh worker. Every correction remains a recorded attempt with ownership checks.

@@ -2,6 +2,7 @@ import { type HostId, getProfile } from "../lib/hostProfiles.js"
 import { unsupportedCapabilities } from "../lib/capabilitySet.js"
 import { toKeyValue } from "../lib/toon.js"
 import { CODEX_SEAT_MODELS } from "../tools/codexAgentsInit.js"
+import { modelRankSummary, resolveModelRank, type ModelRank } from "../lib/modelRank.js"
 
 /**
  * Read-only introspection of the active Foreman host configuration.
@@ -10,7 +11,7 @@ import { CODEX_SEAT_MODELS } from "../tools/codexAgentsInit.js"
  * so callers (LLM, tests, diagnostics) can see which model will run as worker
  * vs. each advisor without parsing skill text.
  */
-export function hostStatus(host: HostId): string {
+export function hostStatus(host: HostId, modelRank: ModelRank = resolveModelRank()): string {
   const profile = getProfile(host)
   const ph = profile.placeholders
 
@@ -34,8 +35,15 @@ export function hostStatus(host: HostId): string {
       : modelOf("worker_invoke")
 
   return toKeyValue({
+    ...modelRankSummary(modelRank),
     host: profile.id,
     display_name: profile.displayName,
+    ...(host === "codex" ? {
+      review_mode: "native-subagents",
+      review_stage: "native",
+      external_advisors: "optional: claude,gemini,council",
+      agent_visibility: "host-owned; native IDs are reported by the host, not discovered by Foreman",
+    } : {}),
     worker_model: workerModel,
     advisor_a_model: modelOf("advisor_a"),
     advisor_b_model: modelOf("advisor_b"),

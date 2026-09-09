@@ -5,6 +5,7 @@ import type { JournalFile, JournalSession, JournalRollup, WriteJournalInput } fr
 import { WriteJournalInputSchema } from "../types.js"
 import { atomicWriteFile } from "./atomicWrite.js"
 import { scrub } from "./redaction.js"
+import { resolveModelRank } from "./modelRank.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -88,16 +89,15 @@ export async function initSession(filePath: string, input: WriteJournalInput): P
       events: [],
     }
 
-    // Attach env onto the session (not part of JournalSession interface, stored via augmentation)
-    // The JournalSession interface does not include env — store as extra field if needed.
     // Per spec: update file-level project and target_version
     journal.project = "foreman-mcp"
     journal.target_version = data.target_version
 
-    // We store the env info; since JournalSession doesn't have an env field we attach it as an
-    // extra property. The JournalEnv is recorded here for completeness per the spec.
-    const sessionWithEnv = newSession as JournalSession & { env?: unknown }
-    sessionWithEnv.env = {
+    const modelRank = { ...resolveModelRank(data.env.model, data.env.effort), session_id: sessionId }
+    newSession.env = {
+      model: modelRank.model,
+      effort: modelRank.effort,
+      model_rank: modelRank,
       os: osStr,
       node: nodeStr,
       foreman: foremanVersion,
@@ -111,7 +111,7 @@ export async function initSession(filePath: string, input: WriteJournalInput): P
       ...(data.env.worker_class !== undefined ? { worker_class: data.env.worker_class } : {}),
     }
 
-    journal.sessions.push(sessionWithEnv)
+    journal.sessions.push(newSession)
 
     // FIFO: keep at most 50 sessions
     if (journal.sessions.length > 50) {
@@ -121,6 +121,29 @@ export async function initSession(filePath: string, input: WriteJournalInput): P
     // Atomic write via shared helper (unique tmp suffix — cross-process safe, D2c)
     await atomicWriteFile(filePath, JSON.stringify(journal), { scrub })
 
+    return journal
+  })
+}
+
+/** Replace the declaration only on the current live session; historical ranks are evidence. */
+export async function declareModel(filePath: string, input: WriteJournalInput, sessionId: string): Promise<JournalFile> {
+  return withJournalLock(filePath, async () => {
+    const parsed = WriteJournalInputSchema.parse(input)
+    if (parsed.operation !== "declare_model") throw new Error(`Expected operation "declare_model", got "${parsed.operation}"`)
+    const journal = await readJournal(filePath)
+    const session = journal.sessions.at(-1)
+    if (!session || session.id !== sessionId || session.summary || !session.env) {
+      throw new Error("error: no current active session; call init_session before declare_model")
+    }
+    const modelRank = { ...resolveModelRank(parsed.data.model, parsed.data.effort), session_id: session.id }
+    const history = session.model_declarations ?? []
+    if (history.length === 0 && session.env.model_rank) history.push({ ts: session.ts, model_rank: session.env.model_rank })
+    history.push({ ts: new Date().toISOString(), model_rank: modelRank })
+    session.model_declarations = history.slice(-20)
+    session.env.model = modelRank.model
+    session.env.effort = modelRank.effort
+    session.env.model_rank = modelRank
+    await atomicWriteFile(filePath, JSON.stringify(journal), { scrub })
     return journal
   })
 }

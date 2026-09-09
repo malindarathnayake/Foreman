@@ -88,7 +88,13 @@ function detectIncludes(content: string): Array<{ marker: string; id: string }> 
  * - Missing _common-protocol.md → markers replaced with [[COMMON PROTOCOL FILE MISSING]].
  * - Missing section id → marker replaced with [[MISSING: <id>]].
  */
-export async function renderIncludes(content: string, skillPath: string): Promise<string> {
+export async function renderIncludes(content: string, skillPath: string, host: HostId = "claude-code"): Promise<string> {
+  // Host-specific review procedures replace the entire shared section, so native
+  // Codex never receives a contradictory external-first ladder in the same skill.
+  const sections = getProfile(host).protocolSections ?? {}
+  for (const { marker, id } of detectIncludes(content)) {
+    if (Object.prototype.hasOwnProperty.call(sections, id)) content = content.split(marker).join(sections[id])
+  }
   const includes = detectIncludes(content)
 
   if (includes.length === 0) {
@@ -251,7 +257,7 @@ export async function loadSkill(
   const projectOverride = path.resolve(".claude", "skills", skillName, "SKILL.md")
   if (await fileExists(projectOverride)) {
     let content = await fs.readFile(projectOverride, "utf-8")
-    content = await renderIncludes(content, projectOverride)
+    content = await renderIncludes(content, projectOverride, host)
     content = renderHostPlaceholders(content, host)
     content = renderStackSections(content, stackProfile ?? getStackProfile("reference"))
     content = await renderClassFragments(content, projectOverride, agentClass)
@@ -262,7 +268,7 @@ export async function loadSkill(
   const userOverride = path.join(os.homedir(), ".claude", "skills", skillName, "SKILL.md")
   if (await fileExists(userOverride)) {
     let content = await fs.readFile(userOverride, "utf-8")
-    content = await renderIncludes(content, userOverride)
+    content = await renderIncludes(content, userOverride, host)
     content = renderHostPlaceholders(content, host)
     content = renderStackSections(content, stackProfile ?? getStackProfile("reference"))
     content = await renderClassFragments(content, userOverride, agentClass)
@@ -273,7 +279,7 @@ export async function loadSkill(
   const bundled = path.join(bundledSkillsDir, `${skillName}.md`)
   if (await fileExists(bundled)) {
     let content = await fs.readFile(bundled, "utf-8")
-    content = await renderIncludes(content, bundled)
+    content = await renderIncludes(content, bundled, host)
     content = renderHostPlaceholders(content, host)
     content = renderStackSections(content, stackProfile ?? getStackProfile("reference"))
     content = await renderClassFragments(content, bundled, agentClass)

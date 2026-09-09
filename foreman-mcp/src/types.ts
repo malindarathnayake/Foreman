@@ -1,4 +1,5 @@
 import { z } from "zod"
+import type { ModelRank } from "./lib/modelRank.js"
 
 // ─── Ledger Types ─────────────────────────────────────────────────────────────
 
@@ -101,6 +102,12 @@ export interface Delegation {
   cap_grant_id?: number
   /** Foreman-authored repository-state guard (v0.6.10). Never written by the model. */
   guard?: DelegationGuard
+  /** Native worker identity and originating journal session, used only for bounded reuse. */
+  worker_id?: string
+  session_id?: string
+  /** Server-resolved orchestration policy when this attempt was recorded. */
+  model_rank?: ModelRank
+  correction?: { kind: "mechanical" | "bounded"; from_attempt: number; files: string[] }
 }
 
 /**
@@ -191,10 +198,16 @@ export interface PhaseReview {
   checked?: string[]
   /** Seat-reported limitations (timeouts, unread files, refused categories). */
   limitations?: string
-  /** 'independent' = first, blind pass (counts toward seat independence); 'cross_exam' = re-prompt informed by another seat's claims (never a second independent vote); 'verification' = pit-boss re-verification of direct fixes with evidence (v0.6.5; counts for the gate only under verificationIneligibility in lib/ledger.ts); 'fan' = a same-model subagent review fan with a verifier (v0.6.13) — perspective, not independence, so it never counts as a seat. */
-  stage?: "independent" | "cross_exam" | "verification" | "fan"
+  /** 'independent' = external blind pass; 'cross_exam' = informed follow-up; 'verification' = evidence-linked direct-fix check; legacy 'fan' never qualifies alone; 'native' = complete Codex subagent review with provenance, eligible only on the Codex host. */
+  stage?: "independent" | "cross_exam" | "verification" | "fan" | "native"
+  /** Host-reported provenance for the native Codex review path, not cross-vendor independence. */
+  native?: NativeReviewEvidence
   /** Present on stage:'verification' only. */
   evidence?: VerificationEvidence
+  /** Server-resolved authorization for a worker-delta verification; survives host switches. */
+  model_rank?: ModelRank
+  /** Server snapshot of attempts covered by this independent/native baseline. */
+  unit_attempts?: Record<string, number>
 }
 
 export interface Phase {
@@ -248,6 +261,12 @@ const SetUnitStatusInput = z.object({
     brief: z.string().max(50000).optional(),
     tier: z.enum(["cheap", "standard", "premium"]).optional(),
     route_reason: z.string().max(2000).optional(),
+    worker_id: z.string().trim().min(1).max(400).optional(),
+    correction: z.object({
+      kind: z.enum(["mechanical", "bounded"]),
+      from_attempt: z.number().int().min(1),
+      files: z.array(z.string().trim().min(1).max(4096)).min(1).max(50),
+    }).optional(),
     user_override: z.boolean().optional(),
     // Optional at the schema so non-delegating statuses need nothing; the ledger
     // refuses s:'delegated' without it (see PREFLIGHT REQUIRED in lib/ledger.ts).
@@ -268,6 +287,7 @@ const SetVerdictInput = z.object({
   data: z.object({
     v: z.enum(["pass", "fail", "pending", "inconclusive"]),
     via: z.enum(["worker", "pitboss-direct", "n/a"]).optional(),
+    worker_id: z.string().trim().min(1).max(400).optional(),
     note: z.string().max(10000).optional(),
     // Waives ATTEMPT REQUIRED and the delegation cap on a pass; recorded as cap_override.
     user_override: z.boolean().optional(),
@@ -358,6 +378,8 @@ const ProbeEvidence = z.discriminatedUnion("outcome", [
   z.object({ outcome: z.literal("n/a"), reason: z.string().min(10).max(2000) }),
 ])
 const VerificationEvidenceSchema = z.object({
+  kind: z.literal("worker_delta").optional(),
+  verifier_id: z.string().trim().min(1).max(400).optional(),
   baseline_review_ts: z.string().max(100),
   units: z.array(z.object({ unit_id: z.string().max(200), attempt: z.number().int().min(1) })).min(1).max(50),
   files: z.array(z.string().max(4096)).min(1).max(50),
@@ -365,6 +387,18 @@ const VerificationEvidenceSchema = z.object({
   probe: ProbeEvidence,
 })
 export type VerificationEvidence = z.infer<typeof VerificationEvidenceSchema>
+
+const NativeText = z.string().trim().min(1).max(400)
+export const NativeReviewEvidenceSchema = z.object({
+  reviewers: z.array(z.object({
+    agent_id: NativeText,
+    lens: z.enum(["contract", "architecture", "state", "security", "data", "tests", "operability"]),
+    completion: z.enum(["complete", "partial", "failed"]),
+    checked: z.array(NativeText).max(50),
+  })).min(2).max(5),
+  verifier_id: NativeText,
+})
+export type NativeReviewEvidence = z.infer<typeof NativeReviewEvidenceSchema>
 
 const RecordReviewInput = z.object({
   operation: z.literal("record_review"),
@@ -378,7 +412,8 @@ const RecordReviewInput = z.object({
     // 400 since 0.6.5: 200 bit on any review with real content (field feedback round 5).
     checked: z.array(z.string().max(400)).max(50).optional(),
     limitations: z.string().max(2000).optional(),
-    stage: z.enum(["independent", "cross_exam", "verification", "fan"]).optional(),
+    stage: z.enum(["independent", "cross_exam", "verification", "fan", "native"]).optional(),
+    native: NativeReviewEvidenceSchema.optional(),
     // Required with stage:'verification', refused with any other stage (lib/ledger.ts).
     evidence: VerificationEvidenceSchema.optional(),
   }),
@@ -534,6 +569,9 @@ export const ProgressOperationDataSchemas = {
 // ─── Journal Types ──────────────────────────────────────────────────────────
 
 export interface JournalEnv {
+  model?: string | null
+  effort?: string | null
+  model_rank?: import("./lib/modelRank.js").ModelRank
   os: string
   node: string
   foreman: string
@@ -568,6 +606,8 @@ export interface SessionSummary {
 }
 
 export interface JournalSession {
+  env?: JournalEnv
+  model_declarations?: Array<{ ts: string; model_rank: import("./lib/modelRank.js").ModelRank }>
   id: string
   ts: string
   branch: string
@@ -632,7 +672,14 @@ const InitSessionData = z.object({
     // R8: capability class per seat — declared, never self-assessed.
     agent_class: z.enum(["frontier", "capable", "compact"]).optional(),
     worker_class: z.enum(["frontier", "capable", "compact"]).optional(),
+    model: z.string().max(100).nullable().optional(),
+    effort: z.string().max(30).nullable().optional(),
   }),
+})
+
+const DeclareModelData = z.object({
+  model: z.string().max(100).nullable().optional(),
+  effort: z.string().max(30).nullable().optional(),
 })
 
 const LogEventData = z.object({
@@ -661,6 +708,7 @@ const EndSessionData = z.object({
 
 export const WriteJournalInputSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("init_session"), data: InitSessionData }),
+  z.object({ operation: z.literal("declare_model"), data: DeclareModelData }),
   z.object({ operation: z.literal("log_event"), data: LogEventData }),
   z.object({ operation: z.literal("end_session"), data: EndSessionData }),
 ])
@@ -674,6 +722,7 @@ export type WriteJournalInput = z.infer<typeof WriteJournalInputSchema>
  */
 export const JournalOperationDataSchemas = {
   init_session: InitSessionData,
+  declare_model: DeclareModelData,
   log_event: LogEventData,
   end_session: EndSessionData,
 } as const

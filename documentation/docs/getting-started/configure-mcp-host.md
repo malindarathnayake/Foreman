@@ -59,7 +59,11 @@ args = ["--host=codex"]
 
 Restart Codex after changing MCP configuration or reinstalling Foreman.
 
-Codex specifics. Workers are Codex `spawn_agent` subagents. Editing workers run one at a time unless each has a proven isolated worktree or sandbox; read-only explorer agents may run in parallel. The `codex_agents_init` tool writes `.codex/agents/explorer.toml`, `.codex/agents/worker.toml`, and an `[agents]` block in `.codex/config.toml`, and only when those files are absent. In Codex mode, phase reviews use headless Claude and the Gemini CLI, since Codex is the host.
+Codex mode uses native subagents for implementation and review, with no additional CLI or provider credentials required. Editing workers run one at a time unless each has a proven isolated worktree or sandbox. Reviews use 2-5 read-only reviewers with different risk lenses, followed by a separate verifier. A complete `stage: "native"` review can satisfy the Codex phase gate without an override; confirmed findings, incomplete coverage, and stale reviews still block it.
+
+At major checkpoints (phase end, final design/spec review, or high-risk changes), Foreman probes the existing Claude and Gemini advisor tools and uses whichever are available for extra review. If neither is available, native review still works. Optional CLI failures and coverage gaps are recorded, and usable claims are verified. Council seats also remain optional.
+
+`codex_agents_init` creates missing role files and creates `.codex/config.toml` only when absent. Existing role files are preserved unless `overwrite: true` is requested; existing config is always preserved. Check the running host can load the roles; file creation alone does not prove capability. `host_status` reports `review_mode: native-subagents`. Agent IDs come from Codex's spawn results; Foreman does not register headless CLI processes in the UI agent picker.
 
 ## Windows
 

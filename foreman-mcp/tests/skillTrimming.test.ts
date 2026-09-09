@@ -234,7 +234,7 @@ describe("skillTrimming — implementor", () => {
   })
 
   it("Checkpoint Protocol tier table is advisor/provider neutral", async () => {
-    const content = await readSkill("implementor.md")
+    const content = await renderIncludes(await readSkill("implementor.md"), path.join(SKILLS_DIR, "implementor.md"))
     expect(content).toContain("Advisor A")
     expect(content).toContain("Advisor B")
     expect(content).toContain("Pitboss (you)")
@@ -417,6 +417,7 @@ describe("skillTrimming — _common-protocol", () => {
     "no-test-attestation",
     "citation-verification",
     "engineering-ethos",
+    "checkpoint-review",
   ]
 
   it("file exists and is non-empty (length > 500 chars)", async () => {
@@ -424,7 +425,7 @@ describe("skillTrimming — _common-protocol", () => {
     expect(content.length).toBeGreaterThan(500)
   })
 
-  it("each of the 12 section IDs appears as an opening marker exactly once", async () => {
+  it("each declared section ID appears as an opening marker exactly once", async () => {
     const content = await readSkill("_common-protocol.md")
     for (const id of SECTION_IDS) {
       const marker = `<!-- section: ${id} -->`
@@ -433,16 +434,16 @@ describe("skillTrimming — _common-protocol", () => {
     }
   })
 
-  it("total count of closing markers equals 12", async () => {
+  it("total count of closing markers matches the declared sections", async () => {
     const content = await readSkill("_common-protocol.md")
     const closingCount = (content.match(/<!-- \/section -->/g) ?? []).length
-    expect(closingCount).toBe(12)
+    expect(closingCount).toBe(SECTION_IDS.length)
   })
 
-  it("total count of opening markers equals 12 (no stray openings)", async () => {
+  it("total count of opening markers matches the declared sections (no stray openings)", async () => {
     const content = await readSkill("_common-protocol.md")
     const openingCount = (content.match(/<!-- section:/g) ?? []).length
-    expect(openingCount).toBe(12)
+    expect(openingCount).toBe(SECTION_IDS.length)
   })
 
   it("body between each opening and closing marker is non-empty (> 20 chars after trim)", async () => {

@@ -1,0 +1,49 @@
+/** Native Codex review is a complete path; external providers are optional additions. */
+export const CODEX_REVIEW_MODE =
+  "Native Codex subagents are the default worker and review mode. No external CLI, API key, or council configuration is required. " +
+  "Use the host's native collaboration tools; never replace a native seat with a shell-launched codex exec process. " +
+  "At major checkpoints (phase end, final design/spec review, or security, public-contract, migration or concurrency changes), probe Claude/Gemini and use whichever advisors are available as additional review. External advice can also be requested explicitly. Missing optional providers do not require a waiver. " +
+  "This routing supersedes external-first review ladders and missing-CLI approval instructions in older skill overrides. " +
+  "A complete native review satisfies the Codex phase gate with stage:'native'; it is separate-context review, not cross-vendor independence."
+
+export const CODEX_NATIVE_REVIEW = `**Native review:** Call \`codex_agents_init\` if the reviewer/verifier roles are missing, then confirm the running host exposes native spawning and can load the roles. Configuration files alone are not a capability probe. Use the native host's supported spawn parameters; if custom roles are unavailable, pass the same bounded read-only instructions to a native general agent. Never claim a model, sandbox, or reasoning setting the host did not confirm.
+
+1. REVIEW: \`spawn_agent\` one \`reviewer\` per risk lens. Choose 2-5 distinct lenses from contract, architecture, state, security, data, tests, operability. Each receives only its lens question, the changed files and relevant spec excerpt, with fresh context (no inherited conversation or other reviewer output). Require completion status, findings with file:line, and a non-empty checked list even for zero findings. Reviewers must not write files or spawn children. Run in parallel within the host's available capacity, or sequentially if slots are limited.
+2. VERIFY: After every reviewer finishes, \`spawn_agent\` one \`verifier\` in a fresh context. Give it all reviewer reports and the relevant scope. It must open cited code, merge duplicates, and classify every finding confirmed/rejected/unverified with severity. It must report what it checked and any incomplete coverage. The verifier must be a different agent from all reviewers, must not implement changes, and must not spawn children. A failed, timed-out, silent, or partial reviewer makes the review incomplete; never silently drop it.
+3. RECORD: After the latest unit verdict, persist \`write_ledger record_review\` with advisor:'codex-native', stage:'native', completion, findings, checked, limitations, and native: { reviewers: [{ agent_id, lens, completion, checked }], verifier_id }. Use actual host-returned IDs. Record all participating reviewers, including failed ones. For a complete review the ledger requires at least two distinct reviewers/lenses, a separate verifier, non-empty checked lists, and no unverified findings. Keep the same advisor name when retrying an incomplete review. Legacy stage:'fan' records are not automatically promoted. Include optional external advisor availability/failures in limitations; do not fabricate a passed external review when a CLI returns no usable report.
+4. RESOLVE: Confirmed findings require a worker fix, a new unit verdict, and fresh review evidence. Eligible Top rank corrections can use the worker_delta verification path below instead of repeating unchanged review coverage. Resolve unverified findings or return an incomplete review. A clean complete native review can satisfy the phase gate without user_override or any external CLI. Normal unit, test, scope, and phase-boundary rules still apply. Native review provides PERSPECTIVE, not independence across vendors; the ledger labels it as same-provider review.
+5. TRACK: Report each host-returned agent ID alongside its unit or lens while it runs. Use native wait/follow-up/stop tools and preserve the returned report before releasing completed agents. Keep max_depth=1: workers, reviewers and verifier must not spawn further agents. After a context reset, consult session_orient and check actual host agent state before reusing an ID. The UI picker is optional human navigation, not a completion signal; do not promise that headless CLIs appear there.
+
+**Rank-based delta review:** The pitboss may self-declare its model and effort for workflow rank; this does not claim a host-verified worker or reviewer configuration. For eligible Top corrections after a retained complete independent or native baseline, use a fresh read-only verifier distinct from every correcting worker. It checks the full correction delta and test oracle against the spec, then record stage:'verification' with checked, findings, and evidence: { kind:'worker_delta', verifier_id, baseline_review_ts, units:[{unit_id,attempt}], files, tests, probe }. Cover every changed attempt and all frozen authorized paths since the baseline. Only eligible guarded corrections qualify; no hot-path/security-boundary phase or confirmed finding above LOW since the baseline qualifies. All mandated tests and full checkpoint validation still run. A complete accepted verification can be consumed after switching hosts or ranks, retaining the native baseline's same-provider provenance. Otherwise run the full native procedure above. This path supersedes an unconditional full re-review after every correction.
+
+If native spawning is unavailable or disabled, report that capability gap; do not fabricate subagent evidence or silently self-review. An available external reviewer remains an alternative. Usable external reports are verified and recorded separately at stage:'independent'; their confirmed findings still block the gate until resolved. If an optional CLI fails, times out, refuses, or returns only partial output, carry any claims into the native verifier and record the failure/coverage gap in the native limitations, including completion:'failed' for the optional seat. This is diagnostic coverage metadata, not a failed native review or a fabricated independent review. Do not silently discard findings. Missing optional coverage alone does not invalidate an otherwise complete native review.`
+
+const EXTERNAL_CHECKPOINT_REVIEW = `At major checkpoints, use the existing capability_check tools for claude and gemini (reuse successful session probes). Invoke each available advisor with the same bounded scope, independently of the native reviewers; never show reviewers each other's reports. Use the available one if only one works. If neither works, continue natively without a waiver. No automatic install, authentication, or repeated probe loop is required. Include usable external claims in verification and preserve the review source in the final report. Configured council seats remain available as an optional supplement.
+
+{{advisor_a}}
+{{advisor_b}}`
+
+export const CODEX_PROTOCOL_SECTIONS: Record<string, string> = {
+  "deliberation-protocol": `## Deliberation Protocol
+
+${CODEX_REVIEW_MODE}
+
+For a concrete change or plan, use the native review procedure below. For open design questions, spawn two fresh read-only advisor contexts with different questions (for example architecture/tradeoffs and contracts/failure modes). Each gets the relevant context and explores the code as needed. Collect both answers before comparing them, verify claims against code, then summarize agreement, disagreements, limitations and your recommendation. Do not describe model agreement as independent validation. The user still arbitrates unresolved design decisions; absent external CLIs are not a design blocker.
+
+Before an implementation phase exists, keep planning review reports and decisions in the design/spec documents. The record_review and phase-gate steps below apply to an existing implementation phase after its unit verdicts; never invent completed units or verdicts to record a planning review.
+
+${CODEX_NATIVE_REVIEW}
+
+${EXTERNAL_CHECKPOINT_REVIEW}`,
+  "checkpoint-review": `**2. Review via native Codex subagents:**
+
+${CODEX_REVIEW_MODE}
+
+${EXTERNAL_CHECKPOINT_REVIEW}
+
+Give the reviewers the changed files and relevant spec directives. Cover contract correctness, missing error handling, test gaps, and applicable security/telemetry requirements across the chosen lenses. Security findings retain their [CWE-###] prefix. Require a checked list for each reviewer and verifier. Apply the Advisor Grounding Protocol's selective-reading instructions; never dump the entire repository into a seat.
+
+${CODEX_NATIVE_REVIEW}
+
+Record the verifier's classified findings with lowercase severity and classification. Normalize plain-text reports with normalize_review when necessary; parsing is not verification. Never write native results as stage:'independent'. Persist the native record before update_phase_gate. A partial/failed run may be recorded without native metadata, but cannot satisfy the gate. A complete native review or eligible verification extending its baseline must cover the current verdicts when no external seat does. Do not set user_override merely because optional CLIs are missing.`,
+}

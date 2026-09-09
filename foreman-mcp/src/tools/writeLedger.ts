@@ -5,12 +5,14 @@ import { formatSchemaError, isZodError } from "../lib/schemaError.js"
 import { toKeyValue } from "../lib/toon.js"
 import { appendEvent, boundIdentifier, openDelegation, followUpEventInput, type SidecarEventInput } from "../lib/eventsSidecar.js"
 import { drainCcrStats } from "../lib/compression.js"
+import type { HostId } from "../lib/hostProfiles.js"
+import { resolveModelRank, type ModelRank } from "../lib/modelRank.js"
 
 /**
  * Validates input with Zod schema, delegates to lib/ledger.ts,
  * returns TOON key/value confirmation.
  */
-export async function handleWriteLedger(filePath: string, rawInput: unknown): Promise<string> {
+export async function handleWriteLedger(filePath: string, rawInput: unknown, host: HostId = "claude-code", modelRank: ModelRank = resolveModelRank()): Promise<string> {
   let parsed: WriteLedgerInput
   try {
     parsed = WriteLedgerInputSchema.parse(rawInput)
@@ -18,7 +20,7 @@ export async function handleWriteLedger(filePath: string, rawInput: unknown): Pr
     if (isZodError(err)) throw new Error(formatSchemaError("write_ledger", err, rawInput, LedgerOperationDataSchemas))
     throw err
   }
-  const { ledger, warning } = await writeLedger(filePath, parsed, foldCcrStats)
+  const { ledger, warning } = await writeLedger(filePath, parsed, foldCcrStats, undefined, host, modelRank)
 
   // Return confirmation with key details
   const result: Record<string, string> = {

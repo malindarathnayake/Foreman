@@ -7,9 +7,11 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
+import { fileURLToPath } from "url"
 import { Client } from "@modelcontextprotocol/client"
 import { InMemoryTransport } from "@modelcontextprotocol/server"
 import { createServer } from "../src/server.js"
+import { renderIncludes } from "../src/lib/skillLoader.js"
 import { ATTEMPT_CAP, readLedger, writeLedger } from "../src/lib/ledger.js"
 import { handleWriteLedger } from "../src/tools/writeLedger.js"
 import { handleReadLedger } from "../src/tools/readLedger.js"
@@ -189,7 +191,8 @@ describe("invoke_advisor — empty or echoed output is a failed seat", () => {
 
   it("the description and the checkpoint protocol say so", async () => {
     expect(await toolDescription("invoke_advisor")).toContain("reported as completion: failed")
-    const implementor = await fs.readFile(new URL("../src/skills/implementor.md", import.meta.url), "utf-8")
+    const skillPath = fileURLToPath(new URL("../src/skills/implementor.md", import.meta.url))
+    const implementor = await renderIncludes(await fs.readFile(skillPath, "utf-8"), skillPath)
     expect(implementor).toContain("An advisor result marked `completion: failed` (empty or echoed output, non-zero exit) is not a seat")
   })
 })
@@ -308,8 +311,10 @@ describe("stage: verification", () => {
   })
 
   it("the implementor names the verification path and its limits", async () => {
-    const implementor = await fs.readFile(new URL("../src/skills/implementor.md", import.meta.url), "utf-8")
-    expect(implementor).toContain('record_review { stage: "verification", completion: "complete", evidence:')
+    const skillPath = fileURLToPath(new URL("../src/skills/implementor.md", import.meta.url))
+    const implementor = await renderIncludes(await fs.readFile(skillPath, "utf-8"), skillPath)
+    expect(implementor).toContain('record_review { stage: "verification", completion: "complete", checked:')
+    expect(implementor).toContain('evidence: { kind: "worker_delta", verifier_id:')
     expect(implementor).toContain("a `cross_exam` record never counts as a seat")
   })
 })

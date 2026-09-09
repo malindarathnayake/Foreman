@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.18 - 2026-09-09
+
+- Declared workflow rank. The pit-boss reports its model and reasoning effort at `init_session` (or later via `write_journal declare_model`), and Foreman resolves a rank from an explicit allowlist of host-emitted ids and display names; unknown ids stay on the normal protocol. Middle rank permits same-worker mechanical corrections with a compact follow-up; Top rank additionally permits bounded fixes, focused intermediate validation, and a `worker_delta` verification with a verifier distinct from every correcting worker. Every correction is a new recorded attempt bound to the same worker and journal session, stays inside the previous frozen authorized file set, and requires a cleared ownership guard; hot-path and security-boundary phases are excluded. Seat reviews now snapshot per-unit attempt counts, so a review is current only when no unit has a newer attempt. Direct Fix is legacy-only: the pit-boss no longer writes code, fixes, or tests. Rank is a trusted self-declaration by design; it never changes agent_class, seat capability, or cost tier, and never waives workers, guards, or checkpoint gates.
+- Reconciles 0.6.13 and 0.6.16: a same-model fan was recorded but never counted as a seat; a complete native review with distinct reviewers, distinct lenses, and a separate verifier now satisfies the Codex gate, labelled as same-provider review. Legacy `fan` records are not promoted.
+
+## 0.6.17 - 2026-09-09
+
+- All host profiles now show the same ledger-derived state in `read_progress` and `session_orient`, including passed/remaining units and phase gates. Checklist totals are labeled separately and no longer claim project completion or choose a competing next unit. Declared units count toward remaining work, and progress reads leave corrupt files untouched.
+
+## 0.6.16 - 2026-09-09
+
+- Codex mode now defaults to native workers and a review team of distinct reviewers plus a verifier. Complete `stage: "native"` evidence can satisfy its phase gate without external CLIs or a review override; stale, incomplete, and confirmed findings remain blocking.
+- Major checkpoints add whichever Claude/Gemini advisors are available through the existing tools. Missing optional providers do not block native review, and native evidence is labelled as same-provider review.
+- Host procedures, diagnostics, role instructions, and MCP validation now describe the native path; legacy fan records and other hosts retain their gate policy.
+
 ## 0.6.15 - 2026-09-09
 
 Codex host only. `claude-code`, `cursor` and `generic` are untouched, and a test asserts they never see the new seats.

@@ -160,13 +160,13 @@ describe("a fan is recorded but never counts as a seat", () => {
 
 // ─── the rendered protocol ────────────────────────────────────────────────────
 
-describe("the Codex profile ships the fan as its last rung", () => {
+describe("the Codex profile promotes new native reviews without upgrading legacy fan records", () => {
   it("names the roles, the order, and the honesty rule", () => {
     const text = getProfile("codex").placeholders.advisor_fallback
     expect(text).toMatch(/codex_agents_init/)
     expect(text).toMatch(/spawn_agent` one `reviewer` per risk lens/)
     expect(text).toMatch(/spawn_agent` one `verifier`/)
-    expect(text).toMatch(/stage: \\?'fan\\?'/)
+    expect(text).toContain("stage:'native'")
     expect(text).toMatch(/PERSPECTIVE, not independence/)
     expect(text).toMatch(/max_depth=1/)
     // The fan replaces the two self-review passes, which were the weaker rung.

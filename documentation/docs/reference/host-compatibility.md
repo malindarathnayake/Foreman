@@ -13,14 +13,14 @@ Two statuses matter and they are not the same. **Profile rendered** means the pr
 |---|---|---|---|---|
 | Claude Code | rendered, default | Yes. Foreman's own releases from 0.5.x through 0.6.x, Windows 11, 2026 | `Agent` tool, model `sonnet` | Codex CLI and Gemini CLI |
 | Cursor | rendered; capability path covered by tests | Not recorded in this repo | `Task` tool, `generalPurpose` | Cursor read-only `Task` seats on GPT-5.6 Sol and Gemini 3.1 Pro |
-| Codex | rendered; parallel fan-out contract covered by tests | Not recorded in this repo | `spawn_agent` subagent; the profile asks for `gpt-5.6-luna`, but Codex owns child model selection and Foreman records what actually ran | Headless Claude and Gemini CLI |
+| Codex | native protocol rendering and MCP review-to-gate path tested | Full project run not recorded in this repo | Native `spawn_agent`; configured worker tiers, actual model reported by the host | Native reviewers + verifier; available Claude/Gemini CLIs supplement major checkpoints |
 | Generic | rendered as a six-capability contract | No | Whatever the host declares; see `HOST-CONTRACT.md` | Host-neutral advisor calls, else adversarial self-review recorded as non-independent |
 
 ## What differs per host
 
 - **The worker call.** Each profile names the host's own subagent tool and the model slug to pass. `host_status` prints the slugs in effect.
 - **Editing concurrency.** Under every profile, editing workers run one at a time unless each has a proven isolated worktree or sandbox. Claude Code's profile spells out the parallel procedure: `isolation: "worktree"`, disjoint file sets, full `git diff` in each report, serial application with a verdict per unit. Codex explorers, which are read-only, may run in parallel up to `agents.max_threads`.
-- **Reviewer seats.** Reviews are cross-vendor by design, so the host's own vendor is never a reviewer. Claude Code reviews with Codex and Gemini; Codex reviews with Claude and Gemini.
+- **Reviewer seats.** Claude Code reviews with Codex and Gemini. Codex defaults to native reviewers plus a verifier, and adds available Claude/Gemini advisors at major checkpoints. Native review is recorded as same-provider review; it is not described as cross-vendor independence.
 - **Autonomy.** Cursor declares no autonomy capability, so phase progression stays interactive there. Claude Code and Codex profiles carry an autonomy clause; the generic profile fails closed and points at the contract.
 - **Tool count.** 26 by default, 27 under Codex, one fewer each with compression off.
 
@@ -36,3 +36,11 @@ Two statuses matter and they are not the same. **Profile rendered** means the pr
 - `run_tests` resolves `npm.cmd` and other shims itself, without a shell, and runs Gradle wrappers through `GradleWrapperMain`.
 - `invoke_advisor` wraps the advisor CLIs' `.cmd` shims.
 - Foreman's own suite runs green on Windows 11 with Node 22. Some file-rename races under antivirus scanning are retried with a bounded backoff in the atomic-write helper.
+
+## Rank policy across hosts
+
+Every host uses the same declared model/effort rank policy. The host profile still selects worker and advisor tools; rank selects eligible workflow shortcuts. `write_journal init_session` accepts the pitboss's self-reported identity, and unknown models continue with normal protocol. No additional external CLI is needed for rank lookup.
+
+Top can reuse a bounded native worker for fixes and test changes, use compact follow-ups and focused intermediate checks, and obtain independent verification of the delta against retained review coverage. Middle gets mechanical worker reuse and compact follow-ups with normal checks/review. Native reuse needs an actual recorded worker ID in the same active session; an unsupported follow-up mechanism or a host switch requires a fresh worker. Existing sidecar `invoke_worker` attempts do not qualify for native reuse.
+
+Complete native review and accepted delta evidence survive host switching with their original same-provider provenance. Creating a native review still uses Codex's native reviewer/verifier procedure. Rank never changes configured seat capability, ownership boundaries, attempt limits, or checkpoint gates.

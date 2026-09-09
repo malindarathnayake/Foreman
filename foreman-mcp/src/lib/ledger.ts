@@ -1,11 +1,14 @@
 import fs from "fs/promises"
 import path from "path"
 import { createHash } from "crypto"
-import type { CapGrant, DelegationGuard, LedgerFile, Phase, PhaseReview, Unit, WriteLedgerInput } from "../types.js"
+import type { CapGrant, DelegationGuard, LedgerFile, Phase, PhaseReview, Unit, VerificationEvidence, WriteLedgerInput } from "../types.js"
+import { NativeReviewEvidenceSchema } from "../types.js"
+import type { HostId } from "./hostProfiles.js"
 import { detectTestFiles } from "./detectTestFiles.js"
 import { atomicWriteFile } from "./atomicWrite.js"
 import { scrub } from "./redaction.js"
 import { readEvents, resolveUnitDelegation, boundIdentifier, type SidecarEvent } from "./eventsSidecar.js"
+import { resolveModelRank, type ModelRank } from "./modelRank.js"
 
 // ─── Per-path mutex registry ──────────────────────────────────────────────────
 // Each ledger path gets its own promise-chain lock so different files can be
@@ -284,6 +287,26 @@ function latestVerdictTs(phaseObj: Phase): string {
 /** Why a review does not cover the phase (partial/failed, unclassified findings, silent), else null. */
 export function reviewIncompleteness(r: PhaseReview): string | null {
   if (r.completion === "partial" || r.completion === "failed") return `completion=${r.completion}`
+  if (r.stage === "verification" && r.evidence?.kind === "worker_delta") {
+    if (r.completion !== "complete") return "worker_delta requires completion=complete"
+    if (!r.checked?.length || r.checked.some((entry) => !entry.trim())) return "worker_delta verifier requires a non-empty checked list"
+    if (r.findings.some((finding) => finding.classification === "unverified")) return "worker_delta has unresolved unverified findings"
+    const { tests, probe } = r.evidence
+    if (tests.outcome === "pass" && (!tests.command.trim() || !tests.result.trim())) return "worker_delta tests require a non-empty command and result"
+    if (probe.outcome === "pass" && (!probe.method.trim() || !probe.result.trim())) return "worker_delta probe requires a non-empty method and result"
+  }
+  if (r.stage === "native") {
+    if (r.completion !== "complete") return "native review requires completion=complete"
+    const evidence = NativeReviewEvidenceSchema.safeParse(r.native)
+    if (!evidence.success) return "native review requires reviewer and verifier provenance"
+    const { reviewers, verifier_id } = evidence.data
+    const ids = new Set(reviewers.map((seat) => seat.agent_id))
+    if (ids.size !== reviewers.length || ids.has(verifier_id)) return "native reviewers and verifier must have distinct agent IDs"
+    if (new Set(reviewers.map((seat) => seat.lens)).size !== reviewers.length) return "native reviewers must cover distinct lenses"
+    if (reviewers.some((seat) => seat.completion !== "complete" || seat.checked.length === 0)) return "native reviewer coverage is incomplete"
+    if (!r.checked?.length || r.checked.some((entry) => !entry.trim())) return "native verifier requires a non-empty checked list"
+    if (r.findings.some((finding) => finding.classification === "unverified")) return "native review has unresolved unverified findings"
+  }
   // Reviews recorded before 0.6.4 could carry unclassified findings; the gate blocks only
   // on 'confirmed', so an unclassified real finding slipped past.
   const unclassified = r.findings.filter((f) => f.classification === undefined).length
@@ -362,6 +385,98 @@ interface VerificationTarget {
   units: Array<{ unit_id: string; attempt: number }>
 }
 
+function normalizedPaths(files: string[]): string[] {
+  return [...new Set(files.map((file) => file.replace(/\\/g, "/")))].sort()
+}
+
+function samePaths(left: string[], right: string[]): boolean {
+  return JSON.stringify(normalizedPaths(left)) === JSON.stringify(normalizedPaths(right))
+}
+
+/** Worker delta reviews extend complete coverage, never an unaccounted interval of attempts. */
+function workerDeltaBlocker(
+  phaseKey: string,
+  phaseObj: Phase,
+  evidence: VerificationEvidence,
+  upperTs: string,
+  allReviews: PhaseReview[],
+  events: SidecarEvent[]
+): string | null {
+  const baseline = allReviews.find((r) => r.ts === evidence.baseline_review_ts &&
+    (r.stage === undefined || r.stage === "independent" || r.stage === "native"))
+  if (!baseline) return "baseline_review_ts is not a retained independent or native review"
+  const incomplete = reviewIncompleteness(baseline)
+  if (incomplete) return `baseline review is not a complete seat (${incomplete})`
+  if (phaseObj.scope?.hot_path || phaseObj.scope?.security_boundary) {
+    return "phase is scoped hot_path or security_boundary; those need a seat"
+  }
+  if (!evidence.verifier_id?.trim()) return "worker_delta requires a distinct verifier_id"
+  if (allReviews.some((r) => r.ts >= baseline.ts && r.ts <= upperTs &&
+    r.findings.some((f) => f.classification === "confirmed" && f.severity !== "low"))) {
+    return "confirmed finding(s) above LOW since the baseline review"
+  }
+  const changed: Array<{ unit_id: string; attempt: number }> = []
+  const coveredFiles = new Set<string>()
+  for (const [unitId, unit] of Object.entries(phaseObj.units)) {
+    const delegations = unit.delegations ?? []
+    // New baselines preserve exact attempt positions, independent of timestamp collisions
+    // and bounded history. Legacy baselines need a retained prior attempt to prove coverage.
+    const prior = [
+      ...delegations.filter((d) => d.ts < baseline.ts),
+      ...(unit.direct_fixes ?? []).filter((d) => d.ts < baseline.ts),
+    ]
+    const baselineAttempt = baseline.unit_attempts !== undefined
+      ? baseline.unit_attempts[unitId] ?? 0
+      : prior.reduce((max, d) => Math.max(max, d.attempt), 0)
+    const currentAttempt = unit.attempt_seq ?? 0
+    const remote = events.some((e) => e.phase === boundIdentifier(phaseKey) && e.unit_id === boundIdentifier(unitId) &&
+      (e.attempt > baselineAttempt || e.ts > baseline.ts))
+    if (remote) return `unit '${unitId}' had an invoke_worker attempt after the baseline review`
+    const reverdicted = unit.v_ts !== undefined && unit.v_ts > baseline.ts
+    if (currentAttempt <= baselineAttempt && !reverdicted) continue
+    if (baseline.unit_attempts === undefined && prior.length === 0) {
+      return `unit '${unitId}' has no retained attempt proving the baseline boundary`
+    }
+    if (currentAttempt <= baselineAttempt) return `unit '${unitId}' was re-verdicted without a recorded correction`
+    if (unit.v !== "pass" || unit.via !== "worker" || unit.needs_attempt) {
+      return `unit '${unitId}' is not a passing worker correction`
+    }
+    changed.push({ unit_id: unitId, attempt: currentAttempt })
+    for (let attempt = baselineAttempt + 1; attempt <= currentAttempt; attempt++) {
+      const delegation = delegations.find((d) => d.attempt === attempt)
+      const permission = delegation?.correction?.kind === "mechanical" ? "reuse_worker_mechanical" : "reuse_worker_bounded"
+      if (!delegation?.correction || !delegation.model_rank?.permissions[permission]) {
+        return `unit '${unitId}' attempt #${attempt} is not a retained rank-eligible worker correction`
+      }
+      if (delegation.correction.from_attempt !== attempt - 1 || !delegation.worker_id || !delegation.session_id) {
+        return `unit '${unitId}' attempt #${attempt} lacks its bounded worker provenance`
+      }
+      if (delegation.worker_id === evidence.verifier_id.trim()) {
+        return `verifier_id matches implementation worker '${delegation.worker_id}'`
+      }
+      if (delegation.guard?.result !== "ok" || delegation.guard.override) {
+        return `unit '${unitId}' attempt #${attempt} does not have a cleared ownership guard`
+      }
+      // The frozen authorization set bounds every actual file the guard permitted,
+      // including paths omitted from the model's descriptive correction.files list.
+      for (const file of normalizedPaths(delegation.guard.snapshot.allowed)) coveredFiles.add(file)
+    }
+    if ((unit.direct_fixes ?? []).some((d) => d.attempt > baselineAttempt)) {
+      return `unit '${unitId}' had a direct fix after the baseline review`
+    }
+  }
+  if (changed.length === 0) return "no worker correction followed the baseline review"
+  const signature = (units: Array<{ unit_id: string; attempt: number }>) =>
+    units.map((u) => JSON.stringify([u.unit_id, u.attempt])).sort()
+  if (JSON.stringify(signature(changed)) !== JSON.stringify(signature(evidence.units))) {
+    return "evidence.units must name exactly the current changed units and attempts"
+  }
+  if (!samePaths([...coveredFiles], evidence.files)) {
+    return "evidence.files must cover exactly the frozen authorized files across worker corrections"
+  }
+  return null
+}
+
 /** The predicates over a (baseline, units) pair; `upperTs` closes the finding window (the record's ts, or now for a prospective check). */
 function verificationBlocker(
   phaseKey: string,
@@ -421,6 +536,12 @@ export function verificationIneligibility(
 ): string | null {
   const ev = review.evidence
   if (!ev) return "no evidence recorded"
+  if (ev.kind === "worker_delta") {
+    const incomplete = reviewIncompleteness(review)
+    if (incomplete) return incomplete
+    if (!review.model_rank?.permissions.delta_review) return "worker_delta has no recorded TopRank authorization"
+    return workerDeltaBlocker(phaseKey, phaseObj, ev, review.ts, allReviews, events)
+  }
   return verificationBlocker(phaseKey, phaseObj, ev, review.ts, allReviews, events)
 }
 
@@ -471,17 +592,55 @@ function prospectiveVerification(
   )
 }
 
+/** Same predicates as recording/gating, surfaced before paying for another full seat. */
+function prospectiveWorkerDelta(phaseKey: string, phase: Phase, reviews: PhaseReview[], events: SidecarEvent[]): string {
+  const baselines = reviews.filter((r) =>
+    (r.stage === undefined || r.stage === "independent" || r.stage === "native") && reviewIncompleteness(r) === null
+  ).sort((a, b) => b.ts.localeCompare(a.ts))
+  const baseline = baselines[0]
+  if (!baseline) return "WORKER DELTA NOT ELIGIBLE: no complete independent or native baseline; run a full checkpoint review."
+  const units: Array<{ unit_id: string; attempt: number }> = []
+  const files: string[] = []
+  for (const [unit_id, unit] of Object.entries(phase.units)) {
+    const before = baseline.unit_attempts?.[unit_id] ?? Math.max(0,
+      ...(unit.delegations ?? []).filter((d) => d.ts < baseline.ts).map((d) => d.attempt),
+      ...(unit.direct_fixes ?? []).filter((d) => d.ts < baseline.ts).map((d) => d.attempt))
+    if ((unit.attempt_seq ?? 0) > before || (unit.v_ts !== undefined && unit.v_ts > baseline.ts)) {
+      units.push({ unit_id, attempt: unit.attempt_seq ?? 0 })
+      files.push(...(unit.delegations ?? []).filter((d) => d.attempt > before).flatMap((d) => d.guard?.snapshot.allowed ?? []))
+    }
+  }
+  const usedIds = new Set(Object.values(phase.units).flatMap((u) => (u.delegations ?? []).map((d) => d.worker_id)))
+  let placeholder = "<distinct verifier ID>"
+  while (usedIds.has(placeholder)) placeholder += "_"
+  const evidence: VerificationEvidence = {
+    kind: "worker_delta", verifier_id: placeholder, baseline_review_ts: baseline.ts,
+    units, files: normalizedPaths(files),
+    tests: { outcome: "pass", command: "<actual command>", result: "<actual result>" },
+    probe: { outcome: "pass", method: "<actual independent check>", result: "<actual result>" },
+  }
+  if (units.length > 50 || evidence.files.length > 50) return "WORKER DELTA NOT ELIGIBLE: evidence exceeds the bounded record size; run a full checkpoint review."
+  const why = workerDeltaBlocker(phaseKey, phase, evidence, new Date().toISOString(), reviews, events)
+  if (why) return `WORKER DELTA NOT ELIGIBLE: ${why}; run a full checkpoint review.`
+  return `WORKER DELTA ELIGIBLE: retain the baseline and record stage:'verification', completion:'complete', checked:[<files independently read>], findings:[<classified findings>], evidence:${JSON.stringify(evidence)}. Supply actual independent verification and required validation evidence.`
+}
+
 // ─── Apply mutation ───────────────────────────────────────────────────────────
 // Returns an optional warning string to surface in the tool result.
 async function applyOperation(
   ledger: LedgerFile,
   operation: WriteLedgerInput,
-  sidecarReader?: SidecarReader
+  sidecarReader?: SidecarReader,
+  host: HostId = "claude-code",
+  modelRank: ModelRank = resolveModelRank()
 ): Promise<string | undefined> {
   switch (operation.operation) {
     case "set_unit_status": {
       const { phase, unit_id, data } = operation
       ensureUnit(ledger, phase, unit_id)
+      if (data.correction && (data.s !== "delegated" || data.direct_fix !== undefined)) {
+        throw new Error("RANK CORRECTION: correction requires s:'delegated' and cannot be combined with direct_fix.")
+      }
       if (data.direct_fix !== undefined && data.s !== "ip") {
         throw new Error(
           "DIRECT FIX: data.direct_fix is recorded with s:'ip' only — the fix is in progress until its verdict."
@@ -509,6 +668,36 @@ async function applyOperation(
           )
         }
         const unit = ledger.phases[phase].units[unit_id]
+        if (data.correction) {
+          const permission = data.correction.kind === "mechanical" ? "reuse_worker_mechanical" : "reuse_worker_bounded"
+          if (!modelRank.permissions[permission]) {
+            throw new Error(`RANK CORRECTION: ${modelRank.rank} rank does not allow ${data.correction.kind} worker reuse; use the normal Foreman protocol.`)
+          }
+          const previous = unit.delegations?.at(-1)
+          ensureAttemptState(unit)
+          if (!previous || previous.attempt !== unit.attempt_seq || data.correction.from_attempt !== previous.attempt) {
+            throw new Error("RANK CORRECTION: from_attempt must name the current worker delegation.")
+          }
+          if (!modelRank.session_id || previous.session_id !== modelRank.session_id ||
+            !data.worker_id || data.worker_id !== previous.worker_id) {
+            throw new Error("RANK CORRECTION: reuse requires the same recorded worker_id in the current declared session.")
+          }
+          const events = sidecarReader ? await sidecarReader() : []
+          if (events.some((event) => event.phase === boundIdentifier(phase) && event.unit_id === boundIdentifier(unit_id) &&
+            event.attempt === previous.attempt)) {
+            throw new Error("RANK CORRECTION: invoke_worker attempts cannot be resumed as native workers; use the normal workflow.")
+          }
+          if (ledger.phases[phase].scope?.hot_path || ledger.phases[phase].scope?.security_boundary) {
+            throw new Error("RANK CORRECTION: hot_path or security_boundary phases require the normal workflow.")
+          }
+          if (previous.guard?.result !== "ok" || previous.guard.override || unit.delegations?.some((d) => d.guard?.result === "violation")) {
+            throw new Error("RANK CORRECTION: the previous worker attempt needs a cleared ownership guard.")
+          }
+          const allowed = new Set(normalizedPaths(previous.guard.snapshot.allowed))
+          if (data.correction.files.length === 0 || normalizedPaths(data.correction.files).some((file) => !allowed.has(file))) {
+            throw new Error("RANK CORRECTION: correction.files must remain inside the previous frozen authorized file scope.")
+          }
+        }
         // D2a delegation cap, on server-authored counters since 0.6.4 (see
         // ensureAttemptState): two reviewers rejecting one attempt still fire it once.
         const { attempt, cap_grant_id } = allocateAttempt(unit, unit_id, "delegation", data.user_override)
@@ -529,7 +718,11 @@ async function applyOperation(
           ...(data.user_override === true ? { user_override: true } : {}),
           ...(cap_grant_id !== undefined ? { cap_grant_id } : {}),
           preflight: data.preflight,
+          ...(data.worker_id ? { worker_id: data.worker_id } : {}),
+          ...(modelRank.session_id ? { session_id: modelRank.session_id, model_rank: modelRank } : {}),
+          ...(data.correction ? { correction: data.correction } : {}),
         })
+        if (data.correction) unit.v = "pending"
         if (unit.delegations.length > 20) unit.delegations = unit.delegations.slice(-20)
       } else if (data.direct_fix !== undefined) {
         // Field feedback 2026-09 round 4: the protocol counted a Direct Fix as an
@@ -554,14 +747,33 @@ async function applyOperation(
         if (unit.direct_fixes.length > 20) unit.direct_fixes = unit.direct_fixes.slice(-20)
       }
       ledger.phases[phase].units[unit_id].s = data.s
+      if (data.correction) {
+        return `RANK CORRECTION: ${data.correction.kind} follow-up recorded as a new worker attempt; compact brief accepted. ` +
+          (modelRank.permissions.focused_validation ? "Focused intermediate validation is available; mandated checks and checkpoint validation still apply." :
+            "Normal validation and review requirements still apply.") +
+          " Take a fresh guard snapshot with the previous frozen authorized scope before resuming the worker."
+      }
       break
     }
     case "set_verdict": {
       const { phase, unit_id, data } = operation
       ensureUnit(ledger, phase, unit_id)
+      if (data.worker_id) {
+        const unit = ledger.phases[phase].units[unit_id]
+        const current = unit.delegations?.at(-1)
+        if (!current || current.attempt !== unit.attempt_seq || !modelRank.session_id || current.session_id !== modelRank.session_id) {
+          throw new Error("WORKER ID: bind the returned worker only to its current delegation in the current declared session.")
+        }
+        if (current.worker_id && current.worker_id !== data.worker_id) throw new Error("WORKER ID: an existing worker identity cannot be rebound.")
+        current.worker_id = data.worker_id
+      }
       // Pass verdict requires prior delegation — cannot skip the worker pattern
       if (data.v === "pass") {
         const unit = ledger.phases[phase].units[unit_id]
+        const correction = unit.delegations?.find((d) => d.attempt === unit.attempt_seq && d.correction)
+        if (correction && (data.via !== "worker" || correction.guard?.result !== "ok" || correction.guard.override)) {
+          throw new Error("RANK CORRECTION: pass requires via:'worker' and the current attempt's cleared ownership comparison.")
+        }
         if (!unit.w) {
           throw new Error(
             "VERDICT BLOCKED: Cannot set verdict 'pass' without prior delegation. " +
@@ -863,7 +1075,9 @@ async function applyOperation(
         const gatePhase = ledger.phases[phase]
         const allReviews = gatePhase.reviews ?? []
         const verdictTs = latestVerdictTs(gatePhase)
-        const currentReviews = allReviews.filter((r) => r.ts >= verdictTs)
+        const currentReviews = allReviews.filter((r) => r.ts >= verdictTs &&
+          (r.unit_attempts === undefined || Object.entries(gatePhase.units).every(([id, u]) =>
+            (r.unit_attempts?.[id] ?? 0) === (u.attempt_seq ?? 0))))
         // Round 5 (Codex): currency counted every current record, so a pit-boss cross_exam
         // written after a re-verdict satisfied the gate. A cross_exam never counts as a
         // seat; a verification record counts only under verificationIneligibility; an
@@ -875,6 +1089,12 @@ async function applyOperation(
         // seat either. It is recorded because the evidence is real and the owner decides the
         // gate with it in hand, not because it replaces a seat.
         const independent = currentReviews.filter((r) => r.stage === undefined || r.stage === "independent")
+        // Native review is an explicit Codex path, not an independence claim or
+        // an automatic promotion of legacy fan records. Validate saved metadata
+        // again here so an incomplete record cannot become a gate credential.
+        const native = host === "codex"
+          ? currentReviews.filter((r) => r.stage === "native" && reviewIncompleteness(r) === null)
+          : []
         const ineligible: string[] = []
         let eligibleVerification = false
         const verifications = currentReviews.filter((r) => r.stage === "verification")
@@ -886,7 +1106,7 @@ async function applyOperation(
             else ineligible.push(`${r.advisor}: ${why}`)
           }
         }
-        if (independent.length === 0 && !eligibleVerification) {
+        if (independent.length === 0 && native.length === 0 && !eligibleVerification) {
           if (data.user_override !== true) {
             const stale = allReviews.length > currentReviews.length
               ? ` ${allReviews.length - currentReviews.length} older review(s) exist but predate the latest unit verdict — a review recorded before a re-verdict does not cover the current code; re-run the review.`
@@ -896,10 +1116,12 @@ async function applyOperation(
               : ""
             throw new Error(
               `REVIEW REQUIRED: phase '${phase}' has no record_review entry recorded at or after its latest unit verdict.${stale}${notSeats} ` +
-              "Run the checkpoint deliberation and persist at least one advisor review " +
+              (host === "codex" ? "Run a complete native subagent review (stage:'native', distinct reviewer/verifier IDs and checked lists) or an optional external advisor review " : "Run the checkpoint deliberation and persist at least one advisor review ") +
               "(write_ledger record_review) before the gate can pass, or set data.user_override: true " +
               "to pass without independent review — the override is recorded on the phase. " +
-              prospectiveVerification(phase, gatePhase, allReviews, events, verdictTs)
+              (modelRank.permissions.delta_review
+                ? prospectiveWorkerDelta(phase, gatePhase, allReviews, events)
+                : prospectiveVerification(phase, gatePhase, allReviews, events, verdictTs))
             )
           }
           gatePhase.review_override = { ts: new Date().toISOString() }
@@ -984,6 +1206,15 @@ async function applyOperation(
       const { phase, data } = operation
       ensurePhase(ledger, phase)
       const p = ledger.phases[phase]
+      if (data.stage === "native") {
+        if (host !== "codex") throw new Error("NATIVE REVIEW: stage:'native' requires the Codex host.")
+        if (data.completion !== "partial" && data.completion !== "failed") {
+          const why = reviewIncompleteness({ ...data, ts: "" })
+          if (why) throw new Error(`NATIVE REVIEW INCOMPLETE: ${why}. Record partial/failed or finish the native review.`)
+        }
+      } else if (data.native !== undefined) {
+        throw new Error("NATIVE REVIEW EVIDENCE: data.native is accepted with stage:'native' only.")
+      }
       // v0.6.5: a verification record stands in for a seat only with its evidence; the
       // evidence shape is meaningless on any other stage.
       if (data.stage === "verification") {
@@ -991,8 +1222,18 @@ async function applyOperation(
           throw new Error(
             "VERIFICATION INCOMPLETE: stage:'verification' needs completion:'complete' and data.evidence " +
             "{ baseline_review_ts, units: [{ unit_id, attempt }], files: [...], tests: { outcome, ... }, probe: { outcome, ... } }. " +
-            "It stands in for a seat only for direct-fix re-verdicts, and only with the evidence recorded."
+            "It stands in for a seat only for eligible direct-fix re-verdicts or a TopRank worker_delta with a distinct verifier, and only with the evidence recorded."
           )
+        }
+        if (data.evidence.kind === "worker_delta") {
+          if (!modelRank.permissions.delta_review) {
+            throw new Error("RANK VERIFICATION: recording a worker_delta requires TopRank; use a complete checkpoint review.")
+          }
+          const incomplete = reviewIncompleteness({ ...data, ts: "" })
+          if (incomplete) throw new Error(`RANK VERIFICATION INCOMPLETE: ${incomplete}.`)
+          const why = workerDeltaBlocker(phase, p, data.evidence, new Date().toISOString(), p.reviews ?? [],
+            sidecarReader ? await sidecarReader() : [])
+          if (why) throw new Error(`RANK VERIFICATION: ${why}.`)
         }
       } else if (data.evidence !== undefined) {
         throw new Error("VERIFICATION EVIDENCE: data.evidence is accepted with stage:'verification' only.")
@@ -1007,9 +1248,16 @@ async function applyOperation(
         tokens: data.tokens,
         completion: data.completion,
         checked: data.checked,
-        limitations: data.limitations,
+        limitations: data.stage === "native"
+          ? `Native Codex subagents; same-provider review, not cross-vendor independence.${data.limitations ? ` ${data.limitations}` : ""}`
+          : data.limitations,
         stage: data.stage,
+        ...(data.native !== undefined ? { native: data.native } : {}),
         ...(data.evidence !== undefined ? { evidence: data.evidence } : {}),
+        ...(data.evidence?.kind === "worker_delta" ? { model_rank: modelRank } : {}),
+        ...(data.stage === undefined || data.stage === "independent" || data.stage === "native"
+          ? { unit_attempts: Object.fromEntries(Object.entries(p.units).map(([id, unit]) => [id, unit.attempt_seq ?? 0])) }
+          : {}),
       })
       // Round 6: bounded history that never evicts a record the gate is blocking on.
       p.reviews = trimReviews(p.reviews, latestVerdictTs(p))
@@ -1080,7 +1328,9 @@ export async function writeLedger(
   filePath: string,
   operation: WriteLedgerInput,
   preWrite?: (ledger: LedgerFile) => void,
-  sidecarReader?: SidecarReader
+  sidecarReader?: SidecarReader,
+  host: HostId = "claude-code",
+  modelRank: ModelRank = resolveModelRank()
 ): Promise<LedgerWriteResult> {
   return withLedgerLock(filePath, async () => {
     const read = await readLedgerWithStatus(filePath)
@@ -1093,7 +1343,7 @@ export async function writeLedger(
       sidecarReader ??
       (async () => (await readEvents(path.join(path.dirname(filePath), ".foreman-events.jsonl"))).events)
 
-    let warning = await applyOperation(ledger, operation, reader)
+    let warning = await applyOperation(ledger, operation, reader, host, modelRank)
     if (read.corrupt) {
       const corruptNote =
         `previous ledger was corrupt JSON and was backed up to '${read.backupPath}'; ` +
@@ -1154,6 +1404,13 @@ export async function recordRepoGuard(
           "A baseline is frozen for the life of an attempt — replacing it would discard the comparison recorded against it. " +
           "Record a new delegation for the next attempt, or compare against this baseline."
         )
+      }
+      if (latest.correction) {
+        const prior = delegations.find((d) => d.attempt === latest.correction?.from_attempt)
+        if (!prior?.guard || prior.guard.snapshot.root !== patch.snapshot.root ||
+          !samePaths(prior.guard.snapshot.allowed, patch.snapshot.allowed)) {
+          throw new Error("RANK CORRECTION: the new guard must preserve the previous repository root and frozen authorized file set.")
+        }
       }
       latest.guard = patch
     } else {

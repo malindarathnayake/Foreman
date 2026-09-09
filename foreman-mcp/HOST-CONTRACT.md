@@ -30,7 +30,8 @@ Six capabilities, each rated READY / DECLARED / EXPERIMENTAL. READY means the be
 
 - **Readiness:** READY (invoke_advisor tool + D11 capability_check taxonomy).
 - **Use when:** phase-checkpoint deliberation or design review needs independent perspectives.
-- **Codex profile:** Advisor A is headless Claude Fable 5 at max effort; Advisor B is Gemini. Claude CLI versions are reported as telemetry and are not compatibility-pinned.
+- **Codex profile:** Native reviewers and a separate verifier are the default review path. At major checkpoints, available Claude Fable 5 (max effort) and Gemini CLI advisors add external review through the existing tools. Missing CLIs do not block a complete native review. CLI versions remain telemetry, not compatibility pins.
+- **Native review gate:** `record_review stage:'native'` is accepted on the Codex host. A complete record requires 2-5 distinct native reviewer IDs with distinct lenses and completed checked lists, a separate verifier ID, its checked list, and no unverified findings. Native provenance is host-reported; Foreman validates the shape, not the host process graph. Current confirmed findings, stale reviews, incomplete review coverage, and all existing unit/scope checks still block the gate. Legacy `fan` records remain non-qualifying. External review findings retain their own source; native review never claims cross-vendor independence.
 - **Do not use when:** the CLI is not authenticated (capability_check returns a non-ok status with a corrective hint) — degrade to adversarial self-review.
 - **NOT-claims:**
   - "advisor child processes inherit the full environment — a DOCUMENTED boundary, not a filtered one (see SECURITY.md)"
@@ -104,6 +105,19 @@ Six capabilities, each rated READY / DECLARED / EXPERIMENTAL. READY means the be
 Config DECLARES, tools VALIDATE — a seat never self-describes its class or tier at runtime.
 
 Capability class and cost tier are two axes, both recorded per delegation.
+
+## Declared workflow rank
+
+The pitboss reports `env.model` and `env.effort` in `write_journal init_session`; `declare_model { model, effort }` replaces the declaration on a model change. Foreman trusts this input and maps it to permissions; it does not authenticate model identity. Missing or unmapped values use normal protocol without blocking startup. A new session declares again, and session end or server restart clears the active declaration.
+
+| Weight | Mapping | Workflow permission |
+|---|---|---|
+| 3 Top | Astra / `gpt-6-astra`, effort `high`, `xhigh`, `max`, `ultra`; Fable 5.1 | Bounded native worker reuse, compact follow-ups, focused intermediate checks, independently verified delta review |
+| 2 Middle | Opus; Terra / `gpt-5.6-terra` | Mechanical native worker reuse and compact follow-ups; normal checks and review |
+| 1 Standard | Sonnet; Luna / `gpt-5.6-luna` | Normal protocol |
+| 0 Unknown | Undeclared/unmapped, including Sol | Normal protocol |
+
+Rank is an additional workflow axis, separate from configured capability class and cost tier. It neither promotes a seat class nor sums across seats. Native worker reuse needs the same active session, unit, recorded worker ID and frozen file scope, a new recorded attempt, normal preflight, and a fresh guard comparison. A changed understanding or scope starts a fresh worker. New implementation, fixes and test edits always use workers. Rank never waives ownership, authorization, budgets, attempt limits, required validation or checkpoint gates. Retained review evidence remains portable; the next action uses the incoming rank.
 
 ## Autonomy capability
 

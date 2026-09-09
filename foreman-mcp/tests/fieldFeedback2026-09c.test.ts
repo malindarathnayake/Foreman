@@ -11,6 +11,7 @@ import { fileURLToPath } from "url"
 import { Client } from "@modelcontextprotocol/client"
 import { InMemoryTransport } from "@modelcontextprotocol/server"
 import { createServer } from "../src/server.js"
+import { renderIncludes } from "../src/lib/skillLoader.js"
 import { ATTEMPT_CAP, readLedger, writeLedger } from "../src/lib/ledger.js"
 import { handleWriteLedger } from "../src/tools/writeLedger.js"
 import { handleReadLedger } from "../src/tools/readLedger.js"
@@ -514,9 +515,11 @@ describe("description limits and protocol wording", () => {
     expect(common).toContain("never treat a refusal as a clean review")
   })
 
-  it("the implementor names the direct-fix record, the fresh-attempt rule, and the classification requirement", async () => {
-    const implementor = await fs.readFile(new URL("../src/skills/implementor.md", import.meta.url), "utf-8")
-    expect(implementor).toContain('set_unit_status({ s: "ip", direct_fix:')
+  it("the implementor keeps legacy records but requires worker corrections, fresh attempts, and classified findings", async () => {
+    const skillPath = fileURLToPath(new URL("../src/skills/implementor.md", import.meta.url))
+    const implementor = await renderIncludes(await fs.readFile(skillPath, "utf-8"), skillPath)
+    expect(implementor).toContain("The legacy `direct_fix` / `via:'pitboss-direct'` record format remains readable")
+    expect(implementor).toContain("**Rank-based corrections:**")
     expect(implementor).toContain("`ATTEMPT REQUIRED`")
     expect(implementor).toContain("`record_review` refuses a finding without it")
   })

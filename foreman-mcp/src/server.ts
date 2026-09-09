@@ -40,7 +40,8 @@ import {
 } from "./types.js"
 import { renderShape } from "./lib/schemaDoc.js"
 import { formatSchemaError, isZodError } from "./lib/schemaError.js"
-import { readJournal, initSession, logEvent, endSession } from "./lib/journal.js"
+import { readJournal, initSession, declareModel, logEvent, endSession } from "./lib/journal.js"
+import { resolveModelRank, type ModelRank } from "./lib/modelRank.js"
 import { invokeAdvisor, formatAdvisorResult, GEMINI_ADVISOR_MODEL, CODEX_ADVISOR_MODEL } from "./tools/invokeAdvisor.js"
 import { sessionOrient } from "./tools/sessionOrient.js"
 import { renderIncludes, loadSkill } from "./lib/skillLoader.js"
@@ -81,6 +82,8 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   const docsDir = config?.docsDir ?? "Docs"
   const journalPath = config?.journalPath ?? "Docs/.foreman-journal.json"
   const host: HostId = config?.host ?? "claude-code"
+  // Never inherit the previous host's declaration from the durable journal.
+  let activeModelRank: ModelRank = resolveModelRank()
 
   // Stack profile resolves once per process, like host: env wins, then the
   // project override file <docsDir>/foreman-stack-profile.md, then bundled reference.
@@ -154,7 +157,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
     },
     async (_extra) => {
-      const text = hostStatus(host)
+      const text = hostStatus(host, activeModelRank)
       return textResult(text)
     }
   )
@@ -233,7 +236,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     "read_progress",
     {
       title: "Read Progress",
-      description: "Reads the descriptive Foreman planning checklist. It is not resume authority; call session_orient to choose the next action.",
+      description: "Shows ledger-authoritative unit/phase counts and resume state using the same calculation as session_orient, followed by the descriptive planning checklist. Checklist completion is not project completion. Use session_orient for the focused resume workflow.",
       inputSchema: z.strictObject({
         last_n_completed: z.number().min(1).max(100).optional(),
       }),
@@ -245,7 +248,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
     },
     async (args, _extra) => {
-      const text = await handleReadProgress(progressPath, args.last_n_completed)
+      const text = await handleReadProgress(progressPath, args.last_n_completed, ledgerPath, host, activeModelRank)
       return textResult(text)
     }
   )
@@ -342,14 +345,14 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "Writes one operation to the Foreman ledger. Per-operation data shapes are in the input schema (data field description); a rejected call returns one hint per field plus the expected shape.",
         "",
         "Operations (phase required; unit_id where noted):",
-        "  set_unit_status (unit_id) — s:'delegated' needs a brief (≥20 chars) and a preflight attestation; s:'ip' with direct_fix records a literal fix as an attempt. Past 3 failed attempts since the last pass, an attempt needs an open grant or user_override.",
+        "  set_unit_status (unit_id) — delegated needs brief ≥20 chars + preflight. Ranked correction follows up with a worker. New edits always use workers; direct_fix is legacy-only. Past 3 failures needs a grant or user_override.",
         "  set_verdict (unit_id) — v:'pass' needs a prior delegation, an attempt after the latest failure (ATTEMPT REQUIRED), past the cap a granted/overridden attempt or user_override (cap_override), and on a no-test/no-build phase a ≥5-word note; v:'fail' counts as a failed attempt.",
         "  add_rejection (unit_id) — counts a failed attempt; reopens a passed unit to 'pending'.",
         "  authorize_attempts (unit_id) — the owner's decision, once: N more attempts past the cap, charged per attempt; refused below the cap or while a grant is open; a pass closes it.",
         "  declare_phase_units — additive declared id set (cap 200); retire needs a reason; frozen once the gate is 'pass'.",
         "  update_phase_gate — g:'pass' needs every unit passed, every declared id registered, and a current independent review (or eligible verification; cross_exam never counts) with no 'confirmed' finding and no partial, failed, or silent record without checked[]; user_override waives the review conditions (recorded on the phase).",
         "  set_phase_scope — once per phase; hot_path/security_boundary make the gate require agent_class:'frontier'.",
-        "  record_review — every finding needs a classification; 'line' is a string, severity lowercase; zero findings need checked[] or completion:'complete'; 'confirmed' blocks the gate; stage:'verification' (direct-fix re-verdicts only) needs completion:'complete' + evidence. Limit: checked ≤50 entries of ≤400 chars.",
+        "  record_review — every finding needs a classification; 'line' is a string, severity lowercase; zero findings need checked[] or completion:'complete'; 'confirmed' blocks the gate. stage:'verification' needs complete evidence for eligible corrections or legacy direct fixes. Limit: checked ≤50 entries of ≤400 chars.",
       ].join("\n"),
       inputSchema: z.strictObject({
         operation: z.enum(["set_unit_status", "set_verdict", "add_rejection", "declare_phase_units", "update_phase_gate", "set_phase_scope", "record_review", "authorize_attempts"]),
@@ -367,7 +370,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
     },
     async (args, _extra) => {
-      const text = await handleWriteLedger(ledgerPath, args)
+      const text = await handleWriteLedger(ledgerPath, args, host, activeModelRank)
       return textResult(text)
     }
   )
@@ -525,6 +528,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       title: "Write Journal",
       description: [
         "Writes to the Foreman session journal — a friction log, not a diary.",
+        "Declare the orchestrator model and effort in init_session data.env; omitted or unmapped identity uses normal protocol. Foreman derives rank and workflow permissions. Use declare_model with model and effort to replace the declaration after a model change; omitted fields become unknown. Rank is separate from agent_class and never waives workers, ownership or checkpoint gates.",
         "",
         "Sequence per session: init_session (once, at session start) → log_event (0–200 entries, anomalies only) → end_session (once, at checkpoint or handoff).",
         "The event-code enum is anomaly-only by design: log failures, delays, and degraded tooling; never successes, worker spawns, or test passes. Host tooling that is broken or unusable (e.g. run_tests cannot spawn) is TOOL_ERR. There is no informational code.",
@@ -533,7 +537,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "Limit: log_event data.msg is at most 400 characters.",
       ].join("\n"),
       inputSchema: z.strictObject({
-        operation: z.enum(["init_session", "log_event", "end_session"]),
+        operation: z.enum(["init_session", "declare_model", "log_event", "end_session"]),
         data: z.record(z.string(), z.unknown()).describe(
           "Per-operation shape (every key, enum value, and limit):\n" + shapesOf(JournalOperationDataSchemas)
         ),
@@ -550,12 +554,19 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       try {
         if (args.operation === "init_session") {
           const journal = await initSession(journalPath, input)
-          return textResult(JSON.stringify({ ok: true, session_id: journal.sessions[journal.sessions.length - 1].id }))
+          const session = journal.sessions[journal.sessions.length - 1]
+          activeModelRank = session.env!.model_rank!
+          return textResult(JSON.stringify({ ok: true, session_id: session.id, model_rank: activeModelRank }))
+        } else if (args.operation === "declare_model") {
+          const journal = await declareModel(journalPath, input, activeModelRank.session_id ?? "")
+          activeModelRank = journal.sessions[journal.sessions.length - 1].env!.model_rank!
+          return textResult(JSON.stringify({ ok: true, session_id: activeModelRank.session_id, model_rank: activeModelRank }))
         } else if (args.operation === "log_event") {
           const result = await logEvent(journalPath, input)
           return textResult(result)
         } else {
           const journal = await endSession(journalPath, input)
+          activeModelRank = resolveModelRank()
           return textResult(JSON.stringify({ ok: true, sessions: journal.sessions.length, rollup: !!journal.rollup }))
         }
       } catch (err) {
@@ -656,7 +667,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
     },
     async (_extra) => {
-      const text = await sessionOrient(ledgerPath, progressPath, host)
+      const text = await sessionOrient(ledgerPath, progressPath, host, activeModelRank)
       return textResult(text)
     }
   )
@@ -711,7 +722,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
           "and creates .codex/config.toml with [agents] max_threads/max_depth only when that file is absent.",
           "Existing .codex/config.toml is never overwritten (may hold mcp_servers); a merge hint is returned instead.",
           "explorer/worker TOMLs override Codex built-in roles of those names to pin sandbox_mode.",
-          "reviewer/verifier are the read-only review-fan roles used when no advisor CLI is available.",
+          "reviewer/verifier are the default native review roles; complete stage:'native' evidence can satisfy the Codex gate without external CLIs.",
           "Model pins are optional — omit to let Codex choose. Call once per project before parallel fan-out.",
         ].join(" "),
         inputSchema: z.strictObject({
@@ -726,6 +737,8 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
               verifier: z.string().min(1).optional(),
               explorer: z.string().min(1).optional(),
               worker: z.string().min(1).optional(),
+              worker_light: z.string().min(1).optional(),
+              worker_heavy: z.string().min(1).optional(),
             })
             .optional()
             .describe("Optional per-role model pins; omit to let Codex choose"),
@@ -1010,7 +1023,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
           // failure case is rare (skill load error) and the unrendered placeholders
           // are still readable text.
           const raw = await fs.readFile(filePath, "utf-8")
-          const text = await renderIncludes(raw, filePath)
+          const text = await renderIncludes(raw, filePath, host)
           return {
             contents: [{ uri: resourceUri.href, mimeType: "text/markdown", text }],
           }

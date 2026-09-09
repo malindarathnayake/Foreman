@@ -14,14 +14,14 @@ description: Pit-boss implementation orchestrator. A frontier pitboss orchestrat
 
 | Rule | Why |
 |------|-----|
-| Pit-boss NEVER writes implementation code — sole exception: a Direct Fix (Two-Tier Fix Protocol) | Separation of concerns |
+| Pit-boss NEVER writes implementation code, fixes, or tests; use an implementation worker | Separation of concerns |
 | Workers NEVER see full spec, ledger, or progress | Information isolation |
-| Workers are disposable — killed after each unit | Prevents hallucination accumulation |
-| Fresh worker for fixes after rejection | Sunk-cost bias in original worker |
+| Workers stay bounded to one unit; release after its correction work is complete | Prevents context accumulation across units |
+| Fresh worker after rejection unless the declared rank permits bounded reuse | Keep correction scope explicit |
 | Ledger is durable — persisted after every verdict | State survives sessions |
 | Mandatory new session at phase checkpoints | Context accumulation degrades quality |
 
-**Proportional entry:** full implementor ceremony is for prepared multi-unit work, security/trust boundaries, migrations, and changes where a silent defect is expensive. Ordinary low-risk CRUD and one-file maintenance should use direct work or `lighttask`; do not manufacture phases merely to satisfy this protocol.
+**Proportional entry:** full implementor ceremony is for prepared multi-unit work, security/trust boundaries, migrations, and changes where a silent defect is expensive. Ordinary low-risk CRUD and one-file maintenance can use `lighttask` before entering this protocol; do not manufacture phases merely to satisfy this protocol.
 
 {{include: session-start}}
 
@@ -118,6 +118,8 @@ Record the delegation in the ledger BEFORE spawning. This is mechanically enforc
 ```
 mcp__foreman__write_ledger({ operation: "set_unit_status", phase, unit_id, data: { s: "delegated", brief: "<1-3 line summary of the worker brief>", tier: "standard", route_reason: "<why this tier fits this unit>", preflight: { symbols_grepped: <N from Step 4.5>, self_consistent: true, telemetry: "checked" | "n/a" } } })
 ```
+On the verdict, record `worker_id: "<actual host-returned ID>"` for a native worker so a later eligible correction can reuse that instance. Never invent an ID or carry a live-worker assumption across sessions.
+
 Tiers: `cheap` (mechanical, fully-specified change), `standard` (default capable worker), `premium` (subtle or high-risk unit escalated to a stronger model). Each (re-)delegation is appended to the unit's `delegations[]` history, so the tier choice and reason survive the brief overwrite on fix attempts.
 
 {{worker_invoke}}
@@ -130,7 +132,7 @@ Tiers: `cheap` (mechanical, fully-specified change), `standard` (default capable
 After worker returns, pit-boss validates independently — do not trust worker's self-report:
 1. **Repository-state guard — before tests:** `mcp__foreman__repo_guard({ operation: "compare", phase, unit_id, files: [<the unit's files>] })`. The authorized set is already frozen on the baseline, so `compare` takes no `allowed_files` — passing one is refused, because widening authorization after the worker ran would clear the worker's own mutation. Foreman re-reads the state and names every mutation outside the frozen set: a moved HEAD, a touched index or stash, a changed `core.autocrlf`, a file changed outside the brief, an already-dirty file whose content was overwritten, or a pre-existing uncommitted change that disappeared. A violation is a hard stop. Do not attempt automatic recovery and do not continue to tests; preserve evidence and escalate to the owner. The result is recorded on the delegation and `set_verdict v:'pass'` is refused for that attempt until it clears (`REPOSITORY GUARD`) — `user_override` waives it and is recorded as `guard_override`.
 2. Read every modified file — confirm changes match the AFTER pattern from the brief
-3. Re-run tests — call mcp__foreman__run_tests with the unit's test command; read exit_code for pass/fail, STDERR tail for failure context. Do not run tests via Bash.
+3. Re-run tests — call mcp__foreman__run_tests with the unit's test command; read exit_code for pass/fail, STDERR tail for failure context. Do not run tests via Bash. Eligible Top corrections may use focused validation as described below, while still running spec-mandated checks.
 4. Spec check — read the original spec directive sentence by sentence; confirm each has a corresponding code path
 5. Export check — verify exported names and signatures match what the ledger records as interface contracts
 6. Consistency check — confirm changes integrate cleanly with prior accepted units; no regressions introduced
@@ -158,7 +160,7 @@ mcp__foreman__write_progress({ operation: "log_error", data: { date, unit, what_
 
 **Inner Loop (same worker):** Compile/import/type errors → self-fix max 2. Logic/spec errors → return to pit-boss immediately. Inner loop attempts do NOT count toward outer fix limit.
 
-**Outer Loop (fresh worker, max 3 attempts)** — Fix brief template:
+**Outer Loop (recorded worker attempt, max 3 failures)** - Use a fresh worker by default; apply the rank-based correction path below automatically when eligible. Fresh-worker fix brief template:
 ```
 # Fix Brief — Unit [ID], Attempt [N of 3]
 ## What Was Wrong — file:line reference + specific problem description
@@ -175,7 +177,13 @@ mcp__foreman__write_progress({ operation: "log_error", data: { date, unit, what_
 
 After 3 outer-loop failures: STOP. Escalate to user with full rejection history from ledger. Ledger-enforced: the cap counts failed attempts (rejection or fail verdict) since the unit last passed; a further attempt or a pass then needs `user_override` (recorded on the attempt or as `cap_override`). Fixing off the record is not a way past it — a pass also needs an attempt recorded after the latest failure (`ATTEMPT REQUIRED`). One owner decision can cover several attempts: at the cap, record `authorize_attempts { attempts, reason, user_override: true }` once; each further attempt is charged to it, `session_orient` shows what is left, and a pass closes it.
 
-**Direct Fix (pit-boss applies, no worker) — ALL must hold:** the unit already has a delegation and its latest delegation was host-native (units delegated through `invoke_worker` are sidecar-tracked and ineligible); the change is an exact literal substitution the rejection already spelled out — identifier rename, typo in a string/comment, import path, test name/message, or a constant the spec states verbatim; it touches only files in the unit's brief; it adds no function, branch, or test; it does not touch authn/authz, secrets, telemetry names, public contracts/schemas, concurrency, or error-handling semantics. Line count is not the boundary — `&&`→`||` on an auth check is one line and ineligible. Procedure: `add_rejection` as normal → `set_unit_status({ s: "ip", direct_fix: "<file>: <substitution>" })` (records the attempt; the ledger refuses the pass without it) → apply the substitution → full Step 6 + G1–G6 → `set_verdict({ v: "pass", via: "pitboss-direct", note: "direct-fix: <file> <what> (+N/-M)" })`. A direct fix is an outer-loop attempt (counts toward 3). Anything outside the list → fresh worker.
+**Rank-based corrections:** Use the `model_rank` and `workflow_permissions` returned by startup/orientation. Middle rank permits same-worker **mechanical** corrections (exact rename, import, literal or fixture correction with unchanged behavior and acceptance criteria). Top rank also permits **bounded** implementation fixes and test changes within the same unit and frozen authorized files. Standard/unknown follow the normal fresh-worker path. A changed understanding, unavailable worker, new session, or expanded scope requires a fresh worker. Authorization, budget, security boundaries, public contracts, acceptance criteria, and scope changes never qualify.
+
+Record the rejection once, then a new `s:'delegated'` attempt with `worker_id` (the actual existing native worker ID), `correction: { kind: "mechanical" | "bounded", from_attempt: <previous attempt>, files: [<changed files>] }`, a compact `brief` referencing the previous brief and stating the finding, required delta and validation, and the normal preflight attestation. Reuse only a worker from this active session whose original ID was recorded by `set_verdict { worker_id }`; retain an eligible worker while its unit is under validation/review, and start fresh if the host has already released it. Take a new guard snapshot before sending the follow-up, preserving the original frozen authorized file scope; compare before tests and verdict as usual. Reuse is still an outer attempt, subject to existing failure caps and unresolved guard violations. Retain the original Shared-Tree Safety instructions and supply relevant context excerpts rather than the ledger or full handoff.
+
+Top rank may use focused intermediate validation of the changed behavior and its dependencies, while still running every spec-mandated unit check, Step 6 ownership/spec checks, and full checkpoint validation. Middle rank retains normal validation and review. After an eligible Top correction, a separate read-only verifier can check the complete delta and extend still-valid baseline review coverage through `stage:'verification'` with `evidence.kind:'worker_delta'`; see checkpoint review. Neither reuse nor rank permits self-review or skipping final independent verification.
+
+The legacy `direct_fix` / `via:'pitboss-direct'` record format remains readable for compatibility. Do not use it for new work: all implementation, fixes, fixture changes and test edits in this protocol go through a worker.
 
 ### Repeated Checkpoint Blocks
 
@@ -247,29 +255,7 @@ Any brief built from scrubbed material must include this disclosure verbatim: `[
 At phase end, after all six gates (G1–G6) pass:
 **1. Full Test Suite:** Run the complete test suite via mcp__foreman__run_tests, not Bash.
 
-**2. Review via Deliberation:**
-1. Check the active host's advisor seats — reuse the session-start probe results recorded in the `init_session` journal `env`; re-probe ({{advisor_checks}}) only if an advisor was not probed or its recorded status was a failure
-2. Map to tier:
-
-| Advisor A | Advisor B | Review path | Moderator |
-|-----------|-----------|-------------|-----------|
-| available | available | Invoke both independently | Pitboss (you) |
-| available | unavailable | Advisor A + recorded non-independent fallback | Pitboss (you) |
-| unavailable | available | Advisor B + recorded non-independent fallback | Pitboss (you) |
-| unavailable | unavailable | Ask the user before proceeding with pitboss-only gates | Pitboss (you) |
-
-3. Use the active host's invocation mappings:
-
-{{advisor_a}}
-{{advisor_b}}
-{{advisor_fallback}}
-
-4. Ask each advisor (append the Advisor Grounding Protocol's efficiency instruction verbatim — selective reading, no file dumps): "Review these phase changes against the spec. List any: (a) spec directives not implemented, (b) implementations that contradict the spec, (c) missing error handling, (d) test gaps, (e) security issues — prefix each `[CWE-###]` (closest class or `[CWE-UNMAPPED]` + reason if none fits); where a finding weakens a control or detection-evidence row in the spec's Threat Table, cite that row by component name — do NOT invent new technique mappings during code review, (f) telemetry contract violations — names, unbounded tag values, missing trace correlation, secrets/PII in signals. Be specific — file:line references required. Start every finding with its severity in brackets — `[CRITICAL]`, `[HIGH]`, `[MEDIUM]`, `[LOW]` — then the file:line, one finding per list item. For each category, list what you examined (files/functions) even when you report nothing — a category with no findings and no examined list is not reviewed."
-
-5. `mcp__foreman__normalize_review` — parse review output into structured findings (`findings_json` is record_review-ready; `unparsed_lines` counts prose that opened no finding — the examined list lands there, not in findings)
-6. An advisor result marked `completion: failed` (empty or echoed output, non-zero exit) is not a seat: record it with the reason in `limitations`, retry once, and after a second failure use the unavailable row above. Classify each finding: CONFIRMED / REJECTED / UNVERIFIED — every recorded finding carries one; `record_review` refuses a finding without it. A seat reporting zero findings with no examined list is `completion: "partial"`, never clean — no line-count floor decides this. If another seat has CONFIRMED findings, re-prompt the silent seat ONCE naming only the files involved (never the other seat's claims or lines) and record that pass separately with `stage: "cross_exam"`; it never counts as an independent seat.
-7. Persist the review durably — `mcp__foreman__write_ledger({ operation: "record_review", phase, data: { advisor, stage: "independent", completion, checked: [<what the seat examined>], findings: [{ severity, file, line, description, classification }] } })`. Use lowercase classification (`confirmed` / `rejected` / `unverified`). Security findings keep their `[CWE-###]` prefix in `description`. Survives the session; retrievable via `read_ledger({ query: "reviews" })`. The phase gate is ledger-enforced: it requires a review recorded after the latest unit verdict and refuses `pass` while any such review carries a `confirmed` finding — reject the affected unit (`add_rejection` → fix → `set_verdict`), then re-run the review so a fresh record shows it resolved. `user_override` waives and is recorded on the phase. Trivial follow-ups only — no confirmed finding above LOW since the last independent review, fixed by Direct Fix and re-verdicted `via: "pitboss-direct"` on an unscoped phase — may close with `record_review { stage: "verification", completion: "complete", evidence: { baseline_review_ts, units: [{ unit_id, attempt }], files, tests, probe } }` instead of a fresh seat; the gate checks every one of those conditions and a `cross_exam` record never counts as a seat. Anything larger needs a seat. When the gate answers `REVIEW REQUIRED` it also states whether that verification path is open right now — `VERIFICATION ELIGIBLE` with the record shape to write, or `VERIFICATION NOT ELIGIBLE` with the one blocker — read it before paying for another seat. A seat that failed, timed out, or reported nothing is superseded by re-running the SAME advisor to a complete record; never re-verdict a unit to clear it.
-8. If no CLIs available: ask user "Independent review unavailable. Proceed with pit-boss gates only? [y/N]"
+{{include: checkpoint-review}}
 
 **3. Persist State:**
 ```

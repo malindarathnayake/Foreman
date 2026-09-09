@@ -31,7 +31,7 @@ export type CodexAgentsInitInput = z.infer<typeof CodexAgentsInitInputSchema>
 const EXPLORER_INSTRUCTIONS = `Stay in exploration mode.
 Trace the real execution path, cite files and symbols, and do not propose fixes unless asked.
 Prefer fast search and targeted file reads over broad scans.
-Never write files. Never produce a Foreman ledger verdict.`
+Never write files. Never spawn further subagents. Never produce a Foreman ledger verdict.`
 
 const WORKER_INSTRUCTIONS = `Implement only the bounded worker brief you are given.
 Do not read or request the full spec, ledger, or progress file.
@@ -64,21 +64,26 @@ unit that already failed at a lower tier — the brief says which.
 Spend the extra reasoning on the failure modes, not on scope: the brief's file list still binds.
 ` + WORKER_INSTRUCTIONS
 
-const REVIEWER_INSTRUCTIONS = `You are one adversarial reviewer on a Foreman review fan.
+const REVIEWER_INSTRUCTIONS = `You are one adversarial reviewer in a native Foreman review.
 Answer ONLY the lens question you are given; findings from another lens are noise here.
 Cite file:line for every finding, from code you actually opened. Never invent a symbol or a line.
 Severity is blast radius, not confidence. Do not report style preferences at any severity.
 Zero findings is a valid answer, but you must still list what you examined — silence with no
 account of what was read is treated as a failed review, not an approval.
+Return completion (complete/partial/failed), your lens, a non-empty checked list, findings and limitations.
 Never write files. Never spawn further subagents. Never produce a Foreman ledger verdict.`
 
-const VERIFIER_INSTRUCTIONS = `You verify a Foreman review fan and write its single report.
-The reviewers ran on the same model you are running on, so their findings are claims to test,
+const VERIFIER_INSTRUCTIONS = `You verify a native Foreman review and write its single report.
+The native reviewers may use the same model you are running on, so their findings are claims to test,
 not evidence. Open every cited file:line and keep only what the code actually supports.
 Classify each finding confirmed / rejected / unverified, re-rate severity by blast radius, and
-merge duplicates across lenses. Prefer unverified over a guessed confirmation: a false
+merge duplicates across lenses. Check every reviewer's completion and examined list; a missing,
+failed, silent or partial native reviewer makes the overall review incomplete. Include optional
+external advisor claims when supplied, preserving their source. Prefer unverified over a guessed confirmation: a false
 confirmation costs a remediation round, and an honest unknown costs a sentence.
 The orchestrator sees your report and nothing the reviewers said, so a finding you drop is gone.
+Return completion, a non-empty checked list, classified findings and limitations. Unresolved
+unverified findings require a partial result. Never claim cross-vendor independence for native agents.
 Never write files. Never spawn further subagents. Never produce a Foreman ledger verdict.`
 
 function escapeTomlString(value: string): string {
@@ -169,7 +174,7 @@ export async function codexAgentsInit(raw: CodexAgentsInitInput): Promise<string
   )
   if (roles.includes("reviewer") || roles.includes("verifier")) {
     hints.push(
-      "reviewer/verifier are the review-fan roles: read-only, run in parallel under max_threads, and are a fallback for a missing advisor CLI — a same-model fan is perspective, never independence"
+      "reviewer/verifier are the default native review roles: read-only reviewers run within max_threads, followed by a separate verifier; complete stage:'native' evidence can satisfy the Codex gate without external CLIs"
     )
   }
 
