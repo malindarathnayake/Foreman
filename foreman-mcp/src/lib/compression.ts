@@ -1,5 +1,6 @@
 import { compress, InMemoryCcrStore, createRetrieveOriginalTool, defaultConfig, findMarkers } from "context-crush"
 import type { RetrieveOriginalTool } from "context-crush"
+import { checkLiteralFidelity, describeFidelityFailure } from "./literalFidelity.js"
 
 let store: InMemoryCcrStore | null = null
 
@@ -108,10 +109,20 @@ export function maybeCompress(toolName: string, text: string): string {
   if (result.reason !== "compressed") {
     return result.text
   }
-  if (lossyGuardsReject(text, result.text)) {
+  // Never prepend onto smart_crusher output — that strategy emits valid JSON.
+  const served =
+    result.strategy === "smart_crusher"
+      ? result.text
+      : head === null
+        ? result.text
+        : dedupeMetaHead(head, result.text)
+  // Guard the text that is actually SERVED, not the raw digest. The meta head carrying
+  // exit_code is re-prepended above, so checking before that step would fail every
+  // compression for losing a literal Foreman itself puts back.
+  if (lossyGuardsReject(text, served)) {
     return text
   }
-  for (const hash of findMarkers(result.text)) {
+  for (const hash of findMarkers(served)) {
     hashToolMap.delete(hash) // refresh insertion order on re-emit (mirrors vendor put())
     hashToolMap.set(hash, toolName)
   }
@@ -120,13 +131,6 @@ export function maybeCompress(toolName: string, text: string): string {
     if (oldest === undefined) break
     hashToolMap.delete(oldest)
   }
-  // Never prepend onto smart_crusher output — that strategy emits valid JSON.
-  const served =
-    result.strategy === "smart_crusher"
-      ? result.text
-      : head === null
-        ? result.text
-        : dedupeMetaHead(head, result.text)
   recordCcrOutcome(toolName, text.length, served.length)
   return served
 }
@@ -135,9 +139,22 @@ export function maybeCompress(toolName: string, text: string): string {
 // <<ccr:...>> marker breaks the retrieval contract (vendor router step 12.5 fail-opens
 // store-side; this is the Foreman-side belt). Empty output from non-empty input would
 // 400 the entire Anthropic request. Either case: discard the digest, keep the original.
+//
+// v0.6.14 adds the third guard, and it is the one that protects meaning rather than
+// plumbing: the compressed tools are run_tests and invoke_advisor, whose output the
+// pit-boss reads to decide a verdict. A digest that drops the failing file:line, the
+// exit code, or a test count is structurally valid and semantically useless. The
+// protected-literal check rejects a digest that lost or invented any literal a reader
+// cannot reconstruct; deduplicating a repeated one is allowed.
 export function lossyGuardsReject(original: string, compressedText: string): boolean {
   if (findMarkers(compressedText).length === 0) return true
   if (compressedText.trim() === "" && original.trim() !== "") return true
+  const fidelity = checkLiteralFidelity(original, compressedText)
+  if (!fidelity.ok) {
+    // Diagnostic only: the caller serves the original, so this is never a hard failure.
+    console.error(`[foreman] compression rejected — ${describeFidelityFailure(fidelity)}`)
+    return true
+  }
   return false
 }
 

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.6.14 - 2026-09-09
+
+Foreman compresses `run_tests` and `invoke_advisor` output before the pit-boss reads it, and the pit-boss reads the failing `file:line` and the exit code out of exactly that text to reach a verdict. The only guard on the compressed digest was that a retrieval marker survived and the output was non-empty, so a digest could drop every location in a failure report and still be served.
+
+- **A protected-literal check now compares the original against the text actually served.** A critical literal lost entirely, or invented from nothing, discards the digest and serves the original unchanged; the reason goes to stderr. Nothing is ever rewritten.
+- **Which classes gate was decided by measurement, not taste.** Compressing this repository's own 5,000-line test fixture keeps 4 of 4 paths and drops 103 of 103 incidental `45ms`-style timings. Dropping bulk repetition is the compressor's whole purpose, so gating on every class would reject honest work and gating on none would leave the original hole. Locations, paths and the exit code gate; everything else is counted for diagnosis. A repeated literal deduplicated to a lower non-zero count is allowed, because the value is still recoverable.
+- **The check runs after the meta head is re-prepended**, not on the raw digest. Foreman puts the exit code back itself, so checking earlier failed every compression for losing a literal Foreman was about to restore.
+- A file extension must start with a letter, so an address such as `127.0.0.1:5432` is not read as a source location and its absence does not block a digest.
+- Bumped package to `0.6.14`.
+
 ## 0.6.13 - 2026-09-09
 
 Codex host only. When a phase checkpoint needs an advisor review and neither the Claude nor the Gemini CLI is reachable, the last rung used to be two adversarial self-review passes in the pit-boss's own seat. On Codex that is one context talking to itself. It now runs a **review fan** on Codex's own subagents instead.
