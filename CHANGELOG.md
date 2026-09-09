@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.6.11 - 2026-09-08
+
+An adversarial review of 0.6.10 broke the repository guard in nine ways, each reproduced against a real repository before it was accepted. The headline defect: the comparison diffed **path sets**, so a file that was already dirty before the worker ran was still dirty afterwards, and a worker overwriting the user's uncommitted work in a file outside the brief returned `ok`. That is the exact loss the guard exists to prevent, so this release reworks the model rather than patching the symptoms.
+
+- **The comparison sees content, not just paths.** Every changed path carries a fingerprint for both the work tree (sha256 of the bytes) and the index (the staged blob id). An already-dirty file whose content or staged blob changed outside the authorized set is now a violation, as is a change to its status.
+- **An unreadable tree is a refusal, never a clean one.** Every git probe is checked for exit status, timeout, and output truncation. Before, a failing `status` contributed an empty dirty list, so a corrupt index produced a clean-looking snapshot and an unauthorized edit compared green. A missing HEAD, a missing stash ref, and an unset config remain states, not failures. A failed comparison records nothing, so the verdict stays blocked.
+- **The baseline and the authorized set are frozen.** A second `snapshot` for the same attempt is refused, because re-taking it replaced a recorded violation and then passed. `compare` no longer accepts `allowed_files`, because widening authorization after the worker ran cleared the worker's own mutation. Both were reproducible ways to retry until the guard turned green.
+- **Paths round-trip correctly.** Status is read NUL-delimited with `-uall` and `core.quotepath=false`. Untracked directories expand to individual files instead of collapsing to `src/`, which had hidden new files inside them and falsely flagged authorized ones. Unicode and spaced names survive, and a file literally named `x -> a.ts` is no longer parsed as a rename and authorized as `a.ts`.
+- **The snapshot records the repository root.** `project_dir` is caller-supplied, and a clean clone with the same HEAD could clear the real tree; a comparison run against a different checkout is now a violation.
+- **Foreman's own state files are excluded.** The pit-boss writes progress, journal, and ledger during a unit, so counting them as worker mutations reported a violation on every real run.
+- **A recorded violation outlives its attempt.** Matching only the current attempt let a violation be abandoned by allocating another one, since a direct fix bumps `attempt_seq` without adding a delegation. A violation now also reopens a standing pass to `pending`, the way a rejection does: a pass must not outlive its guard.
+- **Truncation blocks only on real overflow**, and the entry cap is 200. Fifty unchanged dirty files previously blocked a repository that had done nothing wrong. An authorized repair that restores committed content is allowed, instead of being reported as destroyed work.
+- Tool responses are scrubbed through the redaction path. `tests/repoGuard.test.ts` carries a case for every defect above and drives real git repositories throughout.
+- Bumped package to `0.6.11`.
+
 ## 0.6.10 - 2026-09-08
 
 An advisor review named Foreman's ceremony as its biggest weakness, and singled out bookkeeping that the protocol asks a model to perform by hand. The repository guard was the clearest case: two paragraphs of prose telling the pit-boss to run six git commands before an editing worker, hold the result in conversation context, and compare by eye afterwards. A compaction between those two points destroyed the baseline silently, and nothing was recorded, so a skipped check and a passed check looked identical in the ledger.

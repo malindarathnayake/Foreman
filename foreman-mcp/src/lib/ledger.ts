@@ -633,9 +633,18 @@ async function applyOperation(
         // written before this version keep their existing behavior. Once a snapshot exists,
         // the pass needs its comparison to have cleared — Foreman wrote both, so this is a
         // fact about the tree rather than an attestation about it.
+        //
+        // v0.6.11: a RECORDED VIOLATION outlives its attempt. Matching only the current
+        // attempt let a violation be abandoned by allocating another one — a direct fix
+        // bumps attempt_seq without adding a delegation, and the block fell away with it.
+        // An unfinished guard still only gates its own attempt; a violation gates until a
+        // later comparison clears it.
         const guarded = unit.delegations?.filter((d) => d.guard !== undefined) ?? []
         const latestGuarded = guarded.length > 0 ? guarded[guarded.length - 1] : undefined
-        if (latestGuarded?.guard && latestGuarded.attempt === unit.attempt_seq) {
+        const gatesThisPass =
+          latestGuarded?.guard !== undefined &&
+          (latestGuarded.attempt === unit.attempt_seq || latestGuarded.guard.result === "violation")
+        if (latestGuarded?.guard && gatesThisPass) {
           const g = latestGuarded.guard
           if (g.result !== "ok") {
             if (data.user_override !== true) {
@@ -1111,8 +1120,8 @@ export async function recordRepoGuard(
   filePath: string,
   phase: string,
   unitId: string,
-  patch: DelegationGuard | { result: "ok" | "violation"; violations?: string[]; allowed_files?: string[] }
-): Promise<{ attempt: number }> {
+  patch: DelegationGuard | { result: "ok" | "violation"; violations?: string[] }
+): Promise<{ attempt: number; reopened: boolean }> {
   return withLedgerLock(filePath, async () => {
     const read = await readLedgerWithStatus(filePath)
     const ledger = read.ledger
@@ -1131,7 +1140,15 @@ export async function recordRepoGuard(
         "The order is set_unit_status s:'delegated' → repo_guard snapshot → spawn the worker → repo_guard compare."
       )
     }
+    let reopened = false
     if ("snapshot" in patch) {
+      if (latest.guard) {
+        throw new Error(
+          `GUARD BLOCKED: unit '${unitId}' attempt #${latest.attempt} already has a baseline. ` +
+          "A baseline is frozen for the life of an attempt — replacing it would discard the comparison recorded against it. " +
+          "Record a new delegation for the next attempt, or compare against this baseline."
+        )
+      }
       latest.guard = patch
     } else {
       if (!latest.guard) {
@@ -1141,9 +1158,16 @@ export async function recordRepoGuard(
         )
       }
       latest.guard = { ...latest.guard, ...patch, checked_ts: new Date().toISOString() }
+      // A violation found after the unit already passed reopens it, the same way a
+      // rejection does (v0.6.0). A standing pass must not outlive its own guard.
+      if (patch.result === "violation" && unit.v === "pass") {
+        unit.v = "pending"
+        unit.needs_attempt = true
+        reopened = true
+      }
     }
     ledger.ts = new Date().toISOString()
     await atomicWriteFile(filePath, JSON.stringify(ledger), { scrub })
-    return { attempt: latest.attempt }
+    return { attempt: latest.attempt, reopened }
   })
 }

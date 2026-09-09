@@ -1,44 +1,80 @@
 /**
- * Repository guard (v0.6.10) — the shared-tree ownership check, executed by Foreman
- * instead of described to the model.
+ * Repository guard (v0.6.10, reworked in v0.6.11) — the shared-tree ownership check,
+ * executed by Foreman instead of described to the model.
  *
  * The implementor protocol has always required a before/after repository-state
- * comparison around every editing worker: capture branch, HEAD, stash, index, and dirty
- * paths before the spawn, compare after it, hard-stop on any mutation outside the brief.
- * Until now that was prose the pit-boss executed by hand, holding the "before" state in
- * conversation context. Two things went wrong with that: a compaction between the two
- * points silently destroyed the baseline, and nothing was recorded, so a skipped check
- * and a passed check looked identical afterwards.
+ * comparison around every editing worker. Until 0.6.10 that was prose the pit-boss ran by
+ * hand, holding the baseline in conversation context, where a compaction destroyed it
+ * silently and a skipped check looked exactly like a passed one.
  *
- * This module runs the commands and computes the comparison. The ledger stores the
- * snapshot on the delegation entry and refuses a pass verdict whose guard did not clear
- * (lib/ledger.ts). Foreman authors the result, so the check is a fact rather than an
- * attestation.
+ * 0.6.10 moved the commands into Foreman but compared PATH SETS, and an adversarial
+ * review reproduced the consequence: a file that was already dirty before the worker ran
+ * stayed dirty afterwards, so overwriting the user's uncommitted work returned `ok` —
+ * precisely the loss the guard exists to prevent. That review also showed a failed git
+ * probe reading as a clean tree, and the model re-taking the baseline or widening the
+ * authorized file list until the comparison passed.
+ *
+ * This version fixes the model rather than the symptoms:
+ *   - Every dirty path carries a CONTENT fingerprint for both the work tree and the
+ *     index, so a change to an already-dirty file is visible.
+ *   - Every git probe is checked for exit status, timeout, and output truncation. A
+ *     failed probe is a refusal; it is never read as a clean tree.
+ *   - The authorized file set is frozen at snapshot time, before the worker can act.
+ *   - Paths are read NUL-delimited with untracked directories expanded and quoting off,
+ *     so unicode names, spaces, subdirectories, and a literal " -> " in a filename all
+ *     survive the round trip.
  *
  * Fail-open boundary: a directory that is not a git work tree, or a host with no git on
  * PATH, returns `n/a`. Consumer repos without git are legal and must keep working, the
- * same rule the .foremanenv refusal probe already follows.
+ * same rule the .foremanenv refusal probe already follows. That is distinct from a git
+ * command FAILING, which is a refusal.
  */
 
 import { createHash } from "crypto"
+import fs from "fs/promises"
+import path from "path"
 import { runExternalCli } from "./externalCli.js"
-import type { RepoSnapshot } from "../types.js"
+import type { RepoEntry, RepoSnapshot } from "../types.js"
 
 const GIT_TIMEOUT_MS = 10_000
 
-/** Paths kept per list. Delegations cap at 20, so this bounds the ledger's growth. */
-export const MAX_PATHS = 50
-/** Longest single path retained; longer ones are truncated with a marker. */
+/** Entries retained per snapshot. Delegations cap at 20, so this bounds ledger growth. */
+export const MAX_ENTRIES = 200
+/** Longest single path retained. */
 export const MAX_PATH_LEN = 400
 /** Most file arguments accepted for the line-ending probe. */
 export const MAX_FILE_ARGS = 100
+/** Files larger than this are fingerprinted by size alone. */
+const MAX_HASH_BYTES = 8 * 1024 * 1024
 
-async function git(dir: string, args: string[]): Promise<{ ok: boolean; out: string }> {
-  const result = await runExternalCli("git", ["-C", dir, ...args], GIT_TIMEOUT_MS)
+/**
+ * Foreman's own state files are written by Foreman during the unit, not by the worker.
+ * Counting them as worker mutations made every real run report a violation.
+ */
+const FOREMAN_STATE = new Set([
+  ".foreman-ledger.json",
+  ".foreman-progress.json",
+  ".foreman-journal.json",
+  ".foreman-events.jsonl",
+])
+
+function isForemanState(p: string): boolean {
+  const base = p.split(/[\\/]/).pop() ?? p
+  return FOREMAN_STATE.has(base) || base.startsWith(".foreman-ledger.json.") || base.endsWith(".tmp")
+}
+
+interface GitResult {
+  ok: boolean
+  out: string
+  truncated: boolean
+}
+
+async function git(dir: string, args: string[]): Promise<GitResult> {
+  const r = await runExternalCli("git", ["-C", dir, ...args], GIT_TIMEOUT_MS)
   // Trailing whitespace only. `git status --porcelain` encodes status in the first two
-  // columns, so a modified file's line begins with a space; trimming both ends would eat
-  // it and every path would come back missing its first character.
-  return { ok: result.exitCode === 0 && !result.timedOut, out: result.stdout.replace(/\s+$/, "") }
+  // columns, so a modified file's record begins with a space; trimming both ends would
+  // eat it and every path would come back missing its first character.
+  return { ok: r.exitCode === 0 && !r.timedOut, out: r.stdout.replace(/\s+$/, ""), truncated: r.truncated === true }
 }
 
 /**
@@ -59,35 +95,60 @@ export function invalidPathReason(p: string): string | null {
   return null
 }
 
-function cap(list: string[]): string[] {
-  return list
-    .slice(0, MAX_PATHS)
-    .map((p) => (p.length > MAX_PATH_LEN ? `${p.slice(0, MAX_PATH_LEN)}…` : p))
-}
-
-function lines(out: string): string[] {
-  return out.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 0)
+export function normalizePath(p: string): string {
+  return p.replace(/\\/g, "/").replace(/^\.\//, "")
 }
 
 /**
- * Same split, but leading whitespace is preserved: `git status --porcelain` encodes the
- * index and work-tree status in the first two columns, and a modified file's line starts
- * with a space (" M path"). Trimming it first silently ate one character of every path.
+ * Parse `git status --porcelain -z -uall`. Records are NUL-separated and unquoted. A
+ * rename or copy emits the destination record followed by a second record holding the
+ * ORIGIN path, which must be consumed rather than read as an entry of its own — that
+ * two-record shape is also why a filename containing a literal " -> " cannot be
+ * misread here.
  */
-function rawLines(out: string): string[] {
-  return out.split(/\r?\n/).filter((l) => l.trim().length > 0)
+export function parsePorcelainZ(out: string): Array<{ path: string; code: string }> {
+  const records = out.split("\0").filter((r) => r.length > 0)
+  const entries: Array<{ path: string; code: string }> = []
+  for (let i = 0; i < records.length; i++) {
+    const rec = records[i]
+    if (rec.length < 4) continue
+    const code = rec.slice(0, 2)
+    const p = rec.slice(3)
+    if (code[0] === "R" || code[0] === "C") {
+      const origin = records[++i]
+      if (origin) entries.push({ path: normalizePath(origin), code: `${code[0]}<` })
+    }
+    entries.push({ path: normalizePath(p), code })
+  }
+  return entries
 }
 
-/**
- * Path out of a `git status --porcelain` line. The first three characters are the two
- * status columns and their separator. Rename entries carry `old -> new`; the destination
- * is the path that now exists. Git quotes unusual names, and both sides of a comparison
- * quote identically, so the quoted form is compared as-is.
- */
-export function porcelainPath(line: string): string {
-  const body = line.length > 3 ? line.slice(3) : line.trim()
-  const arrow = body.indexOf(" -> ")
-  return (arrow === -1 ? body : body.slice(arrow + 4)).trim()
+/** sha256 of a work-tree file, "absent" when it is gone, "big:<n>" past the hash cap. */
+async function worktreeFingerprint(dir: string, rel: string): Promise<string> {
+  try {
+    const abs = path.join(dir, rel)
+    const stat = await fs.stat(abs)
+    if (stat.isDirectory()) return "dir"
+    if (stat.size > MAX_HASH_BYTES) return `big:${stat.size}`
+    const buf = await fs.readFile(abs)
+    return createHash("sha256").update(buf).digest("hex").slice(0, 16)
+  } catch {
+    return "absent"
+  }
+}
+
+/** Staged blob ids from one `git ls-files -s -z` call: the index's own content identity. */
+function parseLsFiles(out: string): Map<string, string> {
+  const map = new Map<string, string>()
+  for (const rec of out.split("\0")) {
+    // "<mode> <sha> <stage>\t<path>"
+    const tab = rec.indexOf("\t")
+    if (tab === -1) continue
+    const fields = rec.slice(0, tab).split(/\s+/)
+    if (fields.length < 2) continue
+    map.set(normalizePath(rec.slice(tab + 1)), fields[1].slice(0, 16))
+  }
+  return map
 }
 
 export function snapshotHash(s: Omit<RepoSnapshot, "hash">): string {
@@ -98,13 +159,20 @@ export type SnapshotOutcome =
   | { status: "n/a"; reason: string }
   | { status: "ok"; snapshot: RepoSnapshot }
   | { status: "refused"; reason: string }
+  | { status: "failed"; reason: string }
 
 /**
  * Capture the repository state that defines shared-tree ownership. `files` scopes the
- * line-ending probe to the unit's files; it never widens what is inspected elsewhere.
+ * line-ending probe to the unit's files; `allowed` is the authorized set frozen onto the
+ * snapshot. Any probe that fails, times out, or truncates makes the whole snapshot a
+ * failure: an incomplete reading of the tree must never be recorded as a clean one.
  */
-export async function takeSnapshot(dir: string, files: string[] = []): Promise<SnapshotOutcome> {
-  for (const f of files) {
+export async function takeSnapshot(
+  dir: string,
+  files: string[] = [],
+  allowed: string[] = []
+): Promise<SnapshotOutcome> {
+  for (const f of [...files, ...allowed]) {
     const why = invalidPathReason(f)
     if (why) return { status: "refused", reason: `file '${f.slice(0, 120)}': ${why}` }
   }
@@ -117,48 +185,90 @@ export async function takeSnapshot(dir: string, files: string[] = []): Promise<S
     return { status: "n/a", reason: "not inside a git work tree (or git is unavailable); the guard does not apply" }
   }
 
-  const [head, branch, stashRef, stashList, staged, status, autocrlf] = await Promise.all([
+  const [root, head, branch, stashRef, stashList, status, lsFiles, autocrlf] = await Promise.all([
+    git(dir, ["rev-parse", "--show-toplevel"]),
     git(dir, ["rev-parse", "HEAD"]),
-    git(dir, ["rev-parse", "--abbrev-ref", "HEAD"]),
+    // symbolic-ref answers on an unborn branch, where rev-parse --abbrev-ref cannot.
+    git(dir, ["symbolic-ref", "--short", "HEAD"]),
     git(dir, ["rev-parse", "--verify", "--quiet", "refs/stash"]),
     git(dir, ["stash", "list"]),
-    git(dir, ["diff", "--cached", "--name-only"]),
-    git(dir, ["status", "--porcelain"]),
+    git(dir, ["-c", "core.quotepath=false", "status", "--porcelain", "-z", "-uall"]),
+    git(dir, ["ls-files", "-s", "-z"]),
     git(dir, ["config", "--get", "core.autocrlf"]),
   ])
 
-  // A repository with no commits yet has no HEAD; that is a state, not a failure.
-  const eol = files.length > 0 ? await git(dir, ["ls-files", "--eol", "--", ...files]) : { ok: true, out: "" }
+  // A missing HEAD (no commits), a missing stash ref, and an unset config are STATES.
+  // A failing status, ls-files, toplevel, or stash-list is a failure to observe the tree.
+  const failed = [
+    ["rev-parse --show-toplevel", root],
+    ["stash list", stashList],
+    ["status --porcelain", status],
+    ["ls-files -s", lsFiles],
+  ].find(([, r]) => !(r as GitResult).ok || (r as GitResult).truncated)
+  if (failed) {
+    const r = failed[1] as GitResult
+    return {
+      status: "failed",
+      reason: `git ${failed[0]} ${r.truncated ? "output exceeded the capture limit" : "failed or timed out"}; the tree could not be read completely`,
+    }
+  }
+  if (!branch.ok && !head.ok) {
+    // Unborn branch with no symbolic ref is still readable; only note it.
+  }
+
+  const eol = files.length > 0 ? await git(dir, ["ls-files", "--eol", "--", ...files]) : { ok: true, out: "", truncated: false }
+  if (!eol.ok || eol.truncated) {
+    return { status: "failed", reason: "git ls-files --eol failed or truncated; the line-ending state could not be read" }
+  }
+
+  const staged = parseLsFiles(lsFiles.out)
+  const parsed = parsePorcelainZ(status.out).filter((e) => !isForemanState(e.path))
+  const truncated = parsed.length > MAX_ENTRIES
+  const kept = parsed.slice(0, MAX_ENTRIES)
+
+  const entries: RepoEntry[] = []
+  for (const e of kept) {
+    entries.push({
+      path: e.path.length > MAX_PATH_LEN ? `${e.path.slice(0, MAX_PATH_LEN)}…` : e.path,
+      code: e.code,
+      wt: await worktreeFingerprint(dir, e.path),
+      idx: staged.get(e.path) ?? "none",
+    })
+  }
+  entries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
 
   const base = {
-    branch: branch.ok ? branch.out : "unknown",
+    root: normalizePath(root.out),
+    branch: branch.ok && branch.out.length > 0 ? branch.out : "detached",
     head: head.ok ? head.out : "none",
     stash_ref: stashRef.ok && stashRef.out.length > 0 ? stashRef.out : "none",
-    stash_count: stashList.ok ? lines(stashList.out).length : 0,
-    staged: cap(lines(staged.out)),
-    dirty: cap(rawLines(status.out).map(porcelainPath)),
+    stash_count: stashList.out.length === 0 ? 0 : stashList.out.split(/\r?\n/).filter((l) => l.trim()).length,
     autocrlf: autocrlf.ok && autocrlf.out.length > 0 ? autocrlf.out : "unset",
-    eol: cap(lines(eol.out)),
+    eol: eol.out.split(/\r?\n/).filter((l) => l.trim().length > 0).slice(0, MAX_FILE_ARGS),
+    entries,
+    truncated,
+    allowed: allowed.map(normalizePath).slice(0, MAX_FILE_ARGS),
   }
   return { status: "ok", snapshot: { ...base, hash: snapshotHash(base) } }
-}
-
-function normalize(p: string): string {
-  return p.replace(/\\/g, "/").replace(/^\.\//, "").replace(/^"|"$/g, "")
 }
 
 /**
  * Compare a stored snapshot against the live one and name every ownership breach.
  *
- * `allowedFiles` are the paths the brief authorized. A dirty path that appears inside
- * that set is the work itself. Anything else — a moved HEAD, a touched index, a changed
- * stash, a dirty path outside the brief, or a pre-existing dirty path that vanished — is
- * a mutation of state the user owns.
+ * The authorized set comes from the SNAPSHOT, frozen before the worker ran, so widening
+ * it afterwards cannot clear a violation. A path is compared on identity and on content:
+ * a file that was already dirty and stays dirty is still a violation when its bytes or
+ * its staged blob changed, which is how a worker overwriting the user's uncommitted work
+ * is caught.
  */
-export function compareSnapshots(before: RepoSnapshot, after: RepoSnapshot, allowedFiles: string[]): string[] {
+export function compareSnapshots(before: RepoSnapshot, after: RepoSnapshot): string[] {
   const violations: string[] = []
-  const allowed = new Set(allowedFiles.map(normalize))
+  const allowed = new Set((before.allowed ?? []).map(normalizePath))
 
+  if (before.root !== after.root) {
+    violations.push(`different repository: baseline was taken in '${before.root}', comparison ran in '${after.root}'`)
+    return violations
+  }
   if (before.branch !== after.branch) {
     violations.push(`branch changed: '${before.branch}' -> '${after.branch}'`)
   }
@@ -166,34 +276,37 @@ export function compareSnapshots(before: RepoSnapshot, after: RepoSnapshot, allo
     violations.push(`HEAD moved: ${before.head.slice(0, 12)} -> ${after.head.slice(0, 12)} (a worker must not commit, reset, or checkout)`)
   }
   if (before.stash_ref !== after.stash_ref || before.stash_count !== after.stash_count) {
-    violations.push(`stash changed: ref ${before.stash_ref.slice(0, 12)}/${before.stash_count} entries -> ${after.stash_ref.slice(0, 12)}/${after.stash_count}`)
+    violations.push(`stash changed: ${before.stash_ref.slice(0, 12)}/${before.stash_count} entries -> ${after.stash_ref.slice(0, 12)}/${after.stash_count}`)
   }
   if (before.autocrlf !== after.autocrlf) {
     violations.push(`core.autocrlf changed: '${before.autocrlf}' -> '${after.autocrlf}'`)
   }
-
-  const stagedBefore = new Set(before.staged.map(normalize))
-  const stagedAfter = new Set(after.staged.map(normalize))
-  for (const p of stagedAfter) {
-    if (!stagedBefore.has(p)) violations.push(`file staged by the worker: ${p}`)
-  }
-  for (const p of stagedBefore) {
-    if (!stagedAfter.has(p)) violations.push(`file unstaged by the worker: ${p}`)
+  if (before.truncated || after.truncated) {
+    violations.push(`more than ${MAX_ENTRIES} changed paths; the comparison is incomplete and cannot clear this unit`)
   }
 
-  const dirtyBefore = new Set(before.dirty.map(normalize))
-  const dirtyAfter = new Set(after.dirty.map(normalize))
-  for (const p of dirtyAfter) {
-    if (!dirtyBefore.has(p) && !allowed.has(p)) violations.push(`file changed outside the brief: ${p}`)
-  }
-  for (const p of dirtyBefore) {
-    if (!dirtyAfter.has(p)) violations.push(`pre-existing uncommitted change disappeared: ${p}`)
-  }
+  const b = new Map(before.entries.map((e) => [e.path, e]))
+  const a = new Map(after.entries.map((e) => [e.path, e]))
 
-  // Truncation makes an absent path ambiguous rather than proven-clean; say so once
-  // instead of reporting a difference the capped list cannot support.
-  if (before.dirty.length >= MAX_PATHS || after.dirty.length >= MAX_PATHS) {
-    violations.push(`dirty-path list hit the ${MAX_PATHS}-entry cap; the comparison is incomplete and cannot clear this unit`)
+  for (const [p, entry] of a) {
+    if (allowed.has(p)) continue
+    const was = b.get(p)
+    if (!was) {
+      violations.push(`file changed outside the brief: ${p}`)
+    } else if (was.wt !== entry.wt) {
+      violations.push(`pre-existing uncommitted change overwritten outside the brief: ${p}`)
+    } else if (was.idx !== entry.idx) {
+      violations.push(`staged content changed outside the brief: ${p}`)
+    } else if (was.code !== entry.code) {
+      violations.push(`git status of a file outside the brief changed: ${p} (${was.code.trim()} -> ${entry.code.trim()})`)
+    }
+  }
+  for (const [p] of b) {
+    // An authorized file may legitimately be restored to its committed content, which
+    // removes it from the dirty set; that is the repair case, not a destroyed change.
+    if (!a.has(p) && !allowed.has(p)) {
+      violations.push(`pre-existing uncommitted change disappeared: ${p}`)
+    }
   }
   return violations
 }

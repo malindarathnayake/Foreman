@@ -417,7 +417,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     {
       title: "Repository Guard",
       description:
-        "Runs the shared-tree ownership check around an editing worker and records it on the unit's newest delegation. 'snapshot' captures branch, HEAD, stash, staged and dirty paths, core.autocrlf, and line-ending attributes before the worker runs; 'compare' re-reads them afterwards and names every mutation outside allowed_files — a moved HEAD, a touched index or stash, a changed config, a file changed outside the brief, or a pre-existing uncommitted change that disappeared. Foreman writes both results, so set_verdict can refuse a pass whose guard did not clear (REPOSITORY GUARD). Outside a git work tree it reports n/a and gates nothing. Order: set_unit_status s:'delegated' -> snapshot -> spawn the worker -> compare -> set_verdict.",
+        "Runs the shared-tree ownership check around an editing worker and records it on the unit's newest delegation. 'snapshot' captures repository root, branch, HEAD, stash, every changed path with a content fingerprint, core.autocrlf, and line-ending attributes before the worker runs, and freezes allowed_files onto that baseline; 'compare' re-reads the state afterwards and names every mutation outside the frozen set — a moved HEAD, a touched index or stash, a changed config, a file changed outside the brief, an already-dirty file whose content was overwritten, or a pre-existing uncommitted change that disappeared. Foreman writes both results, so set_verdict refuses a pass whose guard did not clear (REPOSITORY GUARD). A baseline cannot be re-taken for an attempt that has one, and compare takes no allowed_files of its own. Any git probe that fails, times out, or truncates is a refusal, never a clean tree. Outside a git work tree it reports n/a and gates nothing. Order: set_unit_status s:'delegated' -> snapshot -> spawn the worker -> compare -> set_verdict.",
       inputSchema: z.strictObject({
         operation: z.enum(["snapshot", "compare"]),
         phase: z.string().min(1).max(10000),
@@ -425,7 +425,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         files: z.array(z.string().max(4096)).max(100).optional()
           .describe("The unit's files, for the line-ending probe. Relative paths inside the project."),
         allowed_files: z.array(z.string().max(4096)).max(100).optional()
-          .describe("compare only: the files the brief authorized. A dirty path outside this set is a violation."),
+          .describe("snapshot only: the files the brief authorized, frozen onto the baseline. A change outside this set is a violation. Refused on compare."),
         project_dir: z.string().min(1).optional().describe("Repository root (default: process.cwd())"),
       }),
       outputSchema: TextOutputSchema,
