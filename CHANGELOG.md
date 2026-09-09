@@ -1,5 +1,70 @@
 # Changelog
 
+## 0.6.12 - 2026-09-09
+
+`repo_guard` was unusable on any repository larger than this one, reported from the field the day after it shipped.
+
+- **The index fingerprints are read for the changed paths, not the whole index.** They came from an unscoped `git ls-files -s`, which emits a row per *tracked file*, so its output scales with repository size rather than with the change being compared. It measured 13 KB against the 16 KB capture limit in this repo, which is why every test here passed, and it refused every snapshot on a larger repository with `output exceeded the capture limit`. The call is now scoped to the paths `git status` actually reported, batched by argument length so a long command line cannot fail on Windows.
+- **The changed-path limit is a default, not a wall.** `max_entries` on `snapshot` defaults to 500 and is raisable to 5000; `compare` reuses whatever the baseline was taken under, so both sides are measured the same way. A tree that legitimately carries more changes than the default can still be guarded by asking for a bigger comparison, and the truncation message now says so instead of only reporting that it gave up.
+- **Git output budgets are sized from that limit.** `runExternalCli` takes an optional `maxStdout` with a 2 MB ceiling. The default stays 16 KB, which is the right budget for advisor and test output because that is prose a model reads; a machine-readable inventory of changed paths is a different thing, and truncating one silently is a correctness bug rather than a display one.
+- Regression test: a repository whose full index exceeds the capture limit now snapshots correctly for a one-file change. That is the case the original test suite could not see, because both the temporary repositories it built and this repository fit under the limit.
+- Bumped package to `0.6.12`.
+
+## 0.6.11 - 2026-09-08
+
+An adversarial review of 0.6.10 broke the repository guard in nine ways, each reproduced against a real repository before it was accepted. The headline defect: the comparison diffed **path sets**, so a file that was already dirty before the worker ran was still dirty afterwards, and a worker overwriting the user's uncommitted work in a file outside the brief returned `ok`. That is the exact loss the guard exists to prevent, so this release reworks the model rather than patching the symptoms.
+
+- **The comparison sees content, not just paths.** Every changed path carries a fingerprint for both the work tree (sha256 of the bytes) and the index (the staged blob id). An already-dirty file whose content or staged blob changed outside the authorized set is now a violation, as is a change to its status.
+- **An unreadable tree is a refusal, never a clean one.** Every git probe is checked for exit status, timeout, and output truncation. Before, a failing `status` contributed an empty dirty list, so a corrupt index produced a clean-looking snapshot and an unauthorized edit compared green. A missing HEAD, a missing stash ref, and an unset config remain states, not failures. A failed comparison records nothing, so the verdict stays blocked.
+- **The baseline and the authorized set are frozen.** A second `snapshot` for the same attempt is refused, because re-taking it replaced a recorded violation and then passed. `compare` no longer accepts `allowed_files`, because widening authorization after the worker ran cleared the worker's own mutation. Both were reproducible ways to retry until the guard turned green.
+- **Paths round-trip correctly.** Status is read NUL-delimited with `-uall` and `core.quotepath=false`. Untracked directories expand to individual files instead of collapsing to `src/`, which had hidden new files inside them and falsely flagged authorized ones. Unicode and spaced names survive, and a file literally named `x -> a.ts` is no longer parsed as a rename and authorized as `a.ts`.
+- **The snapshot records the repository root.** `project_dir` is caller-supplied, and a clean clone with the same HEAD could clear the real tree; a comparison run against a different checkout is now a violation.
+- **Foreman's own state files are excluded.** The pit-boss writes progress, journal, and ledger during a unit, so counting them as worker mutations reported a violation on every real run.
+- **A recorded violation outlives its attempt.** Matching only the current attempt let a violation be abandoned by allocating another one, since a direct fix bumps `attempt_seq` without adding a delegation. A violation now also reopens a standing pass to `pending`, the way a rejection does: a pass must not outlive its guard.
+- **Truncation blocks only on real overflow**, and the entry cap is 200. Fifty unchanged dirty files previously blocked a repository that had done nothing wrong. An authorized repair that restores committed content is allowed, instead of being reported as destroyed work.
+- Tool responses are scrubbed through the redaction path. `tests/repoGuard.test.ts` carries a case for every defect above and drives real git repositories throughout.
+- Bumped package to `0.6.11`.
+
+## 0.6.10 - 2026-09-08
+
+An advisor review named Foreman's ceremony as its biggest weakness, and singled out bookkeeping that the protocol asks a model to perform by hand. The repository guard was the clearest case: two paragraphs of prose telling the pit-boss to run six git commands before an editing worker, hold the result in conversation context, and compare by eye afterwards. A compaction between those two points destroyed the baseline silently, and nothing was recorded, so a skipped check and a passed check looked identical in the ledger.
+
+- **`repo_guard` (27th tool) runs the shared-tree ownership check.** `snapshot` captures branch, HEAD, stash ref and count, staged and dirty paths, `core.autocrlf`, and `git ls-files --eol` for the unit's files, and records them on the unit's newest delegation. `compare` re-reads the same state after the worker returns and names every mutation outside `allowed_files`: a moved HEAD, a file staged or unstaged, a changed stash, a changed `core.autocrlf`, a file changed outside the brief, or a pre-existing uncommitted change that disappeared. The order is `set_unit_status s:'delegated'` → snapshot → spawn → compare.
+- **A pass verdict needs a cleared guard.** `set_verdict v:'pass'` is refused for an attempt whose delegation carries a snapshot with no comparison, or with a comparison that found violations (`REPOSITORY GUARD`). Foreman writes both the snapshot and the result, so the check is a fact about the tree rather than the pit-boss's account of one. `user_override` waives it and is recorded on the delegation as `guard_override`.
+- **Scoped so nothing existing breaks.** Enforcement applies only to a delegation that actually carries a snapshot. Outside a git work tree, or with git unavailable, the tool reports `n/a` and gates nothing, the same fail-open rule the `.foremanenv` refusal probe already follows. Ledgers written before this version, hosts that never call the tool, and a re-delegation whose new attempt has no snapshot are all unaffected.
+- **[CWE-88]** file paths reach a git command line, so every path is validated and the list is always placed after a `--` separator. A path that is absolute, escapes with `..`, or begins with `-` is refused before anything is spawned.
+- Two bugs found by running the guard against real repositories rather than reasoning about it: the git helper trimmed whole command output, which ate the leading status column of `git status --porcelain` and returned every path missing its first character; and a test that flipped `core.autocrlf` was a no-op against a machine whose global value was already set. Both are covered by regressions in `tests/repoGuard.test.ts`, which drives real git repositories throughout.
+- The implementor's shared-tree preflight and repository-state guard steps are now two tool calls instead of two paragraphs. Tool count 27.
+- Bumped package to `0.6.10`.
+
+## 0.6.9 - 2026-09-08
+
+Field-feedback round 6: the paid review loop at the phase gate. A pit-boss on another project ran six review rounds (two seats each, well over a million advisor tokens) on one phase because every LOW fix re-verdicted a unit, which staled the review, which demanded a fresh seat. Codex (`gpt-6-astra`) replayed the ledger against the diagnosis and found four enforcement holes; all four are closed here, and two of the proposed fixes (a non-gating `accepted` classification, a diff-only "delta" seat) were rejected as loopholes and did not ship.
+
+- **`REVIEW REQUIRED` says whether the verification path is open.** The gate error now ends with `VERIFICATION ELIGIBLE` and the exact `record_review { stage: "verification", ... }` shape to write, baseline timestamp and direct-fix attempts filled in, or `VERIFICATION NOT ELIGIBLE` with the one blocker. The check runs the same predicates the gate applies to a submitted record, and also confirms that recording the verification would not evict its own baseline.
+- **A verification baseline must be a complete seat.** A `completion: failed` or `partial` review, or a silent one (zero findings, no `checked[]`), can no longer anchor a `stage: verification` record. Before, the failed record went stale after the direct-fix re-verdict, the INCOMPLETE check stopped seeing it, and the gate passed with no completed independent review.
+- **Every attempt since the baseline must be a direct fix.** A worker delegation, or an `invoke_worker` attempt in the sidecar, recorded between the baseline review and the final literal fix is refused. Before, only the unit's current attempt was inspected, so a behaviour-changing worker attempt sandwiched between two reviews received no seat.
+- **Retention never evicts a record the gate is blocking on.** The 20-record cap stays, but a current review with a confirmed finding, an unsuperseded failed or silent seat, a current verification record, and the baseline it names are never dropped; oldest evictable records go first. Before, twenty clean reviews appended after a confirmed HIGH pushed it out of history and the gate passed with no waiver.
+- **A failed or silent seat is superseded by re-running it.** A later `completion: complete` record from the same advisor at the same stage clears the INCOMPLETE REVIEW block; a different advisor, a cross_exam, or another incomplete record does not, and a confirmed finding on the superseded record still blocks. Before, the only ways past a timed-out seat were a re-verdict (which staled every review) or an owner override.
+- Implementor checkpoint text names the hint and the re-run rule. New regression file `tests/fieldFeedback2026-09e.test.ts` mirrors each replayed sequence.
+- Bumped package to `0.6.9`.
+
+## 0.6.8 - 2026-09-05
+
+- **The Codex seat runs `gpt-6-astra` at `xhigh`.** Verified through the CLI first: codex-cli 0.152.0 answers "requires a newer version of Codex" for this id and refuses every other `*-astra` spelling outright on a ChatGPT account; 0.153.4 runs it and echoes `model: gpt-6-astra` and `reasoning effort: xhigh` in its header. `invoke_advisor` now reads that header and reports `model_served` and `reasoning_effort`; a model other than the pinned one is a failed seat (`model_substituted`), the same rule as the Gemini seat. Needs codex-cli 0.153.4 or newer.
+- Bumped package to `0.6.8`.
+
+## 0.6.7 - 2026-09-04
+
+- **The Gemini seat is pinned to `gemini-3.1-pro-preview`, and the served model is checked.** 0.6.6 pinned `gemini-3.8-flash` on the strength of a probe that only proved the id was accepted. The run stats told the truth: on that account the CLI served `gemini-3.5-flash` for the main request, silently, with exit 0 and a plausible answer, and did the same for `3.7-flash`. `gemini-3.1-pro-preview` is served faithfully and the API defaults Pro to thinking level `high`. `invoke_advisor` and `capability_check` now run gemini with `--output-format json`, read `model_served` and the thinking tokens from the stats, and treat a served model other than the pinned one as a failed seat (`model_substituted`), text kept for the record. Non-JSON output from an older CLI is handled as before with `model_served: unknown`.
+- Bumped package to `0.6.7`.
+
+## 0.6.6 - 2026-09-04
+
+- **The Gemini advisor seat runs `gemini-3.8-flash`.** `invoke_advisor` and `capability_check` pass the model id directly instead of `arch-review`, an alias that existed only in one machine's `~/.gemini/settings.json` (mapped to `gemini-3.1-pro-preview`) and could not resolve anywhere else. Verified through the CLI before the change: the id answers, and an unknown id fails with `ModelNotFoundError`, so the answer is not a silent fallback.
+- Gitleaks allowlist: the two aider fixture tokens are back. They live on in history after the file's removal in 0.6.3, and gitleaks scans every commit.
+- Bumped package to `0.6.6`.
+
 ## 0.6.5 - 2026-09-04
 
 Field-feedback round 5: six items from a fifth Fable 5.1 pit-boss run, validated by an adversarial Codex pass that overturned two of the proposed fixes.

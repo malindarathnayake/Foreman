@@ -48,7 +48,21 @@ describe("packed manifest", () => {
   const packageDir = fileURLToPath(new URL("..", import.meta.url))
   const npm = process.platform === "win32" ? "npm.cmd" : "npm"
 
-  function packedPaths(): string[] {
+  const REQUIRED_PATHS = [
+    "package.json",
+    "README.md",
+    "LICENSE",
+    "HOST-CONTRACT.md",
+    "dist/server.js",
+    "dist/docs/engineering-ethos.md",
+    "dist/preview/template.html",
+    "dist/preview/mermaid.min.js",
+    "src/skills/implementor.md",
+    "src/skills/_common-protocol.md",
+    "src/skills/_assists.md",
+  ]
+
+  function packOnce(): string[] {
     const out = execFileSync(npm, ["pack", "--dry-run", "--json", "--ignore-scripts"], {
       cwd: packageDir,
       shell: process.platform === "win32",
@@ -59,28 +73,33 @@ describe("packed manifest", () => {
     return manifest[0].files.map((f) => f.path)
   }
 
-  it("ships the runtime files and the bundled dependencies", () => {
+  // Under the full suite `npm pack --dry-run` alone can exceed vitest's default 5 s
+  // (observed: "Test timed out in 5000ms" with 45 other files running), hence PACK_TIMEOUT
+  // on both tests. protocolV2.test.ts and previewLifecycle.test.ts also run `npm run build`
+  // in beforeAll, and the build removes dist/ before tsc and copy-assets write it back, so a
+  // pack that lands in that window is re-read a few times while a required dist/ file is
+  // absent. The last attempt is returned as-is: a genuinely missing file still fails.
+  const PACK_TIMEOUT = 120_000
+  function packedPaths(): string[] {
+    let paths: string[] = []
+    for (let attempt = 0; attempt < 5; attempt++) {
+      paths = packOnce()
+      if (REQUIRED_PATHS.every((p) => paths.includes(p))) return paths
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000)
+    }
+    return paths
+  }
+
+  it("ships the runtime files and the bundled dependencies", { timeout: PACK_TIMEOUT }, () => {
     const paths = packedPaths()
-    for (const required of [
-      "package.json",
-      "README.md",
-      "LICENSE",
-      "HOST-CONTRACT.md",
-      "dist/server.js",
-      "dist/docs/engineering-ethos.md",
-      "dist/preview/template.html",
-      "dist/preview/mermaid.min.js",
-      "src/skills/implementor.md",
-      "src/skills/_common-protocol.md",
-      "src/skills/_assists.md",
-    ]) {
+    for (const required of REQUIRED_PATHS) {
       expect(paths, required).toContain(required)
     }
     expect(paths.some((p) => p.startsWith("node_modules/zod/")), "bundled zod").toBe(true)
     expect(paths.some((p) => p.startsWith("node_modules/context-crush/")), "bundled context-crush").toBe(true)
   })
 
-  it("ships nothing the runtime does not read", () => {
+  it("ships nothing the runtime does not read", { timeout: PACK_TIMEOUT }, () => {
     const own = packedPaths().filter((p) => !p.startsWith("node_modules/"))
     const forbidden: Array<[string, RegExp]> = [
       ["bench", /^bench\//],

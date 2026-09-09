@@ -1,0 +1,369 @@
+/**
+ * Repository guard (v0.6.10, reworked in v0.6.11) — the shared-tree ownership check,
+ * executed by Foreman instead of described to the model.
+ *
+ * The implementor protocol has always required a before/after repository-state
+ * comparison around every editing worker. Until 0.6.10 that was prose the pit-boss ran by
+ * hand, holding the baseline in conversation context, where a compaction destroyed it
+ * silently and a skipped check looked exactly like a passed one.
+ *
+ * 0.6.10 moved the commands into Foreman but compared PATH SETS, and an adversarial
+ * review reproduced the consequence: a file that was already dirty before the worker ran
+ * stayed dirty afterwards, so overwriting the user's uncommitted work returned `ok` —
+ * precisely the loss the guard exists to prevent. That review also showed a failed git
+ * probe reading as a clean tree, and the model re-taking the baseline or widening the
+ * authorized file list until the comparison passed.
+ *
+ * This version fixes the model rather than the symptoms:
+ *   - Every dirty path carries a CONTENT fingerprint for both the work tree and the
+ *     index, so a change to an already-dirty file is visible.
+ *   - Every git probe is checked for exit status, timeout, and output truncation. A
+ *     failed probe is a refusal; it is never read as a clean tree.
+ *   - The authorized file set is frozen at snapshot time, before the worker can act.
+ *   - Paths are read NUL-delimited with untracked directories expanded and quoting off,
+ *     so unicode names, spaces, subdirectories, and a literal " -> " in a filename all
+ *     survive the round trip.
+ *
+ * Fail-open boundary: a directory that is not a git work tree, or a host with no git on
+ * PATH, returns `n/a`. Consumer repos without git are legal and must keep working, the
+ * same rule the .foremanenv refusal probe already follows. That is distinct from a git
+ * command FAILING, which is a refusal.
+ */
+
+import { createHash } from "crypto"
+import fs from "fs/promises"
+import path from "path"
+import { runExternalCli } from "./externalCli.js"
+import type { RepoEntry, RepoSnapshot } from "../types.js"
+
+const GIT_TIMEOUT_MS = 10_000
+
+/**
+ * Changed paths retained per snapshot. Generous by default so ordinary work never hits
+ * it, and raisable per call (repo_guard `max_entries`) up to ENTRY_CEILING for a genuinely
+ * large change set — a fixed wall would refuse to guard the units that most need it.
+ * Delegations cap at 20, which is what bounds ledger growth.
+ */
+export const MAX_ENTRIES = 500
+/** Hard ceiling on a caller-raised entry limit. */
+export const ENTRY_CEILING = 5000
+/** Longest single path retained. */
+export const MAX_PATH_LEN = 400
+/** Most file arguments accepted for the line-ending probe. */
+export const MAX_FILE_ARGS = 100
+/** Files larger than this are fingerprinted by size alone. */
+const MAX_HASH_BYTES = 8 * 1024 * 1024
+
+/**
+ * Foreman's own state files are written by Foreman during the unit, not by the worker.
+ * Counting them as worker mutations made every real run report a violation.
+ */
+const FOREMAN_STATE = new Set([
+  ".foreman-ledger.json",
+  ".foreman-progress.json",
+  ".foreman-journal.json",
+  ".foreman-events.jsonl",
+])
+
+function isForemanState(p: string): boolean {
+  const base = p.split(/[\\/]/).pop() ?? p
+  return FOREMAN_STATE.has(base) || base.startsWith(".foreman-ledger.json.") || base.endsWith(".tmp")
+}
+
+interface GitResult {
+  ok: boolean
+  out: string
+  truncated: boolean
+}
+
+async function git(dir: string, args: string[], maxStdout?: number): Promise<GitResult> {
+  const r = await runExternalCli("git", ["-C", dir, ...args], GIT_TIMEOUT_MS, maxStdout ? { maxStdout } : undefined)
+  // Trailing whitespace only. `git status --porcelain` encodes status in the first two
+  // columns, so a modified file's record begins with a space; trimming both ends would
+  // eat it and every path would come back missing its first character.
+  return { ok: r.exitCode === 0 && !r.timedOut, out: r.stdout.replace(/\s+$/, ""), truncated: r.truncated === true }
+}
+
+/**
+ * [CWE-88] File paths reach a git command line. A path beginning with `-` would be
+ * parsed as an option (`--upload-pack=…` and friends), so every argument is validated
+ * and the caller-supplied list is always placed after a `--` separator. Absolute paths
+ * and parent escapes are refused as well: the guard describes files inside the brief,
+ * never the wider filesystem.
+ */
+export function invalidPathReason(p: string): string | null {
+  if (p.length === 0) return "empty path"
+  if (p.length > MAX_PATH_LEN) return `path longer than ${MAX_PATH_LEN} characters`
+  if (p.startsWith("-")) return "path starts with '-' and would be read as a git option"
+  if (p.includes("\0") || p.includes("\n")) return "path contains a control character"
+  if (/^[a-zA-Z]:[\\/]/.test(p) || p.startsWith("/") || p.startsWith("\\")) return "path is absolute"
+  const parts = p.split(/[\\/]/)
+  if (parts.some((seg) => seg === "..")) return "path escapes the project with '..'"
+  return null
+}
+
+export function normalizePath(p: string): string {
+  return p.replace(/\\/g, "/").replace(/^\.\//, "")
+}
+
+/**
+ * Parse `git status --porcelain -z -uall`. Records are NUL-separated and unquoted. A
+ * rename or copy emits the destination record followed by a second record holding the
+ * ORIGIN path, which must be consumed rather than read as an entry of its own — that
+ * two-record shape is also why a filename containing a literal " -> " cannot be
+ * misread here.
+ */
+export function parsePorcelainZ(out: string): Array<{ path: string; code: string }> {
+  const records = out.split("\0").filter((r) => r.length > 0)
+  const entries: Array<{ path: string; code: string }> = []
+  for (let i = 0; i < records.length; i++) {
+    const rec = records[i]
+    if (rec.length < 4) continue
+    const code = rec.slice(0, 2)
+    const p = rec.slice(3)
+    if (code[0] === "R" || code[0] === "C") {
+      const origin = records[++i]
+      if (origin) entries.push({ path: normalizePath(origin), code: `${code[0]}<` })
+    }
+    entries.push({ path: normalizePath(p), code })
+  }
+  return entries
+}
+
+/** sha256 of a work-tree file, "absent" when it is gone, "big:<n>" past the hash cap. */
+async function worktreeFingerprint(dir: string, rel: string): Promise<string> {
+  try {
+    const abs = path.join(dir, rel)
+    const stat = await fs.stat(abs)
+    if (stat.isDirectory()) return "dir"
+    if (stat.size > MAX_HASH_BYTES) return `big:${stat.size}`
+    const buf = await fs.readFile(abs)
+    return createHash("sha256").update(buf).digest("hex").slice(0, 16)
+  } catch {
+    return "absent"
+  }
+}
+
+/** Parse `git ls-files -s -z` records: "<mode> <sha> <stage>\t<path>". */
+function parseLsFiles(out: string, into: Map<string, string>): void {
+  for (const rec of out.split("\0")) {
+    const tab = rec.indexOf("\t")
+    if (tab === -1) continue
+    const fields = rec.slice(0, tab).split(/\s+/)
+    if (fields.length < 2) continue
+    into.set(normalizePath(rec.slice(tab + 1)), fields[1].slice(0, 16))
+  }
+}
+
+/**
+ * Staged blob ids for the CHANGED paths only, in batches.
+ *
+ * v0.6.12: this used to list the whole index. `git ls-files -s` emits a row per tracked
+ * file, so its output scales with repository size, not with the size of the change — it
+ * passed every test here (13 KB against a 16 KB capture limit) and then failed on the
+ * first larger repository in the field, refusing every snapshot with a truncation error.
+ * Scoping to the changed paths keeps the output proportional to what is being compared.
+ * The paths come from git's own status output and are passed after `--`, so they cannot
+ * be read as options.
+ */
+/** Output budget for an inventory of `n` paths: a status/ls-files row plus slack. */
+export function outputBudget(n: number): number {
+  return Math.max(64_000, n * (MAX_PATH_LEN + 80))
+}
+
+async function stagedFingerprints(dir: string, paths: string[]): Promise<{ ok: boolean; map: Map<string, string> }> {
+  const map = new Map<string, string>()
+  if (paths.length === 0) return { ok: true, map }
+  // Batched on accumulated argument length: a long command line is a hard failure on
+  // Windows, and a large response would hit the same capture limit this call just fixed.
+  const BATCH_ARG_CHARS = 4000
+  let batch: string[] = []
+  let chars = 0
+  const flush = async (): Promise<boolean> => {
+    if (batch.length === 0) return true
+    const r = await git(dir, ["ls-files", "-s", "-z", "--", ...batch], outputBudget(batch.length))
+    batch = []
+    chars = 0
+    if (!r.ok || r.truncated) return false
+    parseLsFiles(r.out, map)
+    return true
+  }
+  for (const p of paths) {
+    if (chars + p.length > BATCH_ARG_CHARS && batch.length > 0) {
+      if (!(await flush())) return { ok: false, map }
+    }
+    batch.push(p)
+    chars += p.length + 1
+  }
+  if (!(await flush())) return { ok: false, map }
+  return { ok: true, map }
+}
+
+export function snapshotHash(s: Omit<RepoSnapshot, "hash">): string {
+  return createHash("sha256").update(JSON.stringify(s)).digest("hex").slice(0, 16)
+}
+
+export type SnapshotOutcome =
+  | { status: "n/a"; reason: string }
+  | { status: "ok"; snapshot: RepoSnapshot }
+  | { status: "refused"; reason: string }
+  | { status: "failed"; reason: string }
+
+/**
+ * Capture the repository state that defines shared-tree ownership. `files` scopes the
+ * line-ending probe to the unit's files; `allowed` is the authorized set frozen onto the
+ * snapshot. Any probe that fails, times out, or truncates makes the whole snapshot a
+ * failure: an incomplete reading of the tree must never be recorded as a clean one.
+ */
+export async function takeSnapshot(
+  dir: string,
+  files: string[] = [],
+  allowed: string[] = [],
+  maxEntries: number = MAX_ENTRIES
+): Promise<SnapshotOutcome> {
+  const entryLimit = Math.min(Math.max(Math.trunc(maxEntries) || MAX_ENTRIES, 1), ENTRY_CEILING)
+  for (const f of [...files, ...allowed]) {
+    const why = invalidPathReason(f)
+    if (why) return { status: "refused", reason: `file '${f.slice(0, 120)}': ${why}` }
+  }
+  if (files.length > MAX_FILE_ARGS) {
+    return { status: "refused", reason: `${files.length} files given; at most ${MAX_FILE_ARGS} are probed` }
+  }
+
+  const inside = await git(dir, ["rev-parse", "--is-inside-work-tree"])
+  if (!inside.ok || inside.out !== "true") {
+    return { status: "n/a", reason: "not inside a git work tree (or git is unavailable); the guard does not apply" }
+  }
+
+  const [root, head, branch, stashRef, stashList, status, autocrlf] = await Promise.all([
+    git(dir, ["rev-parse", "--show-toplevel"]),
+    git(dir, ["rev-parse", "HEAD"]),
+    // symbolic-ref answers on an unborn branch, where rev-parse --abbrev-ref cannot.
+    git(dir, ["symbolic-ref", "--short", "HEAD"]),
+    git(dir, ["rev-parse", "--verify", "--quiet", "refs/stash"]),
+    git(dir, ["stash", "list"]),
+    git(dir, ["-c", "core.quotepath=false", "status", "--porcelain", "-z", "-uall"], outputBudget(entryLimit)),
+    git(dir, ["config", "--get", "core.autocrlf"]),
+  ])
+
+  // A missing HEAD (no commits), a missing stash ref, and an unset config are STATES.
+  // A failing toplevel, stash-list, or status is a failure to observe the tree.
+  const failed = [
+    ["rev-parse --show-toplevel", root],
+    ["stash list", stashList],
+    ["status --porcelain", status],
+  ].find(([, r]) => !(r as GitResult).ok || (r as GitResult).truncated)
+  if (failed) {
+    const r = failed[1] as GitResult
+    return {
+      status: "failed",
+      reason: r.truncated
+        ? `git ${failed[0]} output exceeded the capture limit; the working tree has more changed paths than one comparison can cover — commit or ignore unrelated changes, then take the baseline again`
+        : `git ${failed[0]} failed or timed out; the tree could not be read completely`,
+    }
+  }
+
+  const eol = files.length > 0 ? await git(dir, ["ls-files", "--eol", "--", ...files]) : { ok: true, out: "", truncated: false }
+  if (!eol.ok || eol.truncated) {
+    return { status: "failed", reason: "git ls-files --eol failed or truncated; the line-ending state could not be read" }
+  }
+
+  const parsed = parsePorcelainZ(status.out).filter((e) => !isForemanState(e.path))
+  const truncated = parsed.length > entryLimit
+  const kept = parsed.slice(0, entryLimit)
+
+  const stagedResult = await stagedFingerprints(dir, kept.map((e) => e.path))
+  if (!stagedResult.ok) {
+    return { status: "failed", reason: "git ls-files -s failed, timed out, or truncated for the changed paths; the index could not be read" }
+  }
+  const staged = stagedResult.map
+
+  const entries: RepoEntry[] = []
+  for (const e of kept) {
+    entries.push({
+      path: e.path.length > MAX_PATH_LEN ? `${e.path.slice(0, MAX_PATH_LEN)}…` : e.path,
+      code: e.code,
+      wt: await worktreeFingerprint(dir, e.path),
+      idx: staged.get(e.path) ?? "none",
+    })
+  }
+  entries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+
+  const base = {
+    root: normalizePath(root.out),
+    branch: branch.ok && branch.out.length > 0 ? branch.out : "detached",
+    head: head.ok ? head.out : "none",
+    stash_ref: stashRef.ok && stashRef.out.length > 0 ? stashRef.out : "none",
+    stash_count: stashList.out.length === 0 ? 0 : stashList.out.split(/\r?\n/).filter((l) => l.trim()).length,
+    autocrlf: autocrlf.ok && autocrlf.out.length > 0 ? autocrlf.out : "unset",
+    eol: eol.out.split(/\r?\n/).filter((l) => l.trim().length > 0).slice(0, MAX_FILE_ARGS),
+    entries,
+    truncated,
+    entry_limit: entryLimit,
+    allowed: allowed.map(normalizePath).slice(0, MAX_FILE_ARGS),
+  }
+  return { status: "ok", snapshot: { ...base, hash: snapshotHash(base) } }
+}
+
+/**
+ * Compare a stored snapshot against the live one and name every ownership breach.
+ *
+ * The authorized set comes from the SNAPSHOT, frozen before the worker ran, so widening
+ * it afterwards cannot clear a violation. A path is compared on identity and on content:
+ * a file that was already dirty and stays dirty is still a violation when its bytes or
+ * its staged blob changed, which is how a worker overwriting the user's uncommitted work
+ * is caught.
+ */
+export function compareSnapshots(before: RepoSnapshot, after: RepoSnapshot): string[] {
+  const violations: string[] = []
+  const allowed = new Set((before.allowed ?? []).map(normalizePath))
+
+  if (before.root !== after.root) {
+    violations.push(`different repository: baseline was taken in '${before.root}', comparison ran in '${after.root}'`)
+    return violations
+  }
+  if (before.branch !== after.branch) {
+    violations.push(`branch changed: '${before.branch}' -> '${after.branch}'`)
+  }
+  if (before.head !== after.head) {
+    violations.push(`HEAD moved: ${before.head.slice(0, 12)} -> ${after.head.slice(0, 12)} (a worker must not commit, reset, or checkout)`)
+  }
+  if (before.stash_ref !== after.stash_ref || before.stash_count !== after.stash_count) {
+    violations.push(`stash changed: ${before.stash_ref.slice(0, 12)}/${before.stash_count} entries -> ${after.stash_ref.slice(0, 12)}/${after.stash_count}`)
+  }
+  if (before.autocrlf !== after.autocrlf) {
+    violations.push(`core.autocrlf changed: '${before.autocrlf}' -> '${after.autocrlf}'`)
+  }
+  if (before.truncated || after.truncated) {
+    const limit = Math.max(before.entry_limit ?? MAX_ENTRIES, after.entry_limit ?? MAX_ENTRIES)
+    violations.push(
+      `more than ${limit} changed paths; the comparison is incomplete and cannot clear this unit ` +
+      `(raise repo_guard max_entries, up to ${ENTRY_CEILING}, or reduce the unrelated changes in the tree)`
+    )
+  }
+
+  const b = new Map(before.entries.map((e) => [e.path, e]))
+  const a = new Map(after.entries.map((e) => [e.path, e]))
+
+  for (const [p, entry] of a) {
+    if (allowed.has(p)) continue
+    const was = b.get(p)
+    if (!was) {
+      violations.push(`file changed outside the brief: ${p}`)
+    } else if (was.wt !== entry.wt) {
+      violations.push(`pre-existing uncommitted change overwritten outside the brief: ${p}`)
+    } else if (was.idx !== entry.idx) {
+      violations.push(`staged content changed outside the brief: ${p}`)
+    } else if (was.code !== entry.code) {
+      violations.push(`git status of a file outside the brief changed: ${p} (${was.code.trim()} -> ${entry.code.trim()})`)
+    }
+  }
+  for (const [p] of b) {
+    // An authorized file may legitimately be restored to its committed content, which
+    // removes it from the dirty set; that is the repair case, not a destroyed change.
+    if (!a.has(p) && !allowed.has(p)) {
+      violations.push(`pre-existing uncommitted change disappeared: ${p}`)
+    }
+  }
+  return violations
+}

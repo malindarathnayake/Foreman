@@ -26,7 +26,7 @@ describe("invokeAdvisor", () => {
     vi.mocked(runWithStdin).mockResolvedValue(SUCCESS)
   })
 
-  it("runs Codex reviews with GPT-5.6-SOL at xhigh reasoning effort", async () => {
+  it("runs Codex reviews with gpt-6-astra at xhigh reasoning effort", async () => {
     await invokeAdvisor("codex", "review this", 12_345)
 
     expect(runWithStdin).toHaveBeenCalledWith(
@@ -38,7 +38,7 @@ describe("invokeAdvisor", () => {
         "-s",
         "read-only",
         "-m",
-        "gpt-5.6-sol",
+        "gpt-6-astra",
         "-c",
         "model_reasoning_effort=xhigh",
         "-c",

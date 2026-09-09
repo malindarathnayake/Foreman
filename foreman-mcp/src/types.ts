@@ -27,6 +27,65 @@ export interface DelegationPreflight {
   telemetry?: "checked" | "n/a"
 }
 
+/**
+ * One changed path in a repository snapshot (v0.6.11). Content fingerprints are what make
+ * an overwrite of an already-dirty file visible; comparing path sets alone did not.
+ */
+export interface RepoEntry {
+  path: string
+  /** Two-column porcelain status, or "R<"/"C<" for a rename/copy origin record. */
+  code: string
+  /** Work-tree content: short sha256, "absent", "dir", or "big:<bytes>". */
+  wt: string
+  /** Index blob id for the path, or "none". */
+  idx: string
+}
+
+/**
+ * Repository state that defines shared-tree ownership, captured by Foreman rather than
+ * described to the model (v0.6.10; content fingerprints and frozen authorization in
+ * v0.6.11). Entry lists are capped in lib/repoGuard.ts.
+ */
+export interface RepoSnapshot {
+  /** Repository root, so a comparison cannot be run against a different checkout. */
+  root: string
+  /** Branch name, or "detached". */
+  branch: string
+  /** Commit sha, or "none" in a repository with no commits yet. */
+  head: string
+  /** refs/stash sha, or "none". */
+  stash_ref: string
+  stash_count: number
+  /** core.autocrlf, or "unset". */
+  autocrlf: string
+  /** `git ls-files --eol` rows for the unit's files. */
+  eol: string[]
+  entries: RepoEntry[]
+  /** True when more changed paths existed than the limit retains; blocks a clearance. */
+  truncated: boolean
+  /** The entry limit this snapshot was taken under (v0.6.12). */
+  entry_limit?: number
+  /** The authorized file set, frozen before the worker ran. */
+  allowed: string[]
+  /** Short sha256 over the fields above. */
+  hash: string
+}
+
+/**
+ * The guard recorded on a delegation. `snapshot` is taken before the worker runs;
+ * `result` is written by Foreman after it returns. A pass verdict is refused while a
+ * snapshot exists whose result is not `ok` (see REPOSITORY GUARD in lib/ledger.ts).
+ */
+export interface DelegationGuard {
+  snapshot: RepoSnapshot
+  snapshot_ts: string
+  result?: "ok" | "violation"
+  violations?: string[]
+  checked_ts?: string
+  /** A pass verdict taken past an uncleared guard by explicit user approval. */
+  override?: { ts: string }
+}
+
 /** One delegation attempt. Appended per (re-)delegation so retry history survives the `w` overwrite. */
 export interface Delegation {
   brief: string
@@ -40,6 +99,8 @@ export interface Delegation {
   preflight?: DelegationPreflight
   /** The cap grant this attempt was charged to (v0.6.5). */
   cap_grant_id?: number
+  /** Foreman-authored repository-state guard (v0.6.10). Never written by the model. */
+  guard?: DelegationGuard
 }
 
 /**

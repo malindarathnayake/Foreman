@@ -17,6 +17,7 @@ import { capabilityCheck } from "./tools/capabilityCheck.js"
 import { handleWriteLedger } from "./tools/writeLedger.js"
 import { handleWriteProgress } from "./tools/writeProgress.js"
 import { handleInvokeWorker } from "./tools/invokeWorker.js"
+import { handleRepoGuard } from "./tools/repoGuard.js"
 import { handleInvokeCouncil } from "./tools/invokeCouncil.js"
 import { LENS_IDS, LENS_CATALOG } from "./lib/lensCatalog.js"
 import { normalizeReview } from "./tools/normalizeReview.js"
@@ -40,7 +41,7 @@ import {
 import { renderShape } from "./lib/schemaDoc.js"
 import { formatSchemaError, isZodError } from "./lib/schemaError.js"
 import { readJournal, initSession, logEvent, endSession } from "./lib/journal.js"
-import { invokeAdvisor, formatAdvisorResult } from "./tools/invokeAdvisor.js"
+import { invokeAdvisor, formatAdvisorResult, GEMINI_ADVISOR_MODEL, CODEX_ADVISOR_MODEL } from "./tools/invokeAdvisor.js"
 import { sessionOrient } from "./tools/sessionOrient.js"
 import { renderIncludes, loadSkill } from "./lib/skillLoader.js"
 import { hostStatus } from "./tools/hostStatus.js"
@@ -285,7 +286,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       description:
         host === "cursor"
           ? "Returns synthetic availability for Cursor's codex/gemini advisor seats. An explicit claude check probes the local Claude CLI."
-          : "Checks whether the claude, codex, or gemini CLI is available and authenticated. Returns a closed auth_status taxonomy (ok|not_found|not_trusted|auth_expired|probe_timeout|error) with a corrective hint on failures.",
+          : "Checks whether the claude, codex, or gemini CLI is available and authenticated. Returns a closed auth_status taxonomy (ok|not_found|not_trusted|auth_expired|probe_timeout|model_substituted|error) with a corrective hint on failures. For gemini it also reports model_requested and model_served from the run stats; a served model other than the pinned one is model_substituted.",
       inputSchema: z.strictObject({
         cli: z.enum(ADVISOR_CLIS),
       }),
@@ -306,7 +307,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     "invoke_advisor",
     {
       title: "Invoke Advisor",
-      description: "Invoke claude|codex|gemini CLI via stdin. Resolves binaries cross-platform and wraps .cmd shims on win32. Claude runs headless with Fable 5 at max effort and no tools. Exit 0 with empty stdout, or stdout equal to the prompt, is reported as completion: failed with the stderr tail — not a clean seat; record it as failed and retry once. Failed calls may be compressed; if a failed call's summary is insufficient, call retrieve_original with the <<ccr:HASH>> marker for the full diagnostic.",
+      description: "Invoke claude|codex|gemini CLI via stdin. Resolves binaries cross-platform and wraps .cmd shims on win32. Claude runs headless with Fable 5 at max effort and no tools; Codex runs gpt-6-astra at xhigh reasoning (codex-cli 0.153.4 or newer) and the meta block echoes model_served and reasoning_effort from its header. Exit 0 with empty stdout, or stdout equal to the prompt, is reported as completion: failed with the stderr tail — not a clean seat; record it as failed and retry once. Gemini runs with JSON output: the meta block names model_requested and model_served, and a served model other than the pinned one is completion: failed (model_substituted). Failed calls may be compressed; if a failed call's summary is insufficient, call retrieve_original with the <<ccr:HASH>> marker for the full diagnostic.",
       inputSchema: z.strictObject({
         cli: z.enum(ADVISOR_CLIS),
         prompt: z.string().max(100000),
@@ -323,7 +324,8 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const result = await invokeAdvisor(args.cli, args.prompt, args.timeout_ms)
-      const formatted = formatAdvisorResult(args.cli, result, args.prompt)
+      const pinned = args.cli === "gemini" ? GEMINI_ADVISOR_MODEL : args.cli === "codex" ? CODEX_ADVISOR_MODEL : undefined
+      const formatted = formatAdvisorResult(args.cli, result, args.prompt, pinned)
       // Successful advisor output is PROSE — never lossy-compress it (silent loss of the
       // recommendations). A FAILED call is an unpredictable diagnostic dump: let the normal
       // compression path handle it; the agent sees exit_code != 0 and can retrieve_original.
@@ -406,6 +408,37 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const text = await handleInvokeWorker(args, { docsDir, ledgerPath, journalPath })
+      return textResult(text)
+    }
+  )
+
+  server.registerTool(
+    "repo_guard",
+    {
+      title: "Repository Guard",
+      description:
+        "Runs the shared-tree ownership check around an editing worker and records it on the unit's newest delegation. 'snapshot' captures repository root, branch, HEAD, stash, every changed path with a content fingerprint, core.autocrlf, and line-ending attributes before the worker runs, and freezes allowed_files onto that baseline; 'compare' re-reads the state afterwards and names every mutation outside the frozen set — a moved HEAD, a touched index or stash, a changed config, a file changed outside the brief, an already-dirty file whose content was overwritten, or a pre-existing uncommitted change that disappeared. Foreman writes both results, so set_verdict refuses a pass whose guard did not clear (REPOSITORY GUARD). A baseline cannot be re-taken for an attempt that has one, and compare takes no allowed_files of its own. It compares up to max_entries changed paths (default 500, raisable to 5000). Any git probe that fails, times out, or truncates is a refusal, never a clean tree. Outside a git work tree it reports n/a and gates nothing. Order: set_unit_status s:'delegated' -> snapshot -> spawn the worker -> compare -> set_verdict.",
+      inputSchema: z.strictObject({
+        operation: z.enum(["snapshot", "compare"]),
+        phase: z.string().min(1).max(10000),
+        unit_id: z.string().min(1).max(10000),
+        files: z.array(z.string().max(4096)).max(100).optional()
+          .describe("The unit's files, for the line-ending probe. Relative paths inside the project."),
+        allowed_files: z.array(z.string().max(4096)).max(100).optional()
+          .describe("snapshot only: the files the brief authorized, frozen onto the baseline. A change outside this set is a violation. Refused on compare."),
+        max_entries: z.number().int().min(1).max(5000).optional()
+          .describe("snapshot only: changed paths to compare (default 500, ceiling 5000). Raise it when a tree legitimately carries more changes than the default covers; compare reuses the baseline's value."),
+        project_dir: z.string().min(1).optional().describe("Repository root (default: process.cwd())"),
+      }),
+      outputSchema: TextOutputSchema,
+      annotations: {
+        title: "Repository Guard",
+        readOnlyHint: false,
+        destructiveHint: false,
+      },
+    },
+    async (args, _extra) => {
+      const text = await handleRepoGuard(args, { ledgerPath })
       return textResult(text)
     }
   )

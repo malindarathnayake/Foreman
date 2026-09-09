@@ -217,11 +217,12 @@ describe("update_phase_gate — confirmed findings and review currency", () => {
     await expect(
       writeLedger(ledgerPath, { operation: "update_phase_gate", phase: "p1", data: { g: "pass" } })
     ).rejects.toThrow(/INCOMPLETE REVIEW: phase 'p1' has 1 review\(s\).*gemini: zero findings with no examined list/)
+    await new Promise((r) => setTimeout(r, 5))
     await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "gemini", findings: [], checked: ["src/a.ts", "tests/a.test.ts"] } })
-    // The silent record is still current, so it still blocks — the seat must be re-run or marked, not papered over.
-    await expect(
-      writeLedger(ledgerPath, { operation: "update_phase_gate", phase: "p1", data: { g: "pass" } })
-    ).rejects.toThrow(/INCOMPLETE REVIEW/)
+    // Round 6 (v0.6.9): the same seat re-run to completion supersedes its silent record.
+    // A different advisor's record does not (fieldFeedback2026-09e.test.ts).
+    await writeLedger(ledgerPath, { operation: "update_phase_gate", phase: "p1", data: { g: "pass" } })
+    expect((await readLedger(ledgerPath)).phases.p1.g).toBe("pass")
   })
 
   it("completion:'partial' blocks even with findings; user_override records incomplete_override", async () => {

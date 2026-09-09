@@ -460,11 +460,13 @@ describe("ledger v0.3.1 tier telemetry + reviews", () => {
   })
 
   it("caps reviews at 20", async () => {
+    // Complete records: a silent one blocks the gate and is never evicted (v0.6.9, retention
+    // keeps enforcement state — see fieldFeedback2026-09e.test.ts).
     for (let i = 0; i < 25; i++) {
       await writeLedger(ledgerPath, {
         operation: "record_review",
         phase: "p1",
-        data: { advisor: `a${i}`, findings: [] },
+        data: { advisor: `a${i}`, findings: [], checked: ["src/a.ts"] },
       })
     }
     expect((await readLedger(ledgerPath)).phases.p1.reviews).toHaveLength(20)
