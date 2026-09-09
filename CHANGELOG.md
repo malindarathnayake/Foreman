@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.6.10 - 2026-09-08
+
+An advisor review named Foreman's ceremony as its biggest weakness, and singled out bookkeeping that the protocol asks a model to perform by hand. The repository guard was the clearest case: two paragraphs of prose telling the pit-boss to run six git commands before an editing worker, hold the result in conversation context, and compare by eye afterwards. A compaction between those two points destroyed the baseline silently, and nothing was recorded, so a skipped check and a passed check looked identical in the ledger.
+
+- **`repo_guard` (27th tool) runs the shared-tree ownership check.** `snapshot` captures branch, HEAD, stash ref and count, staged and dirty paths, `core.autocrlf`, and `git ls-files --eol` for the unit's files, and records them on the unit's newest delegation. `compare` re-reads the same state after the worker returns and names every mutation outside `allowed_files`: a moved HEAD, a file staged or unstaged, a changed stash, a changed `core.autocrlf`, a file changed outside the brief, or a pre-existing uncommitted change that disappeared. The order is `set_unit_status s:'delegated'` → snapshot → spawn → compare.
+- **A pass verdict needs a cleared guard.** `set_verdict v:'pass'` is refused for an attempt whose delegation carries a snapshot with no comparison, or with a comparison that found violations (`REPOSITORY GUARD`). Foreman writes both the snapshot and the result, so the check is a fact about the tree rather than the pit-boss's account of one. `user_override` waives it and is recorded on the delegation as `guard_override`.
+- **Scoped so nothing existing breaks.** Enforcement applies only to a delegation that actually carries a snapshot. Outside a git work tree, or with git unavailable, the tool reports `n/a` and gates nothing, the same fail-open rule the `.foremanenv` refusal probe already follows. Ledgers written before this version, hosts that never call the tool, and a re-delegation whose new attempt has no snapshot are all unaffected.
+- **[CWE-88]** file paths reach a git command line, so every path is validated and the list is always placed after a `--` separator. A path that is absolute, escapes with `..`, or begins with `-` is refused before anything is spawned.
+- Two bugs found by running the guard against real repositories rather than reasoning about it: the git helper trimmed whole command output, which ate the leading status column of `git status --porcelain` and returned every path missing its first character; and a test that flipped `core.autocrlf` was a no-op against a machine whose global value was already set. Both are covered by regressions in `tests/repoGuard.test.ts`, which drives real git repositories throughout.
+- The implementor's shared-tree preflight and repository-state guard steps are now two tool calls instead of two paragraphs. Tool count 27.
+- Bumped package to `0.6.10`.
+
 ## 0.6.9 - 2026-09-08
 
 Field-feedback round 6: the paid review loop at the phase gate. A pit-boss on another project ran six review rounds (two seats each, well over a million advisor tokens) on one phase because every LOW fix re-verdicted a unit, which staled the review, which demanded a fresh seat. Codex (`gpt-6-astra`) replayed the ledger against the diagnosis and found four enforcement holes; all four are closed here, and two of the proposed fixes (a non-gating `accepted` classification, a diff-only "delta" seat) were rejected as loopholes and did not ship.

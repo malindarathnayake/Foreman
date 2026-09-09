@@ -28,6 +28,44 @@ export interface DelegationPreflight {
 }
 
 /** One delegation attempt. Appended per (re-)delegation so retry history survives the `w` overwrite. */
+/**
+ * Repository state that defines shared-tree ownership, captured by Foreman rather than
+ * described to the model (v0.6.10). Lists are capped in lib/repoGuard.ts.
+ */
+export interface RepoSnapshot {
+  branch: string
+  /** Commit sha, or "none" in a repository with no commits yet. */
+  head: string
+  /** refs/stash sha, or "none". */
+  stash_ref: string
+  stash_count: number
+  staged: string[]
+  dirty: string[]
+  /** core.autocrlf, or "unset". */
+  autocrlf: string
+  /** `git ls-files --eol` rows for the unit's files. */
+  eol: string[]
+  /** Short sha256 over the fields above. */
+  hash: string
+}
+
+/**
+ * The guard recorded on a delegation. `snapshot` is taken before the worker runs;
+ * `result` is written by Foreman after it returns. A pass verdict is refused while a
+ * snapshot exists whose result is not `ok` (see REPOSITORY GUARD in lib/ledger.ts).
+ */
+export interface DelegationGuard {
+  snapshot: RepoSnapshot
+  snapshot_ts: string
+  result?: "ok" | "violation"
+  violations?: string[]
+  checked_ts?: string
+  /** Files the brief authorized, as passed to the comparison. */
+  allowed_files?: string[]
+  /** A pass verdict taken past an uncleared guard by explicit user approval. */
+  override?: { ts: string }
+}
+
 export interface Delegation {
   brief: string
   tier?: Tier
@@ -40,6 +78,8 @@ export interface Delegation {
   preflight?: DelegationPreflight
   /** The cap grant this attempt was charged to (v0.6.5). */
   cap_grant_id?: number
+  /** Foreman-authored repository-state guard (v0.6.10). Never written by the model. */
+  guard?: DelegationGuard
 }
 
 /**

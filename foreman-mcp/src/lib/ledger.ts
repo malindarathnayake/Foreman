@@ -1,7 +1,7 @@
 import fs from "fs/promises"
 import path from "path"
 import { createHash } from "crypto"
-import type { CapGrant, LedgerFile, Phase, PhaseReview, Unit, WriteLedgerInput } from "../types.js"
+import type { CapGrant, DelegationGuard, LedgerFile, Phase, PhaseReview, Unit, WriteLedgerInput } from "../types.js"
 import { detectTestFiles } from "./detectTestFiles.js"
 import { atomicWriteFile } from "./atomicWrite.js"
 import { scrub } from "./redaction.js"
@@ -627,6 +627,32 @@ async function applyOperation(
         if (waived.length > 0) {
           unit.cap_override = { ts: new Date().toISOString(), attempt: unit.attempt_seq ?? 0, failed, waived }
         }
+        // v0.6.10: the shared-tree ownership check. Sequenced LAST so every earlier block
+        // message is unchanged. Enforcement is scoped to delegations that actually carry a
+        // guard: a repo without git, a host that never called repo_guard, and every ledger
+        // written before this version keep their existing behavior. Once a snapshot exists,
+        // the pass needs its comparison to have cleared — Foreman wrote both, so this is a
+        // fact about the tree rather than an attestation about it.
+        const guarded = unit.delegations?.filter((d) => d.guard !== undefined) ?? []
+        const latestGuarded = guarded.length > 0 ? guarded[guarded.length - 1] : undefined
+        if (latestGuarded?.guard && latestGuarded.attempt === unit.attempt_seq) {
+          const g = latestGuarded.guard
+          if (g.result !== "ok") {
+            if (data.user_override !== true) {
+              const detail =
+                g.result === "violation"
+                  ? `the comparison found ${g.violations?.length ?? 0} violation(s): ${(g.violations ?? []).slice(0, 3).join("; ").slice(0, 400)}`
+                  : "no comparison was recorded after the worker returned"
+              throw new Error(
+                `REPOSITORY GUARD: unit '${unit_id}' attempt #${unit.attempt_seq} has a repository snapshot but ${detail}. ` +
+                "Run repo_guard { operation: 'compare', phase, unit_id, allowed_files } after the worker returns and before the verdict. " +
+                "A violation is a hard stop: preserve the evidence and escalate to the owner — do not attempt automatic recovery. " +
+                "data.user_override: true records the waiver on the delegation as guard_override."
+              )
+            }
+            g.override = { ts: new Date().toISOString() }
+          }
+        }
       }
       const unit = ledger.phases[phase].units[unit_id]
       unit.v = data.v
@@ -1070,5 +1096,54 @@ export async function writeLedger(
     await atomicWriteFile(filePath, JSON.stringify(ledger), { scrub })
 
     return { ledger, warning }
+  })
+}
+
+/**
+ * Record the repository guard on a unit's newest delegation (v0.6.10).
+ *
+ * Deliberately NOT a `write_ledger` operation: the guard is a fact Foreman observed, and
+ * routing it through the public write path would let the pit-boss author its own
+ * clearance. `repo_guard` is the only caller, and it supplies values it computed itself
+ * from git. The model chooses when to run the check, never what it found.
+ */
+export async function recordRepoGuard(
+  filePath: string,
+  phase: string,
+  unitId: string,
+  patch: DelegationGuard | { result: "ok" | "violation"; violations?: string[]; allowed_files?: string[] }
+): Promise<{ attempt: number }> {
+  return withLedgerLock(filePath, async () => {
+    const read = await readLedgerWithStatus(filePath)
+    const ledger = read.ledger
+    const unit = ledger.phases[phase]?.units[unitId]
+    if (!unit) {
+      throw new Error(
+        `GUARD BLOCKED: unit '${unitId}' is not registered in phase '${phase}'. ` +
+        "Record the delegation first (set_unit_status s:'delegated'), then take the snapshot."
+      )
+    }
+    const delegations = unit.delegations ?? []
+    const latest = delegations.length > 0 ? delegations[delegations.length - 1] : undefined
+    if (!latest) {
+      throw new Error(
+        `GUARD BLOCKED: unit '${unitId}' has no delegation to attach the guard to. ` +
+        "The order is set_unit_status s:'delegated' → repo_guard snapshot → spawn the worker → repo_guard compare."
+      )
+    }
+    if ("snapshot" in patch) {
+      latest.guard = patch
+    } else {
+      if (!latest.guard) {
+        throw new Error(
+          `GUARD BLOCKED: unit '${unitId}' attempt #${latest.attempt} has no snapshot to compare against. ` +
+          "Take repo_guard { operation: 'snapshot' } before the worker runs; a comparison with no baseline proves nothing."
+        )
+      }
+      latest.guard = { ...latest.guard, ...patch, checked_ts: new Date().toISOString() }
+    }
+    ledger.ts = new Date().toISOString()
+    await atomicWriteFile(filePath, JSON.stringify(ledger), { scrub })
+    return { attempt: latest.attempt }
   })
 }

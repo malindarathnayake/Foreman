@@ -17,6 +17,7 @@ import { capabilityCheck } from "./tools/capabilityCheck.js"
 import { handleWriteLedger } from "./tools/writeLedger.js"
 import { handleWriteProgress } from "./tools/writeProgress.js"
 import { handleInvokeWorker } from "./tools/invokeWorker.js"
+import { handleRepoGuard } from "./tools/repoGuard.js"
 import { handleInvokeCouncil } from "./tools/invokeCouncil.js"
 import { LENS_IDS, LENS_CATALOG } from "./lib/lensCatalog.js"
 import { normalizeReview } from "./tools/normalizeReview.js"
@@ -407,6 +408,35 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const text = await handleInvokeWorker(args, { docsDir, ledgerPath, journalPath })
+      return textResult(text)
+    }
+  )
+
+  server.registerTool(
+    "repo_guard",
+    {
+      title: "Repository Guard",
+      description:
+        "Runs the shared-tree ownership check around an editing worker and records it on the unit's newest delegation. 'snapshot' captures branch, HEAD, stash, staged and dirty paths, core.autocrlf, and line-ending attributes before the worker runs; 'compare' re-reads them afterwards and names every mutation outside allowed_files — a moved HEAD, a touched index or stash, a changed config, a file changed outside the brief, or a pre-existing uncommitted change that disappeared. Foreman writes both results, so set_verdict can refuse a pass whose guard did not clear (REPOSITORY GUARD). Outside a git work tree it reports n/a and gates nothing. Order: set_unit_status s:'delegated' -> snapshot -> spawn the worker -> compare -> set_verdict.",
+      inputSchema: z.strictObject({
+        operation: z.enum(["snapshot", "compare"]),
+        phase: z.string().min(1).max(10000),
+        unit_id: z.string().min(1).max(10000),
+        files: z.array(z.string().max(4096)).max(100).optional()
+          .describe("The unit's files, for the line-ending probe. Relative paths inside the project."),
+        allowed_files: z.array(z.string().max(4096)).max(100).optional()
+          .describe("compare only: the files the brief authorized. A dirty path outside this set is a violation."),
+        project_dir: z.string().min(1).optional().describe("Repository root (default: process.cwd())"),
+      }),
+      outputSchema: TextOutputSchema,
+      annotations: {
+        title: "Repository Guard",
+        readOnlyHint: false,
+        destructiveHint: false,
+      },
+    },
+    async (args, _extra) => {
+      const text = await handleRepoGuard(args, { ledgerPath })
       return textResult(text)
     }
   )
