@@ -42,7 +42,8 @@ import { renderShape } from "./lib/schemaDoc.js"
 import { formatSchemaError, isZodError } from "./lib/schemaError.js"
 import { readJournal, initSession, declareModel, logEvent, endSession } from "./lib/journal.js"
 import { resolveModelRank, type ModelRank } from "./lib/modelRank.js"
-import { invokeAdvisor, formatAdvisorResult, GEMINI_ADVISOR_MODEL, CODEX_ADVISOR_MODEL } from "./tools/invokeAdvisor.js"
+import { invokeAdvisor, advisorRunMeta, formatAdvisorResult, GEMINI_ADVISOR_MODEL, CODEX_ADVISOR_MODEL } from "./tools/invokeAdvisor.js"
+import { appendReceipt, receiptsPathFor, receiptFailure, sha256Hex, CLI_PROVIDER, type ReceiptCli } from "./lib/seatReceipts.js"
 import { sessionOrient } from "./tools/sessionOrient.js"
 import { renderIncludes, loadSkill } from "./lib/skillLoader.js"
 import { hostStatus } from "./tools/hostStatus.js"
@@ -328,7 +329,31 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     async (args, _extra) => {
       const result = await invokeAdvisor(args.cli, args.prompt, args.timeout_ms)
       const pinned = args.cli === "gemini" ? GEMINI_ADVISOR_MODEL : args.cli === "codex" ? CODEX_ADVISOR_MODEL : undefined
-      const formatted = formatAdvisorResult(args.cli, result, args.prompt, pinned)
+      // 0.6.19: every run gets a receipt, failed ones included, so a failed seat can never
+      // be re-described as clean. The pit-boss copies seat_receipt and packet_sha256 into
+      // record_review; the ledger checks them against this file, never against the text.
+      const meta = advisorRunMeta(args.cli, result, args.prompt, pinned)
+      const extra: string[] = []
+      try {
+        const cli = args.cli as ReceiptCli
+        const receipt = await appendReceipt(receiptsPathFor(ledgerPath), {
+          cli,
+          provider: CLI_PROVIDER[cli],
+          ...(pinned !== undefined ? { model_requested: pinned } : {}),
+          model_served: meta.modelServed ?? "unknown",
+          ...(meta.reasoningEffort !== undefined ? { reasoning_effort: meta.reasoningEffort } : {}),
+          exit_code: result.exitCode,
+          failure_reason: receiptFailure(result.exitCode, meta.failureReason),
+          prompt_sha256: sha256Hex(args.prompt),
+          bytes_in: Buffer.byteLength(args.prompt, "utf-8"),
+          bytes_out: Buffer.byteLength(meta.body, "utf-8"),
+          ...(meta.tokensUsed !== undefined ? { tokens_used: meta.tokensUsed } : {}),
+        })
+        extra.push(`seat_receipt: ${receipt.id}`, `packet_sha256: ${receipt.prompt_sha256}`)
+      } catch (err) {
+        extra.push(`seat_receipt: unavailable (${err instanceof Error ? err.message : String(err)})`)
+      }
+      const formatted = formatAdvisorResult(args.cli, result, args.prompt, pinned, extra)
       // Successful advisor output is PROSE — never lossy-compress it (silent loss of the
       // recommendations). A FAILED call is an unpredictable diagnostic dump: let the normal
       // compression path handle it; the agent sees exit_code != 0 and can retrieve_original.

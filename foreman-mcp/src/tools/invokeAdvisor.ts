@@ -139,12 +139,23 @@ function normalizeText(text: string): string {
   return text.replace(/\r\n/g, "\n").trim()
 }
 
-export function formatAdvisorResult(
+/** The facts one advisor run established, shared by the formatted output and the seat receipt (0.6.19). */
+export interface AdvisorRunMeta {
+  metaLines: string[]
+  body: string
+  failureReason: "empty_stdout" | "echoed_prompt" | "model_substituted" | null
+  modelRequested?: string
+  modelServed?: string
+  reasoningEffort?: string
+  tokensUsed?: number
+}
+
+export function advisorRunMeta(
   cli: string,
   result: ExternalCliResult,
   prompt?: string,
   requestedModel?: string
-): string {
+): AdvisorRunMeta {
   // Codex prints "tokens used\n<N>" to stderr; capture it as meta before any trim so the
   // telemetry survives even when we drop the (redundant) stderr on success.
   const tokensMatch = /tokens used\s*\n?\s*([\d,]+)/.exec(result.stderr)
@@ -154,7 +165,10 @@ export function formatAdvisorResult(
     `timed_out: ${result.timedOut}`,
     `truncated: ${result.truncated}`,
   ]
+  const tokensUsed = tokensMatch ? Number(tokensMatch[1].replace(/,/g, '')) : undefined
   if (tokensMatch) metaLines.push(`tokens_used: ${tokensMatch[1].replace(/,/g, '')}`)
+  let modelServed: string | undefined
+  let reasoningEffort: string | undefined
 
   let body = result.stdout.startsWith(TRUNCATION_SENTINEL)
     ? result.stdout.slice(TRUNCATION_SENTINEL.length)
@@ -166,6 +180,8 @@ export function formatAdvisorResult(
   // a failed seat, the same rule as gemini below.
   if (cli === "codex" && result.exitCode === 0) {
     const header = parseCodexHeader(result.stderr)
+    modelServed = header.model
+    reasoningEffort = header.reasoningEffort
     if (requestedModel !== undefined) metaLines.push(`model_requested: ${requestedModel}`)
     metaLines.push(`model_served: ${header.model ?? "unknown"}`)
     if (header.reasoningEffort !== undefined) metaLines.push(`reasoning_effort: ${header.reasoningEffort}`)
@@ -182,6 +198,7 @@ export function formatAdvisorResult(
     const run = parseGeminiJson(body)
     if (run) {
       body = run.response
+      modelServed = run.mainModel
       if (requestedModel !== undefined) metaLines.push(`model_requested: ${requestedModel}`)
       metaLines.push(`model_served: ${run.mainModel ?? "unknown"}`)
       if (run.thoughts !== undefined) metaLines.push(`thoughts_tokens: ${run.thoughts}`)
@@ -202,6 +219,19 @@ export function formatAdvisorResult(
   else if (failureReason === null && result.exitCode === 0 && prompt !== undefined && normalized === normalizeText(prompt)) {
     failureReason = "echoed_prompt"
   }
+  return { metaLines, body, failureReason, modelRequested: requestedModel, modelServed, reasoningEffort, tokensUsed }
+}
+
+export function formatAdvisorResult(
+  cli: string,
+  result: ExternalCliResult,
+  prompt?: string,
+  requestedModel?: string,
+  /** 0.6.19: lines the server adds to the meta block (seat_receipt, packet_sha256). */
+  extraMeta: string[] = []
+): string {
+  const { metaLines, body, failureReason } = advisorRunMeta(cli, result, prompt, requestedModel)
+  metaLines.push(...extraMeta)
   if (failureReason !== null) {
     metaLines.push("completion: failed", `failure_reason: ${failureReason}`)
     if (failureReason === "empty_stdout") metaLines.push("empty_output: true")

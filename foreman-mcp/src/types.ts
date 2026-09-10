@@ -549,6 +549,9 @@ const RecordReviewInput = z.object({
     native: NativeReviewEvidenceSchema.optional(),
     // Required with stage:'verification', refused with any other stage (lib/ledger.ts).
     evidence: VerificationEvidenceSchema.optional(),
+    // 0.6.19: binds this independent record to one invoke_advisor receipt (meta block
+    // seat_receipt); needs packet_hash equal to that block's packet_sha256.
+    seat_receipt: z.string().regex(/^[0-9a-f]{16}$/).optional(),
   }),
 })
 

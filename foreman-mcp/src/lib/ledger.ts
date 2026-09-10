@@ -14,6 +14,13 @@ import {
   prospectiveVerification, prospectiveWorkerDelta,
 } from "./reviewPredicates.js"
 import { applyEscape, classifyEscape, classifyGate, coveringGate, recordGatePass, unclassifiedEscapes } from "./reviewBasis.js"
+import { appendConsumed, readReceipts, receiptsPathFor, type ReceiptsState } from "./seatReceipts.js"
+
+/** Receipts file access for one write: read on demand, consumption applied after the operation succeeds. */
+export interface ReceiptsAccess {
+  read: () => Promise<ReceiptsState>
+  consumed: Array<{ id: string; phase: string; review_ts: string }>
+}
 
 // Re-exported so existing importers of the gate predicates keep one entry point.
 export { reviewIncompleteness, REVIEW_RETENTION, trimReviews, verificationIneligibility }
@@ -286,7 +293,8 @@ async function applyOperation(
   operation: WriteLedgerInput,
   sidecarReader?: SidecarReader,
   host: HostId = "claude-code",
-  modelRank: ModelRank = resolveModelRank()
+  modelRank: ModelRank = resolveModelRank(),
+  receipts?: ReceiptsAccess
 ): Promise<string | undefined> {
   switch (operation.operation) {
     case "set_unit_status": {
@@ -957,11 +965,57 @@ async function applyOperation(
       } else if (data.evidence !== undefined) {
         throw new Error("VERIFICATION EVIDENCE: data.evidence is accepted with stage:'verification' only.")
       }
+      const reviewTs = new Date().toISOString()   // per-review timestamp, distinct from the file ts
+      // 0.6.19 (slice 4): a seat receipt binds this record to one Foreman-launched advisor
+      // run. Every check reads the receipts file Foreman wrote, never the record's text.
+      let provenance: PhaseReview["provenance"]
+      let warning: string | undefined
+      if (data.seat_receipt !== undefined) {
+        if (data.stage !== undefined && data.stage !== "independent") {
+          throw new Error("SEAT RECEIPT: data.seat_receipt is accepted with stage undefined or 'independent' only.")
+        }
+        if (!receipts) throw new Error("SEAT RECEIPT: receipts are not available on this write path.")
+        const state = await receipts.read()
+        const receipt = state.receipts.get(data.seat_receipt)
+        if (!receipt) {
+          throw new Error(`SEAT RECEIPT: '${data.seat_receipt}' is not in the receipts file beside the ledger; copy seat_receipt from the invoke_advisor meta block.`)
+        }
+        if (!data.packet_hash) {
+          throw new Error("SEAT RECEIPT: data.packet_hash is required with seat_receipt — copy packet_sha256 from the invoke_advisor meta block.")
+        }
+        if (data.packet_hash !== receipt.prompt_sha256) {
+          throw new Error("SEAT RECEIPT: packet mismatch — the record's packet_hash does not equal the receipt's prompt hash; the record names a different prompt than the seat ran.")
+        }
+        if (receipt.exit_code !== 0 || receipt.failure_reason !== null) {
+          throw new Error(`SEAT RECEIPT: '${receipt.id}' is a failed seat (${receipt.failure_reason ?? `exit ${receipt.exit_code}`}); record it completion:'failed' without a receipt.`)
+        }
+        if (state.consumed.has(receipt.id)) {
+          throw new Error(`SEAT RECEIPT: '${receipt.id}' was already bound to a review record; one receipt covers one record.`)
+        }
+        const attemptTs = Object.values(p.units).flatMap((u) => [
+          ...(u.delegations ?? []).map((d) => d.ts), ...(u.direct_fixes ?? []).map((d) => d.ts),
+        ])
+        const newest = [latestVerdictTs(p), ...attemptTs].reduce((max, t) => (t > max ? t : max), "")
+        if (receipt.ts < newest) {
+          throw new Error(`SEAT RECEIPT: '${receipt.id}' ran at ${receipt.ts}, before the newest verdict or attempt in phase '${phase}' (${newest}); it reviewed old code. Run the seat again.`)
+        }
+        provenance = {
+          receipt: receipt.id, cli: receipt.cli, provider: receipt.provider, model_served: receipt.model_served,
+          ...(receipt.reasoning_effort !== undefined ? { reasoning_effort: receipt.reasoning_effort } : {}),
+          bytes_in: receipt.bytes_in, bytes_out: receipt.bytes_out,
+          ...(receipt.tokens_used !== undefined ? { tokens_used: receipt.tokens_used } : {}),
+        }
+        receipts.consumed.push({ id: receipt.id, phase, review_ts: reviewTs })
+      } else if (host === "codex" && (data.stage === undefined || data.stage === "independent")) {
+        warning =
+          "SEAT RECEIPT: this independent record carries no receipt. On Codex an external seat run through invoke_advisor " +
+          "returns seat_receipt and packet_sha256 in its meta block; only a receipted seat counts as cross-vendor for the independence bound."
+      }
       // Optional field: lazily created (absent on pre-v0.3.1 phases loaded from disk).
       p.reviews ??= []
       p.reviews.push({
         advisor: data.advisor,
-        ts: new Date().toISOString(),   // per-review timestamp, distinct from the file ts
+        ts: reviewTs,
         findings: data.findings,
         packet_hash: data.packet_hash,
         tokens: data.tokens,
@@ -974,6 +1028,7 @@ async function applyOperation(
         // 0.6.19: presence of basis_version is the legacy switch for the independence bound.
         basis_version: 2,
         host,
+        ...(provenance !== undefined ? { provenance } : {}),
         ...(data.native !== undefined ? { native: data.native } : {}),
         ...(data.evidence !== undefined ? { evidence: data.evidence } : {}),
         ...(data.evidence?.kind === "worker_delta" ? { model_rank: modelRank } : {}),
@@ -983,7 +1038,7 @@ async function applyOperation(
       })
       // Round 6: bounded history that never evicts a record the gate is blocking on.
       p.reviews = trimReviews(p.reviews, latestVerdictTs(p))
-      break
+      return warning
     }
     case "record_escape": {
       // 0.6.19 (slice 3). Classifies the newest unclassified escape on a registered unit,
@@ -1081,11 +1136,17 @@ export async function writeLedger(
   preWrite?: (ledger: LedgerFile) => void,
   sidecarReader?: SidecarReader,
   host: HostId = "claude-code",
-  modelRank: ModelRank = resolveModelRank()
+  modelRank: ModelRank = resolveModelRank(),
+  /** 0.6.19: receipts file; derived from the ledger path when absent, disabled with null. */
+  receiptsPath?: string | null
 ): Promise<LedgerWriteResult> {
   return withLedgerLock(filePath, async () => {
     const read = await readLedgerWithStatus(filePath)
     const ledger = read.ledger
+    const receiptsFile = receiptsPath === undefined ? receiptsPathFor(filePath) : receiptsPath
+    const receipts: ReceiptsAccess | undefined = receiptsFile === null
+      ? undefined
+      : { read: () => readReceipts(receiptsFile), consumed: [] }
 
     // Default-on enforcement: derive the sidecar reader from the ledger path when the
     // caller does not inject one (tests inject a fake). The sidecar lives alongside the
@@ -1094,7 +1155,10 @@ export async function writeLedger(
       sidecarReader ??
       (async () => (await readEvents(path.join(path.dirname(filePath), ".foreman-events.jsonl"))).events)
 
-    let warning = await applyOperation(ledger, operation, reader, host, modelRank)
+    let warning = await applyOperation(ledger, operation, reader, host, modelRank, receipts)
+    // 0.6.19: a bound receipt is spent in the receipts file BEFORE the ledger is written:
+    // a torn state loses a receipt, never double-spends one. [CWE-345]
+    for (const c of receipts?.consumed ?? []) await appendConsumed(receiptsFile!, c.id, c.phase, c.review_ts)
     if (read.corrupt) {
       const corruptNote =
         `previous ledger was corrupt JSON and was backed up to '${read.backupPath}'; ` +
