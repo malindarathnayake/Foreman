@@ -409,6 +409,7 @@ describe("skillTrimming — _common-protocol", () => {
     "session-start",
     "deliberation-protocol",
     "ambiguity-resolution",
+    "probe-check",
     "uncertainty-protocol",
     "error-handling-standard",
     "agent-delegation",

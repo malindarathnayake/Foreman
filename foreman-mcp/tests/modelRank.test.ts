@@ -17,6 +17,10 @@ describe("declared model workflow rank", () => {
     expect(resolveModelRank(model).weight).toBe(3)
   })
 
+  it.each(["claude-opus-5[1m]", "claude-opus-5 (1m)", "Fable 5.1 [200k]"])("strips a host context suffix from %s before lookup", model => {
+    expect(resolveModelRank(model).weight).toBeGreaterThan(0)
+  })
+
   it.each(["Opus", "claude-opus-5", "Terra", "gpt-5.6-terra"])("only enables mechanical reuse and compact followups for %s", model => {
     expect(resolveModelRank(model).permissions).toEqual({
       reuse_worker_mechanical: true, reuse_worker_bounded: false, compact_followup: true,

@@ -31,7 +31,9 @@ const MODELS = new Map<string, "astra" | 1 | 2 | 3>([
 const ASTRA_EFFORTS = new Set(["high", "xhigh", "max", "ultra"])
 
 export function resolveModelRank(model?: string | null, effort?: string | null): ModelRank {
-  const declaredModel = model?.trim().toLowerCase() || null
+  // Hosts decorate the id with a context suffix ("claude-opus-5[1m]"); the suffix is not
+  // part of the model and must not zero the rank. Strip bracketed and parenthesised tails.
+  const declaredModel = model?.trim().toLowerCase().replace(/\s*[\[(][^\])]*[\])]\s*$/, "").trim() || null
   const declaredEffort = effort?.trim().toLowerCase() || null
   const entry = declaredModel ? MODELS.get(declaredModel) : undefined
   const weight = entry === "astra" ? (ASTRA_EFFORTS.has(declaredEffort ?? "") ? 3 : 0) : entry ?? 0

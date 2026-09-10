@@ -160,6 +160,7 @@ export async function handleReadLedger(filePath: string, input: ReadLedgerInput)
             const meta = [
               review.completion ? `completion=${review.completion}` : null,
               review.checked ? `checked=${review.checked.length}` : null,
+              review.units ? `units=${review.units.length}` : null,
               review.stage ? `stage=${review.stage}` : null,
             ].filter(Boolean).join("; ")
             rows.push([phaseId, review.advisor, "", "", meta ? `(no findings; ${meta})` : "(no findings)"])
@@ -199,6 +200,12 @@ export async function handleReadLedger(filePath: string, input: ReadLedgerInput)
         query,
         input.phase,
       )
+    }
+    case "facts": {
+      // 0.6.20: per-phase facts gathered during preflight, reusable by later units.
+      const rows: string[][] = []
+      for (const [phaseId, phase] of phaseEntries) for (const f of phase.facts ?? []) rows.push([phaseId, f.key, f.text, f.source ?? "", f.ts])
+      return renderPage(["phase", "key", "fact", "source", "recorded"], rows, input, 'full text: read_ledger({ query: "full", phase: "<phase>" })')
     }
     case "review_outcomes":
       // 0.6.19: recomputed from per-phase scalar totals on every read; never a rollup.

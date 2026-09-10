@@ -2,9 +2,10 @@ import fs from "fs/promises"
 import path from "path"
 import { fileURLToPath } from "url"
 import type { JournalFile, JournalSession, JournalRollup, WriteJournalInput } from "../types.js"
-import { WriteJournalInputSchema } from "../types.js"
+import { WriteJournalInputSchema, JournalSoftLimits } from "../types.js"
 import { atomicWriteFile } from "./atomicWrite.js"
 import { scrub } from "./redaction.js"
+import { softLimitWarning } from "./softLimits.js"
 import { resolveModelRank } from "./modelRank.js"
 
 const __filename = fileURLToPath(import.meta.url)
@@ -155,6 +156,8 @@ export async function logEvent(filePath: string, input: WriteJournalInput): Prom
     if (parsed.operation !== "log_event") {
       throw new Error(`Expected operation "log_event", got "${parsed.operation}"`)
     }
+    // 0.6.20: an over-long msg is cut with a marker by the schema and reported, never refused.
+    const truncated = softLimitWarning(input, parsed, JournalSoftLimits.log_event)
 
     const journal = await readJournal(filePath)
 
@@ -181,7 +184,7 @@ export async function logEvent(filePath: string, input: WriteJournalInput): Prom
     // Atomic write via shared helper (unique tmp suffix — cross-process safe, D2c)
     await atomicWriteFile(filePath, JSON.stringify(journal), { scrub })
 
-    return "ok"
+    return truncated ? `ok\nwarning: ${truncated}` : "ok"
   })
 }
 

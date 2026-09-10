@@ -89,9 +89,11 @@ describe("native review gate invariants", () => {
     await passingUnit()
     await write({ operation: "record_review", phase: "p1", data: { advisor: "fan", stage: "fan", completion: "complete", findings: [] } })
     await expect(gate()).rejects.toThrow("REVIEW REQUIRED")
-    await expect(writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: review() } as WriteLedgerInput)).rejects.toThrow("requires the Codex host")
+    // 0.6.20: claude-code runs the same shape (a Workflow fan); cursor and generic do not.
+    await expect(writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: review() } as WriteLedgerInput, undefined, undefined, "cursor")).rejects.toThrow("requires a host with native subagents")
     await record()
-    await expect(writeLedger(ledgerPath, { operation: "update_phase_gate", phase: "p1", data: { g: "pass" } })).rejects.toThrow("REVIEW REQUIRED")
+    // a native record recorded on Codex does not carry the gate on a host without native subagents
+    await expect(writeLedger(ledgerPath, { operation: "update_phase_gate", phase: "p1", data: { g: "pass" } }, undefined, undefined, "cursor")).rejects.toThrow("REVIEW REQUIRED")
   })
 
   it.each([

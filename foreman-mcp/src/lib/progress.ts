@@ -69,6 +69,18 @@ export async function writeProgress(
         }
         break
       }
+      case "retire_unit": {
+        // 0.6.20 (field report): an orphan checklist entry had no clear path. Removed with a
+        // recorded reason (bounded), never silently.
+        const { unit_id, phase, reason } = operation.data
+        const p = progress.phases[phase]
+        if (!p?.units[unit_id]) {
+          throw new Error(`RETIRE BLOCKED: '${phase}/${unit_id}' is not in the progress checklist.`)
+        }
+        delete p.units[unit_id]
+        p.retired = [...(p.retired ?? []), { unit_id, ts: new Date().toISOString(), reason }].slice(-20)
+        break
+      }
       case "update_status": {
         const { unit_id, phase, status, notes } = operation.data
         if (!progress.phases[phase]) {

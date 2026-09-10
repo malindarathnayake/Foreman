@@ -17,7 +17,8 @@ import type { ModelRank } from "./modelRank.js"
 import { toKeyValue, toTable } from "./toon.js"
 
 // ─── Policy constants (a change is a visible bump) ───────────────────────────
-export const OUTCOMES_POLICY_VERSION = 1 as const
+// 2 (0.6.20): the gate basis is the WEAKEST per-unit class, not the strongest seat.
+export const OUTCOMES_POLICY_VERSION = 2 as const
 export const GATE_HISTORY = 5
 export const GATE_SEATS_MAX = 10
 export const GATE_NATIVE_IDS_MAX = 6
@@ -95,6 +96,16 @@ export function phaseBasis(classes: BasisClass[]): BasisClass {
   return "override"
 }
 
+/** Weakest class among per-unit classes (0.6.20); 'override' when there is none or one is unknown. */
+export function weakestBasis(classes: BasisClass[]): BasisClass {
+  let weakest = -1
+  for (const c of classes) {
+    const i = BASIS_PRECEDENCE.indexOf(c)
+    weakest = Math.max(weakest, i === -1 ? BASIS_PRECEDENCE.length : i)
+  }
+  return BASIS_PRECEDENCE[weakest] ?? "override"
+}
+
 // ─── Gate stamp ──────────────────────────────────────────────────────────────
 
 export interface ClassifyGateInput {
@@ -109,25 +120,37 @@ export interface ClassifyGateInput {
   agentClass?: "frontier" | "capable" | "compact"
   overrides: GateEvidence["overrides"]
   ts: string
+  /**
+   * 0.6.20: seat → units it covers (reviewPredicates.seatCoverage byRecord). Absent = every
+   * seat covers every unit, the pre-0.6.20 arithmetic direct callers still get. When present,
+   * a seat missing from the map covers nothing (never widen what a seat is credited with).
+   */
+  coverage?: ReadonlyMap<PhaseReview, ReadonlySet<string>>
 }
 
 /** Server-authored evidence for one counted gate pass. */
 export function classifyGate(input: ClassifyGateInput): GateEvidence {
   const { host, phaseObj, currentReviews, seats, allReviews, modelRank, ts } = input
   const history = phaseObj.gate_history ?? []
-  const classes: BasisClass[] = []
+  const unitIds = Object.keys(phaseObj.units)
+  const allUnits: ReadonlySet<string> = new Set(unitIds)
+  const emptySet: ReadonlySet<string> = new Set()
+  const coversOf = (r: PhaseReview): ReadonlySet<string> => (input.coverage ? input.coverage.get(r) ?? emptySet : allUnits)
+  const rows: Array<{ r: PhaseReview; basis: BasisClass }> = []
   const seatRows: GateEvidence["seats"] = []
   let seatAgents = 0
   const tokens = { receipted: 0, declared: 0, unreported: 0 }
   let deltaUnits: string[] | undefined
   // Receipted seats from two distinct providers on a null-provider host: at least one is
-  // cross-vendor to whatever the pit-boss is, so the gate is receipted_external.
+  // cross-vendor to whatever the pit-boss is, so the gate is receipted_external. Judged per
+  // unit since 0.6.20 (both seats must cover the unit); the phase-wide set serves the
+  // unit-less fallback only.
   const receiptedProviders = new Set<Provider>()
 
   for (const r of seats) {
     const basis = seatBasis(r, host, allReviews)
     if (basis === null) continue
-    classes.push(basis)
+    rows.push({ r, basis })
     if (r.provenance && basis === "receipted" && r.provenance.provider !== "unknown") receiptedProviders.add(r.provenance.provider)
     const nativeIds = r.native
       ? [...r.native.reviewers.map((s) => s.agent_id), r.native.verifier_id].slice(0, GATE_NATIVE_IDS_MAX)
@@ -137,20 +160,50 @@ export function classifyGate(input: ClassifyGateInput): GateEvidence {
     else if (r.tokens !== undefined) tokens.declared += r.tokens
     else tokens.unreported += 1
     if (seatRows.length < GATE_SEATS_MAX) {
+      const covers = coversOf(r).size
       seatRows.push({
         advisor: r.advisor, ts: r.ts, stage: r.stage ?? "independent", basis,
         ...(r.evidence ? { kind: r.evidence.kind ?? "direct_fix", baseline_ts: r.evidence.baseline_review_ts } : {}),
         ...(r.provenance ? { receipt: r.provenance.receipt } : {}),
         ...(r.evidence?.verifier_id ? { verifier_id: r.evidence.verifier_id } : {}),
         ...(nativeIds ? { native_ids: nativeIds } : {}),
+        // 0.6.20: only a seat covering fewer than every unit carries the count, so whole-seat
+        // stamps are byte-identical to 0.6.19's.
+        ...(covers < unitIds.length ? { units: covers } : {}),
       })
     }
   }
-  if (receiptedProviders.size >= 2) classes.push("receipted_external")
-  const basis = phaseBasis(classes)
+  // Per unit: the strongest class among the seats covering it, with the two-vendor rule
+  // judged over those seats. Gate basis (0.6.20): the WEAKEST per-unit class. A pass is as
+  // independent as its least-reviewed unit; an old external seat kept current by never
+  // touching its units can no longer reset the independence streak on its own. When every
+  // seat covers every unit (every pre-0.6.20 stamp) each per-unit class equals the phase
+  // class and the stamp is unchanged.
+  const perUnit = new Map<string, BasisClass>()
+  for (const id of unitIds) {
+    const classes: BasisClass[] = []
+    const providers = new Set<Provider>()
+    for (const { r, basis: seat } of rows) {
+      if (!coversOf(r).has(id)) continue
+      classes.push(seat)
+      if (r.provenance && seat === "receipted" && r.provenance.provider !== "unknown") providers.add(r.provenance.provider)
+    }
+    if (providers.size >= 2) classes.push("receipted_external")
+    perUnit.set(id, phaseBasis(classes))   // "override" when nothing covers it
+  }
+  const basis = unitIds.length === 0
+    ? phaseBasis([...rows.map((x) => x.basis), ...(receiptedProviders.size >= 2 ? ["receipted_external" as const] : [])])
+    : weakestBasis([...perUnit.values()])
   if (basis.startsWith("delta:")) {
-    const carrying = seats.find((r) => r.stage === "verification" && seatBasis(r, host, allReviews) === basis)
-    deltaUnits = carrying?.evidence?.units.map((u) => u.unit_id)
+    // The sorted union of evidence.units over the verification seats of that class (one seat
+    // in every reachable case today; two baselines each carrying an eligible delta is what
+    // the eligibility predicates rule out).
+    const ids = new Set<string>()
+    for (const { r, basis: seat } of rows) {
+      if (r.stage !== "verification" || seat !== basis) continue
+      for (const u of r.evidence?.units ?? []) ids.add(u.unit_id)
+    }
+    deltaUnits = [...ids].sort().slice(0, 50)
   }
 
   const present: GateEvidence["present"] = {}

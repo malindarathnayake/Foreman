@@ -284,6 +284,8 @@ Rules:
 
 Run advisor review before execution unless explicitly waived.
 
+{{include: probe-check}}
+
 {{include: deliberation-protocol}}
 
 The grounding report plus the plan checklist IS the evidence packet — that is exactly what a council seat needs, so rung 1 is usually available here without extra assembly:

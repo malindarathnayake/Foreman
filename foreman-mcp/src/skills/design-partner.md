@@ -117,6 +117,8 @@ Present the design summary and ask: "Design summary saved. Review it — does th
 
 When architectural ambiguities cannot be resolved through user Q&A alone — escalate to multi-model deliberation. Escalate when: user says "I'm not sure" on a non-trivial choice; two approaches have genuine tradeoffs; decision has downstream implications; 2+ rounds without resolution.
 
+{{include: probe-check}}
+
 {{include: deliberation-protocol}}
 
 **Skip condition:** If user says "skip council" or "just pick one", make the call yourself with clear rationale.

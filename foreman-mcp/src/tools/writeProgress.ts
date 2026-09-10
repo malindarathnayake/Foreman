@@ -8,31 +8,13 @@ import { scrub } from "../lib/redaction.js"
 import fs from "fs/promises"
 import path from "path"
 import type { LedgerFile } from "../types.js"
+import { FENCE_START, FENCE_END, parseFencedBlock } from "../lib/progressFence.js"
+import { DEFAULT_PATHS, PROGRESS_MARKDOWN } from "../lib/foremanFiles.js"
 
-export const FENCE_START = "<!-- foreman:checklist-start -->"
-export const FENCE_END = "<!-- foreman:checklist-end -->"
-
-export interface FencedBlock {
-  hasStart: boolean
-  hasEnd: boolean
-  startIdx: number
-  endIdx: number
-  existing: string
-}
-
-export function parseFencedBlock(content: string): FencedBlock {
-  const startIdx = content.indexOf(FENCE_START)
-  const endIdx = content.indexOf(FENCE_END)
-  const hasStart = startIdx !== -1
-  const hasEnd = endIdx !== -1
-
-  let existing = ""
-  if (hasStart && hasEnd) {
-    existing = content.slice(startIdx + FENCE_START.length, endIdx)
-  }
-
-  return { hasStart, hasEnd, startIdx, endIdx, existing }
-}
+// Fence markers and parser live in lib/progressFence.ts (v0.6.20) so the repository
+// guard's fingerprint can share them without lib importing tools. Re-exported here because
+// tests and callers import them from the tool module.
+export { FENCE_START, FENCE_END, parseFencedBlock, type FencedBlock } from "../lib/progressFence.js"
 
 /**
  * Counts hand-written checkbox lines OUTSIDE the fences whose text is the unit id: a
@@ -73,7 +55,7 @@ export async function handleWriteProgress(
   await writeProgress(filePath, parsed)
 
   if (docsDir) {
-    const markdownPath = path.join(docsDir, "PROGRESS.md")
+    const markdownPath = path.join(docsDir, PROGRESS_MARKDOWN)
 
     // Read existing PROGRESS.md — if missing, skip silently (do NOT create)
     let existing: string
@@ -89,7 +71,7 @@ export async function handleWriteProgress(
 
     // Read ledger (safe — readLedger returns empty ledger if file missing).
     // readOnly: a progress write must never rename a corrupt ledger file.
-    const ledger = await readLedger(ledgerPath ?? "Docs/.foreman-ledger.json", { readOnly: true })
+    const ledger = await readLedger(ledgerPath ?? DEFAULT_PATHS.ledgerPath, { readOnly: true })
     const checklist = renderChecklist(ledger)
 
     const block = parseFencedBlock(existing)

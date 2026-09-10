@@ -53,7 +53,7 @@ describe("schema errors — one hint per field, expected shape appended", () => 
     expect(text).toContain("  data.v: ")
     expect(text).toContain("  data.via: ")
     expect(text).toContain("  data.note: ")
-    expect(text).toContain("Expected data shape: { v: 'pass'|'fail'|'pending'|'inconclusive', via?: 'worker'|'pitboss-direct'|'n/a', worker_id?: string (≥1 chars, ≤400 chars), note?: string (≤10000 chars), user_override?: boolean }")
+    expect(text).toContain("Expected data shape: { v: 'pass'|'fail'|'pending'|'inconclusive', via?: 'worker'|'pitboss-direct'|'n/a', worker_id?: string (≥1 chars, ≤400 chars), note?: string (≤10000 chars), user_override?: boolean, escape_class?: 'original_defect'|'remediation_defect'|'test_gap'|'process'|'new_scope' }")
   })
 
   it("handleWriteLedger surfaces the formatted error instead of a Zod dump", async () => {
@@ -93,7 +93,7 @@ describe("schema errors — one hint per field, expected shape appended", () => 
     try {
       const result = await client.callTool({
         name: "write_journal",
-        arguments: { operation: "log_event", data: { t: "INFO", u: "u1", msg: "x".repeat(401) } },
+        arguments: { operation: "log_event", data: { t: "INFO", u: "u1", msg: 42 } },
       })
       expect(result.isError).toBe(true)
       const text = (result.content as Array<{ text: string }>)[0].text

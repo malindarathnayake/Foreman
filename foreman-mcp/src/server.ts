@@ -44,6 +44,7 @@ import { readJournal, initSession, declareModel, logEvent, endSession } from "./
 import { resolveModelRank, type ModelRank } from "./lib/modelRank.js"
 import { invokeAdvisor, advisorRunMeta, formatAdvisorResult, GEMINI_ADVISOR_MODEL, CODEX_ADVISOR_MODEL } from "./tools/invokeAdvisor.js"
 import { appendReceipt, receiptsPathFor, receiptFailure, sha256Hex, CLI_PROVIDER } from "./lib/seatReceipts.js"
+import { DEFAULT_PATHS } from "./lib/foremanFiles.js"
 import { sessionOrient } from "./tools/sessionOrient.js"
 import { renderIncludes, loadSkill } from "./lib/skillLoader.js"
 import { hostStatus } from "./tools/hostStatus.js"
@@ -52,6 +53,10 @@ import { maybeCompress, compressionEnabled, getRetrieveOriginalTool, toolNameFor
 import { ADVISOR_CLIS } from "./lib/advisorCli.js"
 import { codexAgentsInit, CODEX_AGENT_ROLES } from "./tools/codexAgentsInit.js"
 import { claudeWorkflowsInit, FOREMAN_WORKFLOWS } from "./tools/claudeWorkflowsInit.js"
+import { preflightCheck, PreflightCheckInputSchema } from "./tools/preflightCheck.js"
+import { renderOracle, runOracle, VerifyOracleInputSchema } from "./tools/verifyOracle.js"
+import { recordOracle } from "./lib/ledger.js"
+import { preflightPathFor } from "./lib/preflight.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -79,10 +84,10 @@ export interface ServerConfig {
 }
 
 export async function createServer(config?: ServerConfig): Promise<McpServer> {
-  const ledgerPath = config?.ledgerPath ?? "Docs/.foreman-ledger.json"
-  const progressPath = config?.progressPath ?? "Docs/.foreman-progress.json"
-  const docsDir = config?.docsDir ?? "Docs"
-  const journalPath = config?.journalPath ?? "Docs/.foreman-journal.json"
+  const ledgerPath = config?.ledgerPath ?? DEFAULT_PATHS.ledgerPath
+  const progressPath = config?.progressPath ?? DEFAULT_PATHS.progressPath
+  const docsDir = config?.docsDir ?? DEFAULT_PATHS.docsDir
+  const journalPath = config?.journalPath ?? DEFAULT_PATHS.journalPath
   const host: HostId = config?.host ?? "claude-code"
   // Never inherit the previous host's declaration from the durable journal.
   let activeModelRank: ModelRank = resolveModelRank()
@@ -215,7 +220,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       inputSchema: z.strictObject({
         unit_id: z.string().max(10000).optional(),
         phase: z.string().max(10000).optional(),
-        query: z.enum(["verdicts", "rejections", "phase_gates", "reviews", "full", "delegation_metrics", "review_outcomes"]).optional(),
+        query: z.enum(["verdicts", "rejections", "phase_gates", "reviews", "full", "delegation_metrics", "review_outcomes", "facts"]).optional(),
         verdict: z.enum(["pass", "fail", "pending", "inconclusive"]).optional(),
         include_notes: z.boolean().optional(),
         cursor: z.number().int().min(0).max(1000000).optional(),
@@ -368,25 +373,26 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     {
       title: "Write Ledger",
       description: [
-        "Writes one operation to the Foreman ledger. Data shapes are in the input schema (data field); a rejected call returns one hint per field plus the expected shape.",
+        "Writes one ledger operation. Data shapes are in the input schema (data field); a rejected call returns a hint per field plus the expected shape.",
         "",
         "Operations (phase required; unit_id where noted):",
-        "  set_unit_status (unit_id) — delegated needs brief ≥20 chars + preflight; a ranked correction reuses the worker; direct_fix is legacy-only. Past 3 failures needs a grant or user_override.",
-        "  set_verdict (unit_id) — v:'pass' needs a prior delegation, an attempt after the latest failure (ATTEMPT REQUIRED), past the cap a grant or user_override (cap_override), a ≥5-word note on a no-test/no-build phase, and no unclassified escape; v:'fail' counts as a failed attempt.",
+        "  set_unit_status (unit_id) — delegated needs brief ≥20 chars + preflight, optionally data.rejection (its finding); a ranked correction reuses the worker; direct_fix is legacy-only. Past 3 failures: grant or user_override.",
+        "  set_verdict (unit_id) — v:'pass' needs a prior delegation, an attempt after the latest failure (ATTEMPT REQUIRED), past the cap a grant or user_override (cap_override), a ≥5-word note on a no-test/no-build phase, and no unclassified escape (escape_class classifies one); v:'fail' is a failed attempt.",
         "  add_rejection (unit_id) — counts a failed attempt; reopens a passed unit; on a gated unit records an escape (data.escape_class classifies it).",
-        "  record_escape (unit_id) — classifies a post-gate defect on a gated unit; source:'later' records one found later; refused when the unit never escaped.",
-        "  authorize_attempts (unit_id) — the owner's decision, once: N more attempts past the cap; refused below the cap or while a grant is open; a pass closes it.",
-        "  declare_phase_units — additive declared id set (cap 200); retire needs a reason; frozen once the gate is 'pass'.",
-        "  update_phase_gate — g:'pass' needs every unit passed, every declared id registered, a current seat review (cross_exam never counts) with no 'confirmed' finding or incomplete record, and no unclassified escape; user_override waives these, recorded on the phase.",
+        "  record_escape (unit_id) — classifies a post-gate defect; source:'later' for one found later; refused when the unit never escaped.",
+        "  authorize_attempts (unit_id) — the owner's decision, once: N attempts past the cap; refused below it or while a grant is open; a pass closes it.",
+        "  declare_phase_units — declared id set (cap 200); retire needs a reason; frozen once the gate is 'pass'.",
+        "  update_phase_gate — g:'pass' needs every unit passed, declared ids registered, a current seat review (cross_exam never counts) with no 'confirmed' finding or incomplete record, and no unclassified escape; user_override waives these, recorded on the phase.",
         "  set_phase_scope — once per phase; hot_path/security_boundary make the gate require agent_class:'frontier'.",
-        "  record_review — every finding needs a classification; 'line' is a string, severity lowercase; zero findings need checked[] or completion:'complete'; 'confirmed' blocks the gate; stage:'verification' needs complete evidence. Limit: checked ≤50 entries of ≤400 chars.",
+        "  record_review — every finding needs a classification; zero findings need checked[] or completion:'complete'; 'confirmed' blocks the gate; verification needs evidence. Limit: checked ≤50 entries of ≤400 chars. Longer entries are cut with a marker, not refused.",
       ].join("\n"),
       inputSchema: z.strictObject({
-        operation: z.enum(["set_unit_status", "set_verdict", "add_rejection", "declare_phase_units", "update_phase_gate", "set_phase_scope", "record_review", "authorize_attempts", "record_escape"]),
+        operation: z.enum(["set_unit_status", "set_verdict", "add_rejection", "declare_phase_units", "update_phase_gate", "set_phase_scope", "record_review", "authorize_attempts", "record_escape", "record_fact"]),
         unit_id: z.string().max(10000).optional(),
         phase: z.string().max(10000).optional(),
         data: z.record(z.string(), z.unknown()).describe(
-          "Per-operation shape (every key, enum value, and limit):\n" + shapesOf(LedgerOperationDataSchemas)
+          "Per-operation shape (every key, enum value, and limit):\n" + shapesOf(LedgerOperationDataSchemas) +
+          "\nSoft limits: record_review checked[] entries, limitations, and native.reviewers[].checked[] entries over their limit are cut to the limit with a trailing '…[truncated N chars]' marker and the result carries a warning; every other limit (ids, findings, evidence, notes) refuses the write."
         ),
       }),
       outputSchema: TextOutputSchema,
@@ -447,7 +453,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     {
       title: "Repository Guard",
       description:
-        "Runs the shared-tree ownership check around an editing worker and records it on the unit's newest delegation. 'snapshot' captures repository root, branch, HEAD, stash, every changed path with a content fingerprint, core.autocrlf, and line-ending attributes before the worker runs, and freezes allowed_files onto that baseline; 'compare' re-reads the state afterwards and names every mutation outside the frozen set — a moved HEAD, a touched index or stash, a changed config, a file changed outside the brief, an already-dirty file whose content was overwritten, or a pre-existing uncommitted change that disappeared. Foreman writes both results, so set_verdict refuses a pass whose guard did not clear (REPOSITORY GUARD). A baseline cannot be re-taken for an attempt that has one, and compare takes no allowed_files of its own. It compares up to max_entries changed paths (default 500, raisable to 5000). Any git probe that fails, times out, or truncates is a refusal, never a clean tree. Outside a git work tree it reports n/a and gates nothing. Order: set_unit_status s:'delegated' -> snapshot -> spawn the worker -> compare -> set_verdict.",
+        "Runs the shared-tree ownership check around an editing worker and records it on the unit's newest delegation. 'snapshot' captures repository root, branch, HEAD, stash, every changed path with a content fingerprint, core.autocrlf, and line-ending attributes before the worker runs, and freezes allowed_files onto that baseline; 'compare' re-reads the state afterwards and names every mutation outside the frozen set — a moved HEAD, a touched index or stash, a changed config, a file changed outside the brief, an already-dirty file whose content was overwritten, or a pre-existing uncommitted change that disappeared. Foreman writes both results, so set_verdict refuses a pass whose guard did not clear (REPOSITORY GUARD). A baseline cannot be re-taken for an attempt that has one, and compare takes no allowed_files of its own. It compares up to max_entries changed paths (default 500, raisable to 5000). Any git probe that fails, times out, or truncates is a refusal, never a clean tree. Outside a git work tree it reports n/a and gates nothing. Order: set_unit_status s:'delegated' -> snapshot -> spawn the worker -> compare -> set_verdict. Files Foreman itself writes (.foreman-* state files and their .corrupt/.tmp side files, and the fenced checklist block in Docs/PROGRESS.md) are never charged to the worker; PROGRESS.md content outside the fence still is, and the fence interior is not verified (the ledger is authoritative). On a correction attempt, snapshot copies allowed_files and max_entries from the from_attempt baseline when they are omitted; a different set is still refused.",
       inputSchema: z.strictObject({
         operation: z.enum(["snapshot", "compare"]),
         phase: z.string().min(1).max(10000),
@@ -468,7 +474,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
     },
     async (args, _extra) => {
-      const text = await handleRepoGuard(args, { ledgerPath })
+      const text = await handleRepoGuard(args, { ledgerPath, progressPath, journalPath, docsDir })
       return textResult(text)
     }
   )
@@ -561,12 +567,13 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "The event-code enum is anomaly-only by design: log failures, delays, and degraded tooling; never successes, worker spawns, or test passes. Host tooling that is broken or unusable (e.g. run_tests cannot spawn) is TOOL_ERR. There is no informational code.",
         "",
         "Exact data shapes for every operation are in this tool's input schema (the description of the data field); a rejected call returns one hint per field plus the expected shape.",
-        "Limit: log_event data.msg is at most 400 characters.",
+        "Limit: log_event data.msg is at most 400 characters. Longer msg text is cut to 400 with a trailing marker and the write returns a warning; it is not refused.",
       ].join("\n"),
       inputSchema: z.strictObject({
         operation: z.enum(["init_session", "declare_model", "log_event", "end_session"]),
         data: z.record(z.string(), z.unknown()).describe(
-          "Per-operation shape (every key, enum value, and limit):\n" + shapesOf(JournalOperationDataSchemas)
+          "Per-operation shape (every key, enum value, and limit):\n" + shapesOf(JournalOperationDataSchemas) +
+          "\nSoft limit: log_event msg over 400 chars is cut to 400 with a trailing '…[truncated N chars]' marker and the result carries a warning."
         ),
       }),
       outputSchema: TextOutputSchema,
@@ -652,7 +659,8 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "passed is exit code 0. List-style checkers such as gofmt -l exit 0 and print the files needing work: pass fail_on_stdout:true so any stdout counts as a failure. Output shaping: truncation always keeps the TAIL of each stream. strip_patterns (≤10 JS regex sources, per line, both streams, before the cap) drops known noise and reports stripped_lines; tail_lines keeps the last N lines. All opt-in; default output is unchanged.",
       ].join("\n"),
       inputSchema: z.strictObject({
-        runner: z.string().min(1).max(50),
+        // 0.6.20: a pinned toolchain path inside the project root is allowed (basename must be an allowed runner).
+        runner: z.string().min(1).max(260),
         args: z.array(z.string().max(10000)).max(100).default([]),
         timeout_ms: z.number().min(1).max(600000).optional(),
         max_output_chars: z.number().min(1).max(50000).optional(),
@@ -737,6 +745,50 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       }
     )
   }
+
+  // 0.6.20 (field report): the brief preflight was an attestation; this checks it. Every host.
+  server.registerTool(
+    "preflight_check",
+    {
+      title: "Preflight Check",
+      description: [
+        "Checks a worker brief against the spec BEFORE the attempt is spent, and records a passing receipt the ledger requires on set_unit_status s:'delegated'.",
+        "Refuses: a symbol in `symbols` the spec does not contain; a citation in the brief (path, file:line, named test) that does not resolve in the repo.",
+        "Advises: directive sentences with no echo in the brief, contradiction markers, drifted file:line citations, files outside `files` that reference `type_names`/`introduces` (dispatch sites with a default arm first).",
+        "Returns brief_hash; copy it into the delegation as preflight.receipt with symbols_grepped as the same array.",
+      ].join(" "),
+      inputSchema: PreflightCheckInputSchema.strict(),
+      outputSchema: TextOutputSchema,
+      annotations: { title: "Preflight Check", readOnlyHint: false, destructiveHint: false },
+    },
+    async (args, _extra) => textResult(await preflightCheck(args, preflightPathFor(ledgerPath)))
+  )
+
+  // 0.6.20 (field report): the protocol asked for a mutation probe and shipped no tool. Every host.
+  server.registerTool(
+    "verify_oracle",
+    {
+      title: "Verify Oracle",
+      description: [
+        "Mutation probe for a unit's guard tests: for each mutation the file must contain `old` exactly once; the tool writes `new`, runs the guard test through run_tests (allowlist and shaping apply), restores the original bytes and verifies the restore by hash.",
+        "killed = the guard test failed with the control removed; survived = the suite cannot observe that control (add or fix the test before another reading-only review); invalid = old absent/ambiguous, file outside the root, or a refused runner. A failed restore aborts loudly.",
+        "The report is recorded on the unit (unit.oracle) and read by the repeated-block rule.",
+      ].join(" "),
+      inputSchema: VerifyOracleInputSchema.strict(),
+      outputSchema: TextOutputSchema,
+      annotations: { title: "Verify Oracle", readOnlyHint: false, destructiveHint: false },
+    },
+    async (args, _extra) => {
+      const report = await runOracle(args)
+      let note = ""
+      try {
+        await recordOracle(ledgerPath, args.phase, args.unit_id, report)
+      } catch (err) {
+        note = `\nledger: ${err instanceof Error ? err.message : String(err)}`
+      }
+      return textResult(renderOracle(report) + note)
+    }
+  )
 
   // Claude Code only (0.6.20): install Foreman's saved Workflow scripts into the project.
   if (host === "claude-code") {

@@ -266,7 +266,9 @@ describe("journal", () => {
       // +GATE_OVERRIDE (user forced past a checkpoint). Both anomalies — the enum stays anomaly-only.
       expect(validCodes).toContain("SPEC_GAP")
       expect(validCodes).toContain("GATE_OVERRIDE")
-      expect(validCodes.length).toBe(15)
+      // 0.6.20 (field report): +T_BLIND — a green suite that cannot observe the defect
+      expect(validCodes).toContain("T_BLIND")
+      expect(validCodes.length).toBe(16)
     })
   })
 

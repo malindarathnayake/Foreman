@@ -19,12 +19,13 @@
  * and a pit-boss with a shell can still write the file; the chain makes that loud.
  */
 import fs from "fs/promises"
-import path from "path"
 import { createHash, randomBytes } from "crypto"
 import type { Provider } from "../types.js"
 import { canonicalStringify } from "./eventsSidecar.js"
 
-export const RECEIPTS_FILE = ".foreman-seats.jsonl"
+// The file name and its path rule live in lib/foremanFiles.ts (v0.6.20), the single list the
+// repository guard excludes; re-exported here for existing importers.
+export { RECEIPTS_FILE, receiptsPathFor } from "./foremanFiles.js"
 export type ReceiptCli = "claude" | "codex" | "gemini" | "council"
 export type ReceiptFailure = "empty_stdout" | "echoed_prompt" | "model_substituted" | "resolution_failed" | "nonzero_exit"
 
@@ -76,10 +77,6 @@ export type ReceiptInput = Omit<SeatReceipt, "v" | "kind" | "id" | "ts">
 export interface ReceiptsState {
   receipts: Map<string, SeatReceipt>
   consumed: Set<string>
-}
-
-export function receiptsPathFor(ledgerPath: string): string {
-  return path.join(path.dirname(ledgerPath), RECEIPTS_FILE)
 }
 
 export function sha256Hex(text: string): string {

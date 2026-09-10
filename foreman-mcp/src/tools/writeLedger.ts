@@ -1,5 +1,5 @@
 import path from "path"
-import { WriteLedgerInputSchema, LedgerOperationDataSchemas, type WriteLedgerInput, type LedgerFile } from "../types.js"
+import { WriteLedgerInputSchema, LedgerOperationDataSchemas, LedgerSoftLimits, type WriteLedgerInput, type LedgerFile } from "../types.js"
 import { writeLedger } from "../lib/ledger.js"
 import { formatSchemaError, isZodError } from "../lib/schemaError.js"
 import { toKeyValue } from "../lib/toon.js"
@@ -7,6 +7,7 @@ import { appendEvent, boundIdentifier, openDelegation, followUpEventInput, type 
 import { drainCcrStats } from "../lib/compression.js"
 import type { HostId } from "../lib/hostProfiles.js"
 import { resolveModelRank, type ModelRank } from "../lib/modelRank.js"
+import { softLimitWarning } from "../lib/softLimits.js"
 
 /**
  * Validates input with Zod schema, delegates to lib/ledger.ts,
@@ -20,6 +21,8 @@ export async function handleWriteLedger(filePath: string, rawInput: unknown, hos
     if (isZodError(err)) throw new Error(formatSchemaError("write_ledger", err, rawInput, LedgerOperationDataSchemas))
     throw err
   }
+  // 0.6.20: soft-limited fields the schema cut are reported, never refused.
+  const truncated = softLimitWarning(rawInput, parsed, LedgerSoftLimits[parsed.operation] ?? [])
   const { ledger, warning } = await writeLedger(filePath, parsed, foldCcrStats, undefined, host, modelRank)
 
   // Return confirmation with key details
@@ -30,7 +33,8 @@ export async function handleWriteLedger(filePath: string, rawInput: unknown, hos
     timestamp: ledger.ts,
     status: "ok",
   }
-  if (warning) result.warning = warning
+  const combined = [warning, truncated].filter(Boolean).join(" | ")
+  if (combined) result.warning = combined
 
   // ─── R3 sidecar hook (Unit 4g) ────────────────────────────────────────────
   // Runs strictly AFTER the `writeLedger` call above has already succeeded and
@@ -64,14 +68,26 @@ function foldCcrStats(ledger: LedgerFile): void {
 
 // ─── R3 emission map (exhaustive) ──────────────────────────────────────────────
 // Maps a successful ledger write to the terminal sidecar event it closes out, if
-// any. Every ledger operation other than add_rejection/set_verdict — and every
-// add_rejection/set_verdict value not listed below — is a no-op.
+// any. Every ledger operation other than add_rejection/set_verdict/set_unit_status
+// (data.rejection, 0.6.20) — and every value of those not listed below — is a no-op.
 function mapToTerminalEvent(
   operation: WriteLedgerInput
 ): { eventType: SidecarEventInput["event_type"]; extra: Partial<SidecarEventInput> } | null {
   switch (operation.operation) {
     case "add_rejection": {
       const r = operation.data.r
+      if (r === "ED_STALE" || r === "PATCH_APPLY_FAIL") {
+        return { eventType: "patch_checked", extra: { failure_stage: r, outcome: "fail" } }
+      }
+      if (r === "BLD_ERR") {
+        return { eventType: "validation_completed", extra: { failure_stage: "BLD_ERR", outcome: "fail" } }
+      }
+      return null
+    }
+    case "set_unit_status": {
+      // 0.6.20: an inline rejection closes an open invoke_worker chain the way add_rejection
+      // does; otherwise the gate's discipline check would find no terminal event.
+      const r = operation.data.rejection?.r
       if (r === "ED_STALE" || r === "PATCH_APPLY_FAIL") {
         return { eventType: "patch_checked", extra: { failure_stage: r, outcome: "fail" } }
       }

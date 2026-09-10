@@ -27,6 +27,7 @@ import {
   type FinishReasonClass,
 } from "../lib/workerResponse.js"
 import { readLedger } from "../lib/ledger.js"
+import { eventsPathFor } from "../lib/foremanFiles.js"
 import { logEvent } from "../lib/journal.js"
 import {
   postChat,
@@ -353,7 +354,7 @@ async function runDelegation(
   // and the ledger dir differ. With default config this is Docs/.foreman-events.jsonl
   // exactly as the spec states. deps.docsDir is retained ONLY for the parser's
   // protected-path option below.
-  const sidecarPath = path.join(path.dirname(deps.ledgerPath), ".foreman-events.jsonl")
+  const sidecarPath = eventsPathFor(deps.ledgerPath)
   const warnings: string[] = []
 
   function makeEvent(

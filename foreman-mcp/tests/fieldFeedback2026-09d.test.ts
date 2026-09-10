@@ -21,6 +21,7 @@ import { countLegacyCheckboxes, handleWriteProgress } from "../src/tools/writePr
 import type { ExternalCliResult } from "../src/lib/externalCli.js"
 import type { SidecarEvent } from "../src/lib/eventsSidecar.js"
 import type { VerificationEvidence } from "../src/types.js"
+import { TRUNCATION_MARKER_RE } from "../src/lib/softLimits.js"
 
 let tmpDir: string
 let ledgerPath: string
@@ -136,19 +137,23 @@ async function baselineThenDirectFix(baseFindings: Array<typeof LOW | typeof HIG
 // ─── item 5: checked[] entries up to 400 characters ────────────────────────────
 
 describe("checked[] cap", () => {
-  it("accepts 400-character entries and refuses 401", async () => {
-    await handleWriteLedger(ledgerPath, {
+  it("accepts 400-character entries and cuts 401 with a marker and a warning", async () => {
+    const first = await handleWriteLedger(ledgerPath, {
       operation: "record_review",
       phase: "p1",
       data: { advisor: "codex", findings: [], completion: "complete", checked: ["x".repeat(400)] },
     })
-    await expect(
-      handleWriteLedger(ledgerPath, {
-        operation: "record_review",
-        phase: "p1",
-        data: { advisor: "codex", findings: [], completion: "complete", checked: ["x".repeat(401)] },
-      })
-    ).rejects.toThrow(/data\.checked\.0: [\s\S]*checked\?: string \(≤400 chars\)\[\] \(max 50\)/)
+    expect(first).not.toContain("TRUNCATED")
+    // 0.6.20: the entry has no gate weight beyond presence, so the write goes through cut.
+    const result = await handleWriteLedger(ledgerPath, {
+      operation: "record_review",
+      phase: "p1",
+      data: { advisor: "codex", findings: [], completion: "complete", checked: ["x".repeat(401)] },
+    })
+    expect(result).toContain("warning: TRUNCATED: data.checked[0] was 401 chars (limit 400)")
+    const stored = (await readLedger(ledgerPath)).phases.p1.reviews!.at(-1)!.checked![0]
+    expect(stored).toHaveLength(400)
+    expect(stored).toMatch(TRUNCATION_MARKER_RE)
   })
 })
 

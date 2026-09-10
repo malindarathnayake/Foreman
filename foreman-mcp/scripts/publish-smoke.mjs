@@ -75,6 +75,9 @@ export const EXPECTED_TOOLS = [
   "invoke_worker",
   "invoke_council",
   "repo_guard",
+  "claude_workflows_init",
+  "preflight_check",
+  "verify_oracle",
 ]
 
 const JSONRPC_TIMEOUT_MS = 60_000

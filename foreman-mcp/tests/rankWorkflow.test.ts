@@ -3,6 +3,7 @@ import fs from "fs/promises"
 import os from "os"
 import path from "path"
 import { readLedger, recordRepoGuard, writeLedger, type SidecarReader } from "../src/lib/ledger.js"
+import { handleWriteLedger } from "../src/tools/writeLedger.js"
 import { resolveModelRank, type ModelRank } from "../src/lib/modelRank.js"
 import type { HostId } from "../src/lib/hostProfiles.js"
 import type { RepoSnapshot, VerificationEvidence, WriteLedgerInput } from "../src/types.js"
@@ -184,6 +185,98 @@ describe("rank-directed bounded worker corrections", () => {
     }
     await expect(correction()).rejects.toThrow(/DELEGATION CAP/)
     expect((await unit()).attempt_seq).toBe(3)
+  })
+})
+
+describe("late-bound worker ids (0.6.20)", () => {
+  // Field flow: the host returns the worker id after the delegation write and add_rejection
+  // never carries it, so the correction is the first write that can record it.
+  const reject = () => write({ operation: "add_rejection", phase: "p1", unit_id: "u1", data: { r: "tests", msg: "assertion fails", ts: "t" } })
+  it("binds the correction's worker_id onto an id-less rejected attempt once", async () => {
+    await delegate()
+    await guard()
+    await reject()
+    const result = await correction()
+    expect(result.warning).toContain("Worker id late-bound to attempt #1; it cannot be rebound.")
+    const u = await unit()
+    expect(u.delegations![0].worker_id).toBe("worker-one")
+    expect(u.delegations![0].worker_id_bound).toMatchObject({ at: "correction", by_attempt: 2 })
+    expect(u.delegations![0].worker_id_bound!.ts).toBe(new Date(Date.now() - 10).toISOString())
+    expect(u.delegations![1]).toMatchObject({ attempt: 2, worker_id: "worker-one", session_id: "session-one" })
+    expect(u.delegations![1].worker_id_bound).toBeUndefined()
+    expect(u.attempt_seq).toBe(2)
+    await guard()
+    await expect(correction(TOP, "bounded", { worker_id: "other" })).rejects.toThrow(/same recorded worker_id/)
+    await expect(verdict("fail", TOP, "other")).rejects.toThrow(/cannot be rebound/)
+    await verdict("pass", TOP, "worker-one")
+  })
+  it("does not add the late-bound sentence when the id was already recorded", async () => {
+    await initial()
+    const result = await correction()
+    expect(result.warning).not.toContain("late-bound")
+    expect((await unit()).delegations![0].worker_id_bound).toBeUndefined()
+  })
+  it("binds onto an id-less attempt that received a fail verdict", async () => {
+    await delegate()
+    await guard()
+    await verdict("fail")
+    const result = await correction()
+    expect(result.warning).toContain("late-bound to attempt #1")
+    expect((await unit()).delegations![0]).toMatchObject({ worker_id: "worker-one", worker_id_bound: { at: "correction", by_attempt: 2 } })
+  })
+  it("binds onto an id-less gated attempt and records the post_gate_attempt escape", async () => {
+    await delegate()
+    await guard()
+    await verdict("pass")
+    await baseline()
+    await gate()
+    const result = await correction()
+    expect(result.warning).toContain("late-bound to attempt #1")
+    const phase = (await readLedger(ledgerPath)).phases.p1
+    expect(phase.units.u1.delegations![0]).toMatchObject({ worker_id: "worker-one", worker_id_bound: { at: "correction", by_attempt: 2 } })
+    expect(phase.escapes!.map((e) => [e.unit_id, e.attempt, e.sources[0]])).toEqual([["u1", 1, "post_gate_attempt"]])
+  })
+  it("does not bind without a cleared ownership guard", async () => {
+    await delegate()
+    await reject()
+    await expect(correction()).rejects.toThrow(/cleared ownership guard/)
+    expect((await unit()).delegations![0].worker_id).toBeUndefined()
+    expect((await unit()).delegations![0].worker_id_bound).toBeUndefined()
+  })
+  it("does not bind across a session switch", async () => {
+    await delegate()
+    await guard()
+    await reject()
+    await expect(correction({ ...TOP, session_id: "new-session" })).rejects.toThrow(/same recorded worker_id/)
+    expect((await unit()).delegations![0].worker_id).toBeUndefined()
+  })
+  it("does not bind onto an invoke_worker attempt", async () => {
+    await delegate()
+    await guard()
+    await reject()
+    const events = async () => [{ phase: "p1", unit_id: "u1", attempt: 1 } as SidecarEvent]
+    await expect(write({ operation: "set_unit_status", phase: "p1", unit_id: "u1", data: {
+      s: "delegated", brief: "Correct the bounded existing unit with its worker.", preflight: PREFLIGHT,
+      worker_id: "worker-one", correction: { kind: "bounded", from_attempt: 1, files: FILES },
+    } }, TOP, "codex", events)).rejects.toThrow(/invoke_worker attempts cannot be resumed/)
+    expect((await unit()).delegations![0].worker_id).toBeUndefined()
+    expect((await unit()).delegations![0].worker_id_bound).toBeUndefined()
+  })
+  it("counts a late-bound reuse toward the same attempt cap", async () => {
+    await delegate()
+    await guard()
+    await reject()
+    for (let i = 0; i < 2; i++) { await correction(); await guard(); await verdict("fail") }
+    await expect(correction()).rejects.toThrow(/DELEGATION CAP/)
+    expect((await unit()).attempt_seq).toBe(3)
+  })
+  it("discards the bind when the attempt cap refuses the correction", async () => {
+    for (let i = 0; i < 3; i++) { await delegate(); await guard(); await reject() }
+    await expect(correction()).rejects.toThrow(/DELEGATION CAP/)
+    const u = await unit()
+    expect(u.attempt_seq).toBe(3)
+    expect(u.delegations!.map((d) => d.worker_id)).toEqual([undefined, undefined, undefined])
+    expect(u.delegations!.some((d) => d.worker_id_bound)).toBe(false)
   })
 })
 
@@ -372,5 +465,21 @@ describe("0.6.19 structural bounds on worker-delta records", () => {
     await fs.writeFile(ledgerPath, JSON.stringify(ledger))
     await gate()
     expect((await readLedger(ledgerPath)).phases.p1.g).toBe("pass")
+  })
+
+  // 0.6.20 soft limits: checked[] entries are cut with a marker instead of refused, but a
+  // worker_delta compares checked paths to the frozen evidence.files. A cut path can never
+  // match, so the record fails closed on the path check — never a SCHEMA ERROR, nothing written.
+  it("a 401-char checked path on a worker_delta is cut, then refused because it cannot match evidence.files", async () => {
+    const ts = await ready()
+    const before = (await readLedger(ledgerPath)).phases.p1.reviews!.length
+    const longPath = "src/" + "a".repeat(400) + ".ts"
+    const attempt = handleWriteLedger(ledgerPath, {
+      operation: "record_review", phase: "p1",
+      data: { advisor: "fresh-verifier", stage: "verification", completion: "complete", checked: [longPath, "tests/a.test.ts"], findings: [], evidence: evidence(ts) },
+    }, "codex", TOP)
+    await expect(attempt).rejects.toThrow(/^RANK VERIFICATION: checked must list every file in evidence\.files \(missing: src\/a\.ts\)\.$/)
+    await expect(attempt).rejects.not.toThrow(/SCHEMA ERROR/)
+    expect((await readLedger(ledgerPath)).phases.p1.reviews!.length).toBe(before)
   })
 })

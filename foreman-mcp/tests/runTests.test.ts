@@ -128,6 +128,30 @@ describe('runTests', () => {
       expect(result).toContain('node')
     })
 
+    test('a pinned toolchain inside the project root with an allowed basename is accepted; traversal, a foreign basename and a missing file are refused', async () => {
+      const { pinnedToolchain } = await import('../src/tools/runTests.js')
+      const fs = await import('node:fs/promises')
+      const os = await import('node:os')
+      const path = await import('node:path')
+      const root = await fs.mkdtemp(path.join(os.tmpdir(), 'foreman-toolchain-'))
+      try {
+        await fs.mkdir(path.join(root, 'bin', 'go1.26.8', 'bin'), { recursive: true })
+        await fs.writeFile(path.join(root, 'bin', 'go1.26.8', 'bin', 'go.exe'), '')
+        await fs.writeFile(path.join(root, 'bin', 'go1.26.8', 'bin', 'curl.exe'), '')
+        const allowed = ['go', 'npm']
+        expect(pinnedToolchain('go', allowed, root)).toBeNull()
+        expect(pinnedToolchain('bin/go1.26.8/bin/go.exe', allowed, root)).toEqual({ ok: true, command: path.join(root, 'bin', 'go1.26.8', 'bin', 'go.exe') })
+        expect(pinnedToolchain('bin\\go1.26.8\\bin\\go.exe', allowed, root)).toMatchObject({ ok: true })
+        expect(pinnedToolchain('../outside/go.exe', allowed, root)).toMatchObject({ ok: false, error: expect.stringContaining('inside the project root') })
+        expect(pinnedToolchain('bin/go1.26.8/bin/curl.exe', allowed, root)).toMatchObject({ ok: false, error: expect.stringContaining("'curl' is not an allowed runner") })
+        expect(pinnedToolchain('bin/go1.26.8/bin/missing.exe', ['missing'], root)).toMatchObject({ ok: false, error: expect.stringContaining('pinned runner not found') })
+        // every refusal keeps the allowlist error prefix the tool has always used
+        expect((pinnedToolchain('../outside/go.exe', allowed, root) as { error: string }).error).toMatch(/^runner not in allowlist/)
+      } finally {
+        await fs.rm(root, { recursive: true, force: true })
+      }
+    })
+
     test('default runners are correct', () => {
       expect(DEFAULT_ALLOWED_RUNNERS).toContain('npm')
       expect(DEFAULT_ALLOWED_RUNNERS).not.toContain('npx')

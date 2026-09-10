@@ -238,6 +238,32 @@ export function applyOutputFilters(
   return { text: lines.join('\n'), strippedLines }
 }
 
+/**
+ * 0.6.20 (field report): a project that pins its toolchain (bin/go1.26.8-verified/go/bin/go.exe
+ * because the system go cannot build the module) was refused, and the workaround was a
+ * Docker harness. A path-shaped runner is allowed when it stays inside the project root,
+ * exists as a file, and its basename (without .exe/.cmd/.bat) is an allowed runner. The
+ * allowlist still names what may run; the path only says where the pinned copy lives.
+ */
+export function pinnedToolchain(
+  runner: string,
+  allowed: string[],
+  projectRoot: string = process.cwd(),
+): { ok: true; command: string } | { ok: false; error: string } | null {
+  if (!/[\\/]/.test(runner)) return null
+  const abs = path.resolve(projectRoot, runner)
+  const rel = path.relative(projectRoot, abs)
+  const refuse = (reason: string) => ({
+    ok: false as const,
+    error: `runner not in allowlist\nrunner: ${runner}\nreason: ${reason}\nallowed_runners: ${DEFAULT_ALLOWED_RUNNERS.join(", ")}`,
+  })
+  if (rel.startsWith('..') || path.isAbsolute(rel)) return refuse('a pinned runner must live inside the project root')
+  const base = path.basename(abs).replace(/\.(exe|cmd|bat)$/i, '')
+  if (!allowed.includes(base)) return refuse(`pinned runner basename '${base}' is not an allowed runner`)
+  if (!existsSync(abs)) return refuse(`pinned runner not found at ${abs}`)
+  return { ok: true, command: abs }
+}
+
 export async function runTests(
   runner: string,
   args: string[],
@@ -246,7 +272,9 @@ export async function runTests(
   filters?: OutputFilterOptions,
 ): Promise<string> {
   const allowedRunners = getAllowedRunners()
-  if (!allowedRunners.includes(runner)) {
+  const pinned = pinnedToolchain(runner, allowedRunners)
+  if (pinned && !pinned.ok) return `error: ${pinned.error}`
+  if (!pinned && !allowedRunners.includes(runner)) {
     return Promise.resolve(
       `error: runner not in allowlist\nrunner: ${runner}\nallowed_runners: ${DEFAULT_ALLOWED_RUNNERS.join(", ")}`
     )
@@ -270,7 +298,9 @@ export async function runTests(
     return parts.length ? parts.join('\n') + '\n' : ''
   }
 
-  const resolution = await resolveRunner(runner)
+  const resolution: RunnerResolution = pinned && pinned.ok
+    ? { ok: true, plan: { command: pinned.command, args: [] } }
+    : await resolveRunner(runner)
   if (!resolution.ok) {
     return `error: ${resolution.error}\nallowed_runners: ${DEFAULT_ALLOWED_RUNNERS.join(", ")}`
   }

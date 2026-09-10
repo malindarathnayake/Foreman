@@ -20,6 +20,8 @@ The spec must carry the design summary's Performance Budget, Threat Model, and T
 
 {{include: ambiguity-resolution}}
 
+{{include: probe-check}}
+
 {{include: deliberation-protocol}}
 
 ## Agent Delegation

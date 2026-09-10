@@ -16,7 +16,7 @@ first tool call.
 
 ## 1. Public tool surface (contract)
 
-Tool count: 27
+Tool count: 30
 
 - bundle_status — Returns the Foreman bundle version and override info.
 - host_status — Returns the active Foreman host and the model slugs used for worker/advisor invocation.
@@ -30,6 +30,9 @@ Tool count: 27
 - write_ledger — Writes an operation to the Foreman ledger (unit status, verdicts, rejections, phase gates, scope, durable reviews).
 - invoke_worker — EXPERIMENTAL (egress: sends briefs + file excerpts to your configured HTTP endpoint). Delegates a single patch task to the remote OpenAI-compatible endpoint configured in `.foremanenv`; returns a shape-checked, verbatim patch for the host to apply.
 - repo_guard — Runs the shared-tree ownership check around an editing worker: `snapshot` records branch, HEAD, stash, index, dirty paths, `core.autocrlf`, and line-ending attributes on the delegation; `compare` re-reads them and names every mutation outside the brief. Foreman writes both, so a pass verdict can be refused until the guard clears. Reports `n/a` outside a git work tree.
+- claude_workflows_init — Claude Code host only. Installs Foreman's saved Workflow scripts (checkpoint review fan, design panel, field-report triage) into the project's `.claude/workflows/`; a workflow review is same-model perspective recorded as `fan`, never a gate seat.
+- preflight_check — Checks a worker brief against the spec before the attempt is spent: symbols must appear in the spec, citations must resolve in the repo; directive omissions, contradiction markers and out-of-set references are reported. Returns the brief_hash the ledger requires on the delegation.
+- verify_oracle — Mutation probe: applies each mutation, runs the guard test, restores by hash; reports killed, survived (the suite cannot observe that control) and invalid, recorded on the unit.
 - invoke_council — EXPERIMENTAL (egress: sends the review evidence packet to your configured HTTP endpoint). Convenes an adaptive review council of remote read-only seats across risk lenses, returns structured findings for the host to moderate and the user to arbitrate. Entirely optional: with no seats configured it returns `status: unavailable` and Foreman proceeds on its normal advisor flow.
 - write_progress — Writes an operation to the Foreman progress file.
 - write_journal — Writes to the Foreman session journal (init_session / log_event / end_session).

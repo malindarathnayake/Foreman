@@ -1,7 +1,7 @@
 import fs from "fs/promises"
 import path from "path"
 import { createHash } from "crypto"
-import type { CapGrant, DelegationGuard, GateEvidence, LedgerFile, Phase, PhaseReview, Unit, WriteLedgerInput } from "../types.js"
+import type { CapGrant, Delegation, DelegationGuard, EscapeClass, GateEvidence, LedgerFile, Phase, PhaseReview, Unit, WriteLedgerInput } from "../types.js"
 import type { HostId } from "./hostProfiles.js"
 import { detectTestFiles } from "./detectTestFiles.js"
 import { atomicWriteFile } from "./atomicWrite.js"
@@ -12,16 +12,21 @@ import {
   latestVerdictTs, reviewIncompleteness, isSuperseded, REVIEW_RETENTION, trimReviews,
   normalizedPaths, samePaths, workerDeltaBlocker, verificationIneligibility,
   prospectiveVerification, prospectiveWorkerDelta, MAX_DELTA_PER_BASELINE,
+  hasConfirmed, isFullyCurrent, seatCoverage, type Coverage,
 } from "./reviewPredicates.js"
 import {
   applyEscape, classifyEscape, classifyGate, commitIndependence, coveringGate, independenceDecision, recordGatePass, unclassifiedEscapes,
 } from "./reviewBasis.js"
 import { appendConsumed, readReceipts, receiptsPathFor, type ReceiptsState } from "./seatReceipts.js"
+import { briefHash, findPreflight, preflightPathFor } from "./preflight.js"
+import { eventsPathFor } from "./foremanFiles.js"
 
 /** Receipts file access for one write: read on demand, consumption applied after the operation succeeds. */
 export interface ReceiptsAccess {
   read: () => Promise<ReceiptsState>
   consumed: Array<{ id: string; phase: string; review_ts: string }>
+  /** 0.6.20: the preflight record file beside the ledger; absent on write paths without one. */
+  preflightFile?: string
 }
 
 // Re-exported so existing importers of the gate predicates keep one entry point.
@@ -228,6 +233,75 @@ function allocateAttempt(
   return { attempt: unit.attempt_seq, ...(grant ? { cap_grant_id: grant.id } : {}) }
 }
 
+/**
+ * add_rejection semantics, shared with the inline form on set_unit_status (0.6.20). `rejTs`
+ * is the rejection's own stamp (caller-supplied on add_rejection, server-authored inline);
+ * `now` stamps the escape and the reopen. Returns the warning add_rejection returned.
+ */
+function recordRejection(
+  phaseObj: Phase, unitId: string, unit: Unit,
+  data: { r: string; msg: string; escape_class?: EscapeClass },
+  rejTs: string, now: string
+): string | undefined {
+  ensureAttemptState(unit)
+  unit.rej.push({
+    r: data.r,
+    msg: data.msg,
+    ts: rejTs,
+    // D2a: stamp which attempt this rejection belongs to (0 = before any attempt).
+    // From attempt_seq, not delegations.length: the array is sliced at 20 and its
+    // length stops counting there (Codex, round 4). Legacy entries stay unstamped.
+    attempt: unit.attempt_seq ?? 0,
+  })
+  if (unit.rej.length > 20) unit.rej = unit.rej.slice(-20)
+  recordFailure(unit)
+  // 0.6.19: a rejection of a unit its gate still covers is an escape of that gate.
+  // Recorded before the reopen below, while the legacy coverage fallback can still
+  // see the pass verdict. data.escape_class classifies it in the same write — unless the
+  // unit already escaped this gate: then the existing escape only gains the source
+  // (lib/reviewBasis.ts applyEscape) and the class goes on record_escape or the verdict.
+  const escape = applyEscape(phaseObj, unitId, unit, "rejection", now, data.escape_class)
+  const escapeNote = escape
+    ? `; post-gate escape #${escape.gate_seq} recorded (${escape.basis})${escape.class === "unclassified" ? " — classify with record_escape" : ""}`
+    : ""
+  // Field feedback 2026-09 (Codex R1): a rejection contradicts a standing pass verdict.
+  // Leaving v:'pass' in place let a rejected unit stay gate-passable and hid it from
+  // session_orient's active_rejections. Reopen to 'pending'; the fix must re-verdict.
+  if (unit.v === "pass") {
+    unit.v = "pending"
+    unit.v_ts = now
+    return (
+      `verdict reopened: unit '${unitId}' was 'pass'; this rejection reset it to 'pending' — ` +
+      "re-run set_verdict after the fix (the phase gate is blocked until then)" + escapeNote
+    )
+  }
+  if (escapeNote) return `rejection recorded${escapeNote}`
+  return undefined
+}
+
+/** set_verdict data.escape_class (0.6.20): classify the unit's newest unclassified escape or refuse the write. */
+function classifyOrRefuse(phaseObj: Phase, unitId: string, cls: EscapeClass): void {
+  if (!classifyEscape(phaseObj, unitId, cls, new Date().toISOString())) {
+    throw new Error(
+      `ESCAPE CLASS: unit '${unitId}' has no unclassified escape to classify; drop data.escape_class, ` +
+      "or record a defect found out of band with record_escape { class, source: 'later' }."
+    )
+  }
+}
+
+/**
+ * Appended to every refusal of a set_unit_status write that carried data.rejection: the write
+ * is refused whole (writeLedger persists only after applyOperation returns), so the finding
+ * the model believes it recorded is not on disk. Existing messages are unchanged without it.
+ */
+const INLINE_REJECTION_LOST =
+  " The inline rejection was not recorded (the write was refused whole): record it with add_rejection"
+function withInlineRejectionLost(err: unknown, tail: string): never {
+  const message = (err as Error).message
+  if (message.includes(INLINE_REJECTION_LOST)) throw err
+  throw new Error(message + INLINE_REJECTION_LOST + tail)
+}
+
 // ─── Gate-staleness snapshot (D2b) ───────────────────────────────────────────
 // Hash of the phase's unit ids + verdicts + verdict timestamps at gate-pass time.
 // Recomputed on read: a mismatch means units changed after the gate passed.
@@ -245,6 +319,28 @@ export function computeGateUnitsHash(units: Record<string, Unit>, declaredUnits?
     ? unitMaterial
     : `${unitMaterial}\ndeclared:${[...declaredUnits].sort().join(",")}`
   return createHash("sha256").update(material, "utf-8").digest("hex")
+}
+
+// ─── Per-unit review coverage wording (0.6.20) ───────────────────────────────
+// Appended to the existing gate messages, never spliced into them: the pinned sentences
+// stay byte-identical and the per-unit facts follow.
+
+function listUnits(ids: string[], phase: Phase, withAttempt: boolean): string {
+  const shown = ids.slice(0, 10).map((id) => (withAttempt ? `${id} (attempt #${phase.units[id].attempt_seq ?? 0})` : id)).join(", ")
+  return shown + (ids.length > 10 ? ` (+${ids.length - 10} more)` : "")
+}
+
+function uncoveredNote(cov: Coverage, phase: Phase): string {
+  const covered = Object.keys(phase.units).filter((id) => !cov.uncovered.includes(id)).sort()
+  return ` UNCOVERED UNITS: ${listUnits(cov.uncovered, phase, true)} — no seat-grade record matches the unit's current attempt at or after its verdict. ` +
+    "Cover them with a later independent/native review — record it with data.units: [<the units the seat examined>] when it examined only those, omit data.units for a whole-phase seat — or with an eligible verification naming the unit and attempt." +
+    (covered.length > 0 ? ` Still covered by earlier records: ${listUnits(covered, phase, false)}.` : "")
+}
+
+function carriedNote(partial: PhaseReview[], cov: Coverage): string {
+  if (partial.length === 0) return ""
+  const shown = partial.slice(0, 5).map((r) => `${r.advisor}@${r.ts} → ${(cov.carries.get(r) ?? []).slice(0, 10).join(", ")}`).join("; ")
+  return ` ${partial.length} of these record(s) predate the latest verdict but still carry unit(s) no later seat covers: ${shown}${partial.length > 5 ? " (+more)" : ""}.`
 }
 
 // ─── Discipline-adherence gate (P5 5a — decision #4, normative spec §311-323) ───
@@ -310,8 +406,22 @@ async function applyOperation(
           "DIRECT FIX: data.direct_fix is recorded with s:'ip' only — the fix is in progress until its verdict."
         )
       }
-      // Delegation requires a worker brief — this proves pitboss built one
-      if (data.s === "delegated") {
+      if (data.rejection && data.s !== "delegated") {
+        throw new Error(
+          "INLINE REJECTION: data.rejection is recorded with s:'delegated' only — the finding and the attempt that " +
+          "answers it are one write; use add_rejection for a finding that has no attempt yet."
+        )
+      }
+      // 0.6.20: set when a correction binds its worker_id onto the previous attempt (assigned
+      // inside the correction block, applied after allocateAttempt, reported in the warning).
+      let lateBind = false
+      let bindTarget: Delegation | undefined
+      let rejectionNote: string | undefined
+      // Delegation requires a worker brief — this proves pitboss built one.
+      // 0.6.20: the whole delegated branch runs under one try so any refusal of a write that
+      // carried data.rejection gains the not-recorded suffix (catch at the end of the branch).
+      let preflightNote: string | undefined
+      if (data.s === "delegated") try {
         if (!data.brief || data.brief.trim().length < 20) {
           throw new Error(
             "DELEGATION REQUIRED: set_unit_status with s:'delegated' requires a 'brief' field (min 20 chars) " +
@@ -331,7 +441,40 @@ async function applyOperation(
             "telemetry names) and record it; a delegation without it is unaudited."
           )
         }
+        // 0.6.20 (field report): the attestation became a check. Once a project has run
+        // preflight_check (the record file exists), every delegation must carry the brief
+        // hash it returned for a PASSING record of this exact brief. Before that first run
+        // the attestation still stands, with a note naming the tool.
+        if (receipts?.preflightFile) {
+          const hash = briefHash(data.brief)
+          let adopted = false
+          try {
+            await fs.access(receipts.preflightFile)
+            adopted = true
+          } catch { /* not adopted yet */ }
+          if (data.preflight.receipt !== undefined || adopted) {
+            if (data.preflight.receipt !== hash) {
+              throw new Error(
+                `PREFLIGHT RECEIPT: data.preflight.receipt must be the brief_hash preflight_check returned for THIS brief (${hash}); ` +
+                (data.preflight.receipt === undefined ? "none was given" : `got ${data.preflight.receipt}`) +
+                ". Run preflight_check { phase, unit_id, brief, symbols, files } and copy its brief_hash."
+              )
+            }
+            const record = await findPreflight(receipts.preflightFile, hash)
+            if (!record) {
+              throw new Error(
+                `PREFLIGHT RECEIPT: no passing preflight record for brief ${hash}. Run preflight_check on this exact brief and fix what it refuses ` +
+                "(symbols missing from the spec, dead citations) before delegating."
+              )
+            }
+          } else {
+            preflightNote = "PREFLIGHT: attested only. Run preflight_check before delegating so the ledger can check the brief against the spec; once it has run in this project the receipt is required."
+          }
+        }
+        const now = new Date().toISOString()
         const unit = ledger.phases[phase].units[unit_id]
+        // The correction checks read delegations, the guard and the phase scope — never
+        // rej[], the counters or v — so they run before the inline rejection mutates those.
         if (data.correction) {
           const permission = data.correction.kind === "mechanical" ? "reuse_worker_mechanical" : "reuse_worker_bounded"
           if (!modelRank.permissions[permission]) {
@@ -342,10 +485,19 @@ async function applyOperation(
           if (!previous || previous.attempt !== unit.attempt_seq || data.correction.from_attempt !== previous.attempt) {
             throw new Error("RANK CORRECTION: from_attempt must name the current worker delegation.")
           }
+          // 0.6.20: the host returns the worker id after the delegation write, and the protocol's
+          // reject path (add_rejection) never carried it, so before the first verdict the previous
+          // attempt had no id and reuse was refused every time. A correction may bind the id onto
+          // that attempt once — same declared session, only while it has none, whatever verdict it
+          // received (a verdict written without the id leaves the same gap). Foreman never verified
+          // this string at set_verdict either (HOST-CONTRACT: declared ids are compared for
+          // distinctness, not authenticated), so trust is unchanged. [CWE-290] noted, not widened.
           if (!modelRank.session_id || previous.session_id !== modelRank.session_id ||
-            !data.worker_id || data.worker_id !== previous.worker_id) {
+            !data.worker_id || (previous.worker_id !== undefined && data.worker_id !== previous.worker_id)) {
             throw new Error("RANK CORRECTION: reuse requires the same recorded worker_id in the current declared session.")
           }
+          lateBind = previous.worker_id === undefined
+          if (lateBind) bindTarget = previous
           const events = sidecarReader ? await sidecarReader() : []
           if (events.some((event) => event.phase === boundIdentifier(phase) && event.unit_id === boundIdentifier(unit_id) &&
             event.attempt === previous.attempt)) {
@@ -362,12 +514,31 @@ async function applyOperation(
             throw new Error("RANK CORRECTION: correction.files must remain inside the previous frozen authorized file scope.")
           }
         }
+        // 0.6.20: the finding rides the attempt that answers it. Recorded BEFORE the attempt
+        // allocation, so the ledger state is the one add_rejection → set_unit_status produced
+        // in two writes: the rejection stamps the previous attempt, a covered pass records
+        // source 'rejection' (never post_gate_attempt), and the cap sees the incremented
+        // failure count. One `now` links rej[i].ts to the delegation it rides.
+        if (data.rejection) rejectionNote = recordRejection(ledger.phases[phase], unit_id, unit, data.rejection, now, now)
         // 0.6.19: a new attempt on a unit its gate still covers is a contradiction of that
         // gate. Recorded before the attempt is allocated, while the snapshot still matches.
-        if (unit.v === "pass") applyEscape(ledger.phases[phase], unit_id, unit, "post_gate_attempt", new Date().toISOString())
+        if (unit.v === "pass") applyEscape(ledger.phases[phase], unit_id, unit, "post_gate_attempt", now)
         // D2a delegation cap, on server-authored counters since 0.6.4 (see
         // ensureAttemptState): two reviewers rejecting one attempt still fire it once.
-        const { attempt, cap_grant_id } = allocateAttempt(unit, unit_id, "delegation", data.user_override)
+        let allocated: { attempt: number; cap_grant_id?: number }
+        try {
+          allocated = allocateAttempt(unit, unit_id, "delegation", data.user_override)
+        } catch (err) {
+          if (!data.rejection) throw err
+          withInlineRejectionLost(err, ", then authorize_attempts or user_override.")
+        }
+        const { attempt, cap_grant_id } = allocated
+        // 0.6.20: bind only once every correction predicate and the cap have passed, so a refused
+        // write never leaves a bound id behind. `previous` is the delegation checked above.
+        if (lateBind && bindTarget && data.worker_id) {
+          bindTarget.worker_id = data.worker_id
+          bindTarget.worker_id_bound = { at: "correction", ts: new Date().toISOString(), by_attempt: attempt }
+        }
         // `w` is the latest brief (the pass-gate reads it). tier/route_reason are audit evidence.
         unit.w = data.brief
         if (data.tier !== undefined) unit.tier = data.tier
@@ -380,7 +551,7 @@ async function applyOperation(
           brief: data.brief,
           tier: data.tier,
           route_reason: data.route_reason,
-          ts: new Date().toISOString(),
+          ts: now,
           attempt,   // from attempt_seq: monotonic even after the cap slice below
           ...(data.user_override === true ? { user_override: true } : {}),
           ...(cap_grant_id !== undefined ? { cap_grant_id } : {}),
@@ -391,6 +562,11 @@ async function applyOperation(
         })
         if (data.correction) unit.v = "pending"
         if (unit.delegations.length > 20) unit.delegations = unit.delegations.slice(-20)
+      } catch (err) {
+        // 0.6.20: every refusal of a write that carried data.rejection says the finding is not
+        // on disk; without one the message is byte-identical to before.
+        if (!data.rejection) throw err
+        withInlineRejectionLost(err, " before retrying this write.")
       } else if (data.direct_fix !== undefined) {
         // Field feedback 2026-09 round 4: the protocol counted a Direct Fix as an
         // outer-loop attempt but the ledger never saw one, so a rejected direct fix
@@ -415,13 +591,16 @@ async function applyOperation(
         if (unit.direct_fixes.length > 20) unit.direct_fixes = unit.direct_fixes.slice(-20)
       }
       ledger.phases[phase].units[unit_id].s = data.s
-      if (data.correction) {
-        return `RANK CORRECTION: ${data.correction.kind} follow-up recorded as a new worker attempt; compact brief accepted. ` +
+      const correctionNote = data.correction
+        ? `RANK CORRECTION: ${data.correction.kind} follow-up recorded as a new worker attempt; compact brief accepted. ` +
           (modelRank.permissions.focused_validation ? "Focused intermediate validation is available; mandated checks and checkpoint validation still apply." :
             "Normal validation and review requirements still apply.") +
-          " Take a fresh guard snapshot with the previous frozen authorized scope before resuming the worker."
-      }
-      break
+          " Take a fresh guard snapshot with the previous frozen authorized scope before resuming the worker." +
+          (lateBind ? ` Worker id late-bound to attempt #${data.correction.from_attempt}; it cannot be rebound.` : "")
+        : undefined
+      // 0.6.20: the inline rejection's note (add_rejection's text) precedes the correction note.
+      // The preflight nudge yields to any substantive note: it is advice, not a result.
+      return [rejectionNote, correctionNote].filter(Boolean).join(" | ") || preflightNote
     }
     case "set_verdict": {
       const { phase, unit_id, data } = operation
@@ -542,6 +721,10 @@ async function applyOperation(
             g.override = { ts: new Date().toISOString() }
           }
         }
+        // 0.6.20: data.escape_class classifies the NEWEST unclassified escape here, before the
+        // check below. An older one (possible only after a recorded escape_override) still
+        // refuses below; its message names record_escape.
+        if (data.escape_class !== undefined) classifyOrRefuse(ledger.phases[phase], unit_id, data.escape_class)
         // 0.6.19: a post-gate defect on this unit must be classified before it passes again.
         // The verdict is the write the pit-boss cannot skip after a fix, so the demand is
         // never optional. Sequenced after the repository guard so earlier messages are unchanged.
@@ -563,6 +746,8 @@ async function applyOperation(
       // 0.6.19: any non-pass verdict on a unit its gate still covers is a contradiction of
       // that gate (fail, pending, inconclusive alike). Recorded before the verdict lands.
       if (data.v !== "pass" && unit.v === "pass") applyEscape(ledger.phases[phase], unit_id, unit, "reopen", new Date().toISOString())
+      // 0.6.20: on a non-pass verdict the reopen escape is recorded first, then classified.
+      if (data.v !== "pass" && data.escape_class !== undefined) classifyOrRefuse(ledger.phases[phase], unit_id, data.escape_class)
       unit.v = data.v
       // R1: verdict timestamp — consumed by the D2b gate-staleness snapshot (3d).
       unit.v_ts = new Date().toISOString()
@@ -598,39 +783,8 @@ async function applyOperation(
     case "add_rejection": {
       const { phase, unit_id, data } = operation
       ensureUnit(ledger, phase, unit_id)
-      const unit = ledger.phases[phase].units[unit_id]
-      ensureAttemptState(unit)
-      unit.rej.push({
-        r: data.r,
-        msg: data.msg,
-        ts: data.ts,
-        // D2a: stamp which attempt this rejection belongs to (0 = before any attempt).
-        // From attempt_seq, not delegations.length: the array is sliced at 20 and its
-        // length stops counting there (Codex, round 4). Legacy entries stay unstamped.
-        attempt: unit.attempt_seq ?? 0,
-      })
-      if (unit.rej.length > 20) unit.rej = unit.rej.slice(-20)
-      recordFailure(unit)
-      // 0.6.19: a rejection of a unit its gate still covers is an escape of that gate.
-      // Recorded before the reopen below, while the legacy coverage fallback can still
-      // see the pass verdict. data.escape_class classifies it in the same write.
-      const escape = applyEscape(ledger.phases[phase], unit_id, unit, "rejection", new Date().toISOString(), data.escape_class)
-      const escapeNote = escape
-        ? `; post-gate escape #${escape.gate_seq} recorded (${escape.basis})${escape.class === "unclassified" ? " — classify with record_escape" : ""}`
-        : ""
-      // Field feedback 2026-09 (Codex R1): a rejection contradicts a standing pass verdict.
-      // Leaving v:'pass' in place let a rejected unit stay gate-passable and hid it from
-      // session_orient's active_rejections. Reopen to 'pending'; the fix must re-verdict.
-      if (unit.v === "pass") {
-        unit.v = "pending"
-        unit.v_ts = new Date().toISOString()
-        return (
-          `verdict reopened: unit '${unit_id}' was 'pass'; this rejection reset it to 'pending' — ` +
-          "re-run set_verdict after the fix (the phase gate is blocked until then)" + escapeNote
-        )
-      }
-      if (escapeNote) return `rejection recorded${escapeNote}`
-      break
+      // 0.6.20: the body lives in recordRejection, shared with set_unit_status data.rejection.
+      return recordRejection(ledger.phases[phase], unit_id, ledger.phases[phase].units[unit_id], data, data.ts, new Date().toISOString())
     }
     case "declare_phase_units": {
       const { phase, data } = operation
@@ -775,9 +929,14 @@ async function applyOperation(
         const gatePhase = ledger.phases[phase]
         const allReviews = gatePhase.reviews ?? []
         const verdictTs = latestVerdictTs(gatePhase)
-        const currentReviews = allReviews.filter((r) => r.ts >= verdictTs &&
-          (r.unit_attempts === undefined || Object.entries(gatePhase.units).every(([id, u]) =>
-            (r.unit_attempts?.[id] ?? 0) === (u.attempt_seq ?? 0))))
+        const events = sidecarReader ? await sidecarReader() : []
+        // 0.6.20: currency is judged per unit (reviewPredicates.coversUnit): a record covers a
+        // unit when it was recorded at or after that unit's verdict and its snapshot names the
+        // unit's current attempt; a legacy record without a snapshot is keyed on the phase's
+        // latest verdict as before. `fullyCurrent` is exactly the set the gate read before
+        // (at/after the latest verdict AND every snapshot key matches) and still drives the
+        // wording of the existing messages; seat-grade COVERAGE decides the outcome.
+        //
         // Round 5 (Codex): currency counted every current record, so a pit-boss cross_exam
         // written after a re-verdict satisfied the gate. A cross_exam never counts as a
         // seat; a verification record counts only under verificationIneligibility; an
@@ -788,31 +947,40 @@ async function applyOperation(
         // independence — one model's blind spots stay correlated — so it never counts as a
         // seat either. It is recorded because the evidence is real and the owner decides the
         // gate with it in hand, not because it replaces a seat.
-        const independent = currentReviews.filter((r) => r.stage === undefined || r.stage === "independent")
-        // Native review is an explicit Codex path, not an independence claim or
-        // an automatic promotion of legacy fan records. Validate saved metadata
-        // again here so an incomplete record cannot become a gate credential.
-        const native = host === "codex"
-          ? currentReviews.filter((r) => r.stage === "native" && reviewIncompleteness(r) === null)
-          : []
+        //
+        // Native review is an explicit Codex path, not an independence claim or an automatic
+        // promotion of legacy fan records. Saved metadata is validated again here so an
+        // incomplete record cannot become a gate credential.
+        const fullyCurrent = allReviews.filter((r) => isFullyCurrent(r, gatePhase, verdictTs))
+        const verificationWhy = new Map<PhaseReview, string | null>()
         const ineligible: string[] = []
-        const eligibleVerifications: PhaseReview[] = []
-        const verifications = currentReviews.filter((r) => r.stage === "verification")
-        const events = sidecarReader ? await sidecarReader() : []
-        if (verifications.length > 0) {
-          for (const r of verifications) {
-            const why = verificationIneligibility(phase, gatePhase, r, allReviews, events)
-            if (why === null) eligibleVerifications.push(r)
-            else ineligible.push(`${r.advisor}: ${why}`)
-          }
+        for (const r of allReviews) {
+          if (r.stage !== "verification") continue
+          const why = verificationIneligibility(phase, gatePhase, r, allReviews, events)
+          verificationWhy.set(r, why)
+          if (why !== null && fullyCurrent.includes(r)) ineligible.push(`${r.advisor}: ${why}`)   // as before: only current ones are listed
         }
-        if (independent.length === 0 && native.length === 0 && eligibleVerifications.length === 0) {
+        const coverage = seatCoverage(gatePhase, allReviews, {
+          // 0.6.20: Claude Code runs the same shape (Workflow fan with distinct agents and a verifier);
+          // the basis stamp labels it same-provider and the independence bound caps the streak.
+          nativeSeat: (r) => (host === "codex" || host === "claude-code") && reviewIncompleteness(r) === null,
+          verificationSeat: (r) => verificationWhy.get(r) === null,
+        })
+        // Seats: every record that is the newest seat-grade cover of some unit, plus every
+        // fully-current seat-grade record (two seats on one snapshot both count, as before).
+        // Participating: the set the confirmed/incomplete checks read. A record that is
+        // neither fully current nor carrying does not block — its findings are assumed
+        // resolved by whatever superseded it, exactly as a stale record before 0.6.20.
+        const seats = allReviews.filter((r) => coverage.carries.has(r) || (fullyCurrent.includes(r) && coverage.byRecord.has(r)))
+        const participating = allReviews.filter((r) => fullyCurrent.includes(r) || coverage.carries.has(r))
+        const partial = participating.filter((r) => !fullyCurrent.includes(r))   // carrying, written before the latest verdict
+        if (coverage.uncovered.length > 0) {
           if (data.user_override !== true) {
-            const stale = allReviews.length > currentReviews.length
-              ? ` ${allReviews.length - currentReviews.length} older review(s) exist but predate the latest unit verdict — a review recorded before a re-verdict does not cover the current code; re-run the review.`
+            const stale = allReviews.length > fullyCurrent.length
+              ? ` ${allReviews.length - fullyCurrent.length} older review(s) exist but predate the latest unit verdict — a review recorded before a re-verdict does not cover the current code; re-run the review.`
               : ""
-            const notSeats = currentReviews.length > 0
-              ? ` ${currentReviews.length} current record(s) do not count as a seat: a cross_exam never does, a fan never does (same-model perspective, not independence — present its report and take the owner's decision), and a verification counts only when eligible (a legacy direct-fix re-verdict, or a TopRank worker_delta on a retained complete baseline)${ineligible.length > 0 ? ` (${ineligible.join("; ")})` : ""}.`
+            const notSeats = fullyCurrent.length > 0
+              ? ` ${fullyCurrent.length} current record(s) do not count as a seat: a cross_exam never does, a fan never does (same-model perspective, not independence — present its report and take the owner's decision), and a verification counts only when eligible (a legacy direct-fix re-verdict, or a TopRank worker_delta on a retained complete baseline)${ineligible.length > 0 ? ` (${ineligible.join("; ")})` : ""}.`
               : ""
             throw new Error(
               `REVIEW REQUIRED: phase '${phase}' has no record_review entry recorded at or after its latest unit verdict.${stale}${notSeats} ` +
@@ -821,13 +989,14 @@ async function applyOperation(
               "to pass without independent review — the override is recorded on the phase. " +
               (modelRank.permissions.delta_review
                 ? prospectiveWorkerDelta(phase, gatePhase, allReviews, events)
-                : prospectiveVerification(phase, gatePhase, allReviews, events, verdictTs))
+                : prospectiveVerification(phase, gatePhase, allReviews, events, verdictTs)) +
+              uncoveredNote(coverage, gatePhase)
             )
           }
           gatePhase.review_override = { ts: new Date().toISOString() }
           gateOverrides.push("review")
         } else {
-          const confirmed = currentReviews.flatMap((r) =>
+          const confirmed = participating.flatMap((r) =>
             r.findings
               .filter((f) => f.classification === "confirmed")
               .map((f) => `${r.advisor}: ${(f.file || "?").slice(0, 120)}:${f.line || "?"} ${f.description.slice(0, 80)}`)
@@ -839,7 +1008,8 @@ async function applyOperation(
               throw new Error(
                 `CONFIRMED FINDINGS: phase '${phase}' has ${confirmed.length} confirmed review finding(s) recorded since its latest unit verdict: ${shown}${more}. ` +
                 "Reject the affected unit(s) (add_rejection → fix → set_verdict), then record a fresh review that shows the finding resolved before the gate can pass — " +
-                "or set data.user_override: true to waive it; the waiver is recorded on the phase as confirmed_override."
+                "or set data.user_override: true to waive it; the waiver is recorded on the phase as confirmed_override." +
+                carriedNote(partial.filter(hasConfirmed), coverage)
               )
             }
             gatePhase.confirmed_override = { ts: new Date().toISOString(), findings: confirmed.length }
@@ -851,10 +1021,12 @@ async function applyOperation(
           // Round 6: an incomplete record superseded by the same advisor's later complete
           // record at the same stage no longer blocks — re-run the seat, never re-verdict
           // to clear it. A confirmed finding on the superseded record still blocked above.
-          const incomplete = currentReviews
+          // 0.6.20: the superseding record must cover every unit the superseded one still
+          // covers (a scoped re-run over a subset does not clear a whole-phase failure).
+          const incomplete = participating
             .map((r) => {
               const why = reviewIncompleteness(r)
-              return why !== null && !isSuperseded(r, currentReviews) ? `${r.advisor}: ${why}` : null
+              return why !== null && !isSuperseded(r, allReviews, gatePhase) ? `${r.advisor}: ${why}` : null
             })
             .filter((s): s is string => s !== null)
           if (incomplete.length > 0) {
@@ -862,7 +1034,8 @@ async function applyOperation(
               throw new Error(
                 `INCOMPLETE REVIEW: phase '${phase}' has ${incomplete.length} review(s) recorded since its latest unit verdict that do not cover the phase: ${incomplete.join("; ")}. ` +
                 "A seat that reports nothing must list what it examined (record_review data.checked) or be marked completion:'complete'; a partial or failed seat must be re-run — " +
-                "or set data.user_override: true to waive it; the waiver is recorded on the phase as incomplete_override."
+                "or set data.user_override: true to waive it; the waiver is recorded on the phase as incomplete_override." +
+                carriedNote(partial.filter((r) => reviewIncompleteness(r) !== null), coverage)
               )
             }
             gatePhase.incomplete_override = { ts: new Date().toISOString(), reviews: incomplete.length }
@@ -893,9 +1066,16 @@ async function applyOperation(
             gatePhase.escape_override = { ts: now, escapes: openEscapes.length }
             gateOverrides.push("escape")
           }
+          // 0.6.20: a review-overridden pass with uncovered units stamps no seat and counts
+          // only the fully-current records as present, exactly as before (an older carrying
+          // record is not credited to a pass the owner waived). Otherwise every carrying seat
+          // is on the stamp and the basis is the weakest per-unit class.
+          const uncovered = coverage.uncovered.length > 0
           const evidence = classifyGate({
-            host, phaseObj: gatePhase, currentReviews, allReviews, modelRank, ts: now,
-            seats: [...independent, ...native, ...eligibleVerifications],
+            host, phaseObj: gatePhase, allReviews, modelRank, ts: now,
+            currentReviews: uncovered ? fullyCurrent : participating,
+            seats: uncovered ? [] : seats,
+            coverage: coverage.byRecord,
             agentClass: data.agent_class, overrides: gateOverrides,
           })
           // 0.6.19 (slice 5): the independence bound. Erosion is counted per counted pass
@@ -945,8 +1125,28 @@ async function applyOperation(
       const { phase, data } = operation
       ensurePhase(ledger, phase)
       const p = ledger.phases[phase]
+      // 0.6.20: a scoped seat names the registered units it examined; the snapshot below is
+      // restricted to them (narrowing only — omitting data.units is the whole-phase trust of
+      // before). Checked first so a refused scoped verification never runs a blocker or the
+      // sidecar read. Registration is an own-property check: a prototype key such as
+      // 'constructor' is not a registered unit. [CWE-20]
+      let scope: string[] | undefined
+      if (data.units !== undefined) {
+        if (data.stage !== undefined && data.stage !== "independent" && data.stage !== "native") {
+          throw new Error("REVIEW SCOPE: data.units is accepted with stage undefined, 'independent' or 'native' only.")
+        }
+        scope = [...new Set(data.units)].sort()
+        // The schema already demands one entry; the rule lives here too so a record that
+        // covers nothing can never be written through any path.
+        if (scope.length === 0) throw new Error("REVIEW SCOPE: data.units names at least one registered unit; omit it to snapshot the whole phase.")
+        const unknown = scope.filter((id) => !Object.prototype.hasOwnProperty.call(p.units, id))
+        if (unknown.length > 0) {
+          const shown = unknown.slice(0, 10).join(", ") + (unknown.length > 10 ? ` (+${unknown.length - 10} more)` : "")
+          throw new Error(`REVIEW SCOPE: phase '${phase}' has no registered unit(s) ${shown}; data.units names registered units only — omit it to snapshot the whole phase.`)
+        }
+      }
       if (data.stage === "native") {
-        if (host !== "codex") throw new Error("NATIVE REVIEW: stage:'native' requires the Codex host.")
+        if (host !== "codex" && host !== "claude-code") throw new Error("NATIVE REVIEW: stage:'native' requires a host with native subagents (codex, claude-code).")
         if (data.completion !== "partial" && data.completion !== "failed") {
           const why = reviewIncompleteness({ ...data, ts: "" })
           if (why) throw new Error(`NATIVE REVIEW INCOMPLETE: ${why}. Record partial/failed or finish the native review.`)
@@ -1056,11 +1256,20 @@ async function applyOperation(
         ...(data.evidence !== undefined ? { evidence: data.evidence } : {}),
         ...(data.evidence?.kind === "worker_delta" ? { model_rank: modelRank } : {}),
         ...(data.stage === undefined || data.stage === "independent" || data.stage === "native"
-          ? { unit_attempts: Object.fromEntries(Object.entries(p.units).map(([id, unit]) => [id, unit.attempt_seq ?? 0])) }
+          ? { unit_attempts: Object.fromEntries(Object.entries(p.units)
+              .filter(([id]) => scope === undefined || scope.includes(id))
+              .map(([id, unit]) => [id, unit.attempt_seq ?? 0])) }
           : {}),
+        ...(scope !== undefined ? { units: scope } : {}),
       })
       // Round 6: bounded history that never evicts a record the gate is blocking on.
-      p.reviews = trimReviews(p.reviews, latestVerdictTs(p))
+      p.reviews = trimReviews(p.reviews, p)
+      if (scope !== undefined) {
+        const rest = Object.keys(p.units).filter((id) => !scope!.includes(id)).sort()
+        const note = `REVIEW SCOPE: record covers ${scope.length} of ${Object.keys(p.units).length} unit(s)` +
+          (rest.length > 0 ? `; not covered by this record: ${rest.slice(0, 10).join(", ")}${rest.length > 10 ? ` (+${rest.length - 10} more)` : ""}` : "") + "."
+        warning = warning ? `${warning} | ${note}` : note
+      }
       return warning
     }
     case "record_escape": {
@@ -1091,6 +1300,16 @@ async function applyOperation(
       throw new Error(
         `ESCAPE BLOCKED: no unclassified escape on '${unit_id}'; pass data.source:'later' to record an out-of-band defect on a gated unit.`
       )
+    }
+    case "record_fact": {
+      // 0.6.20: bounded per-phase facts, newest last; the same key replaces its older entry.
+      const { phase, data } = operation
+      ensurePhase(ledger, phase)
+      const p = ledger.phases[phase]
+      p.facts = (p.facts ?? []).filter((f) => f.key !== data.key)
+      p.facts.push({ ts: new Date().toISOString(), key: data.key, text: data.text, ...(data.source ? { source: data.source } : {}) })
+      if (p.facts.length > 50) p.facts = p.facts.slice(-50)
+      return `fact '${data.key}' recorded on phase '${phase}' (${p.facts.length}/50); read_ledger { query: "facts", phase } lists them`
     }
     case "authorize_attempts": {
       const { phase, unit_id, data } = operation
@@ -1169,14 +1388,14 @@ export async function writeLedger(
     const receiptsFile = receiptsPath === undefined ? receiptsPathFor(filePath) : receiptsPath
     const receipts: ReceiptsAccess | undefined = receiptsFile === null
       ? undefined
-      : { read: () => readReceipts(receiptsFile), consumed: [] }
+      : { read: () => readReceipts(receiptsFile), consumed: [], preflightFile: preflightPathFor(filePath) }
 
     // Default-on enforcement: derive the sidecar reader from the ledger path when the
     // caller does not inject one (tests inject a fake). The sidecar lives alongside the
     // ledger (same dir), matching writeLedger.ts / invokeWorker.ts / readLedger.ts.
     const reader: SidecarReader =
       sidecarReader ??
-      (async () => (await readEvents(path.join(path.dirname(filePath), ".foreman-events.jsonl"))).events)
+      (async () => (await readEvents(eventsPathFor(filePath))).events)
 
     let warning = await applyOperation(ledger, operation, reader, host, modelRank, receipts)
     // 0.6.19: a bound receipt is spent in the receipts file BEFORE the ledger is written:
@@ -1270,5 +1489,29 @@ export async function recordRepoGuard(
     ledger.ts = new Date().toISOString()
     await atomicWriteFile(filePath, JSON.stringify(ledger), { scrub })
     return { attempt: latest.attempt, reopened }
+  })
+}
+
+/**
+ * Record a verify_oracle run on a unit (0.6.20). Deliberately NOT a write_ledger
+ * operation: the report is a fact Foreman observed by mutating the tree and running the
+ * guard test itself. The unit must exist; the latest run replaces the previous one.
+ */
+export async function recordOracle(
+  filePath: string,
+  phase: string,
+  unitId: string,
+  report: { ts: string; mutations: number; killed: number; survivors: string[]; invalid: string[] }
+): Promise<void> {
+  return withLedgerLock(filePath, async () => {
+    const read = await readLedgerWithStatus(filePath)
+    const ledger = read.ledger
+    const unit = ledger.phases[phase]?.units[unitId]
+    if (!unit) {
+      throw new Error(`ORACLE BLOCKED: unit '${unitId}' is not registered in phase '${phase}'; record the delegation first.`)
+    }
+    unit.oracle = { ts: report.ts, mutations: report.mutations, killed: report.killed, survivors: report.survivors.slice(0, 12), invalid: report.invalid.slice(0, 12) }
+    ledger.ts = new Date().toISOString()
+    await atomicWriteFile(filePath, JSON.stringify(ledger), { scrub })
   })
 }
