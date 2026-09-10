@@ -139,6 +139,19 @@ for (const profile of [CLAUDE_CODE_PROFILE, CURSOR_PROFILE, GENERIC_PROFILE]) {
   profile.placeholders.session_advisor_setup = 'For sessions with phase checkpoints, run the host advisor probes and record each as "<version>/<auth_status>" instead of null; null means not probed.'
 }
 
+// 0.6.20: saved Workflow scripts exist on Claude Code only. The Workflow tool runs many
+// agents on the host's own model; the hook opts the host in through the skill text, the
+// user confirms before a run, and the result is perspective (stage:'fan'), never a seat.
+CLAUDE_CODE_PROFILE.placeholders.workflows =
+  "The Workflow tool (multi-agent orchestration, paid and user-approved) is available on this host. Install Foreman's saved scripts once per project with `mcp__foreman__claude_workflows_init` (writes .claude/workflows/foreman-checkpoint-review.js, foreman-design-panel.js, foreman-triage.js). " +
+  "Use them at these points only: `foreman-design-panel` for an open design question in design_partner or spec work; `foreman-checkpoint-review` as the review fan at a phase checkpoint (args { phase, files, spec_excerpt }); `foreman-triage` for a batch of field reports. " +
+  "Before every run, confirm with the user by AskUserQuestion naming the workflow, its phases and the agent count, unless the user already opted in this session (the `ultracode` keyword or a standing instruction). " +
+  "Record a checkpoint-review result with write_ledger record_review stage:'fan', the run id in limitations; every agent runs on the host's own model, so it is perspective and never a gate seat — invoke_advisor seats on another vendor still satisfy the gate and the independence bound. " +
+  "Never implement inside a workflow: units go through the unit protocol with their ledger record, guard cycle and verdict; editing workers run sequentially on the shared tree."
+for (const profile of [CURSOR_PROFILE, GENERIC_PROFILE, CODEX_PROFILE]) {
+  profile.placeholders.workflows = "No saved-workflow surface on this host; use the review and deliberation paths above."
+}
+
 const PROFILES: Record<HostId, HostProfile> = {
   "claude-code": CLAUDE_CODE_PROFILE,
   cursor: CURSOR_PROFILE,
@@ -189,6 +202,7 @@ export function hostRuntimePreamble(host: HostId): string {
     "",
     "**Declared workflow rank:** At init_session report env.model and env.effort (unknown is valid); on a model/effort change call write_journal declare_model with both fields. Trust the self-declaration; no host authentication is required for the pitboss rank. Follow the returned workflow_permissions: Middle permits mechanical same-session worker reuse and compact follow-ups; Top additionally permits bounded fixes/test changes, focused intermediate validation and independently verified worker_delta review. Standard/unknown use normal protocol. New implementation, fixes and test edits always require workers; existing scope/ownership guards, recorded attempts, required checks and checkpoint gates remain. These rank rules supersede contrary direct-fix or unconditional fresh-worker/full-review instructions below. Rank does not change agent_class, worker/reviewer capability or cost tier, never authenticates their served model, and never enters review sufficiency: gate passes are stamped with the basis that carried them, and declared ids (verifier, worker, native agents) are compared for distinctness, not verified.",
     `**Review mode:** ${ph.review_mode}`,
+    `**Workflows:** ${ph.workflows}`,
     `**Session advisor setup:** ${ph.session_advisor_setup}`,
     `**Worker:** ${ph.worker_invoke}`,
     `**Worker fan-out:** ${ph.worker_fanout}`,

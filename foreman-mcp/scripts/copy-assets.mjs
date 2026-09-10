@@ -32,3 +32,12 @@ for (const f of ["engineering-ethos.md"]) {
 }
 console.log(`[copy-assets] copied docs assets -> ${path.relative(process.cwd(), docsDestDir)}`)
 
+// 0.6.20: saved Workflow scripts for the Claude Code host (claude_workflows_init copies them into the project).
+const wfSrcDir = path.resolve(__dirname, "..", "src", "workflows")
+const wfDestDir = path.resolve(__dirname, "..", "dist", "workflows")
+await mkdir(wfDestDir, { recursive: true })
+await cp(wfSrcDir, wfDestDir, { recursive: true })
+for (const f of ["foreman-checkpoint-review.js", "foreman-design-panel.js", "foreman-triage.js"]) {
+  await access(path.join(wfDestDir, f))
+}
+console.log(`[copy-assets] copied workflow scripts -> ${path.relative(process.cwd(), wfDestDir)}`)

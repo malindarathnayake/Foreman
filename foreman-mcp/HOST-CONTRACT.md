@@ -134,6 +134,18 @@ The seat rule at `update_phase_gate` is unchanged. What is new is that every COU
 
 **Report.** `read_ledger { query: "review_outcomes" }` recomputes gates, re-gates, units, seat agents per gate, defect and other escapes, and tokens per basis from the scalar totals on every read; with `phase` it appends that phase's escape rows. Cost is a partial axis: native records carry no token surface.
 
+## Saved workflows (Claude Code only, 0.6.20)
+
+The Claude Code host exposes a Workflow tool that orchestrates many agents from one script. Foreman ships three scripts and installs them into the project's `.claude/workflows/` through `claude_workflows_init`; the pit-boss runs them by name with the host's tool. A run is a paid, user-approved action: the skill text tells the pit-boss to confirm the workflow, its phases and agent count with the user first unless the session opted in (`ultracode`, or a standing instruction), and the host shows its own permission dialog.
+
+| Workflow | When | Result |
+|---|---|---|
+| `foreman-design-panel` | an open design question in design_partner or spec work | one recommendation plus the conflicts the user arbitrates |
+| `foreman-checkpoint-review` | the review fan at a phase checkpoint | a record_review-ready report, recorded `stage:'fan'` with the run id in `limitations` |
+| `foreman-triage` | a batch of field reports | each report verified in code, a fix designed and attacked; implementation stays with the unit protocol |
+
+Every agent in a workflow runs on the host's own model. A workflow review is therefore PERSPECTIVE, recorded as `fan`, and never a gate seat; `invoke_advisor` seats on another vendor still satisfy the gate and the independence bound. Implementation never runs inside a workflow: each unit keeps its ledger record, guard cycle and verdict, and editing workers run sequentially on the shared tree. Other hosts have no saved-workflow surface and their placeholder says so.
+
 ## Autonomy capability
 
 This section is the source text behind the `{{autonomy}}` placeholder family.

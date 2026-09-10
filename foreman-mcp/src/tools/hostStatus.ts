@@ -38,6 +38,9 @@ export function hostStatus(host: HostId, modelRank: ModelRank = resolveModelRank
     ...modelRankSummary(modelRank),
     host: profile.id,
     display_name: profile.displayName,
+    ...(host === "claude-code" ? {
+      workflows: "claude_workflows_init installs foreman-checkpoint-review, foreman-design-panel, foreman-triage (Workflow tool; results are stage:'fan', never a seat)",
+    } : {}),
     ...(host === "codex" ? {
       review_mode: "native-subagents",
       review_stage: "native",

@@ -51,6 +51,7 @@ import { type HostId, resolveHost, parseHostFlag, getProfile } from "./lib/hostP
 import { maybeCompress, compressionEnabled, getRetrieveOriginalTool, toolNameForHash } from "./lib/compression.js"
 import { ADVISOR_CLIS } from "./lib/advisorCli.js"
 import { codexAgentsInit, CODEX_AGENT_ROLES } from "./tools/codexAgentsInit.js"
+import { claudeWorkflowsInit, FOREMAN_WORKFLOWS } from "./tools/claudeWorkflowsInit.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -734,6 +735,29 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         }
         return textResult(JSON.stringify(result), true)
       }
+    )
+  }
+
+  // Claude Code only (0.6.20): install Foreman's saved Workflow scripts into the project.
+  if (host === "claude-code") {
+    server.registerTool(
+      "claude_workflows_init",
+      {
+        title: "Init Claude Workflows",
+        description: [
+          "Installs Foreman's saved Workflow scripts into the project's .claude/workflows/ so the host's Workflow tool can run them by name:",
+          "foreman-checkpoint-review (phase review fan; record its report stage:'fan', never a gate seat), foreman-design-panel (independent stances, attack, synthesis with conflicts for the user), foreman-triage (verify field reports in code, design and attack fixes; implementation stays with the unit protocol).",
+          "Existing files are skipped unless overwrite:true. A workflow run is paid and user-approved: confirm the workflow, phases and agent count with the user first unless the session opted in. Call once per project.",
+        ].join(" "),
+        inputSchema: z.strictObject({
+          project_dir: z.string().min(1).optional().describe("Project root holding .claude/; defaults to the server cwd"),
+          workflows: z.array(z.enum(FOREMAN_WORKFLOWS)).min(1).optional().describe("Subset to install; default all"),
+          overwrite: z.boolean().optional().describe("Replace existing files (default false)"),
+        }),
+        outputSchema: TextOutputSchema,
+        annotations: { title: "Init Claude Workflows", readOnlyHint: false, destructiveHint: false },
+      },
+      async (args, _extra) => textResult(await claudeWorkflowsInit(args))
     )
   }
 

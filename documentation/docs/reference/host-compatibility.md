@@ -44,3 +44,7 @@ Every host uses the same declared model/effort rank policy. The host profile sti
 Top can reuse a bounded native worker for fixes and test changes, use compact follow-ups and focused intermediate checks, and obtain independent verification of the delta against retained review coverage. Middle gets mechanical worker reuse and compact follow-ups with normal checks/review. Native reuse needs an actual recorded worker ID in the same active session; an unsupported follow-up mechanism or a host switch requires a fresh worker. Existing sidecar `invoke_worker` attempts do not qualify for native reuse.
 
 Complete native review and accepted delta evidence survive host switching with their original same-provider provenance. Creating a native review still uses Codex's native reviewer/verifier procedure. Rank never changes configured seat capability, ownership boundaries, attempt limits, or checkpoint gates.
+
+## Saved workflows on Claude Code
+
+Claude Code's Workflow tool runs many agents from one script. `claude_workflows_init` installs Foreman's three scripts into the project's `.claude/workflows/`: a design panel, a checkpoint review fan, and a field-report triage. The pit-boss confirms a run with you first unless you opted in with `ultracode`. A workflow review is same-model perspective, recorded as `fan`, and never a gate seat. Implementation never runs inside a workflow. Codex, Cursor and generic hosts have no equivalent surface.
