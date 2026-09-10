@@ -13,7 +13,9 @@ import {
   normalizedPaths, samePaths, workerDeltaBlocker, verificationIneligibility,
   prospectiveVerification, prospectiveWorkerDelta,
 } from "./reviewPredicates.js"
-import { applyEscape, classifyEscape, classifyGate, coveringGate, recordGatePass, unclassifiedEscapes } from "./reviewBasis.js"
+import {
+  applyEscape, classifyEscape, classifyGate, commitIndependence, coveringGate, independenceDecision, recordGatePass, unclassifiedEscapes,
+} from "./reviewBasis.js"
 import { appendConsumed, readReceipts, receiptsPathFor, type ReceiptsState } from "./seatReceipts.js"
 
 /** Receipts file access for one write: read on demand, consumption applied after the operation succeeds. */
@@ -896,6 +898,16 @@ async function applyOperation(
             seats: [...independent, ...native, ...eligibleVerifications],
             agentClass: data.agent_class, overrides: gateOverrides,
           })
+          // 0.6.19 (slice 5): the independence bound. Erosion is counted per counted pass
+          // and refused at the bound, not merely labelled; the only reset is a seat Foreman
+          // receipted on another vendor. A recorded override is one flag and one audit row.
+          const decision = independenceDecision(ledger, phase, evidence)
+          if (decision.refusal !== undefined) {
+            if (data.user_override !== true) throw new Error(decision.refusal)
+            gatePhase.independence_override = { ts: now, streak: decision.streak }
+            evidence.overrides.push("independence")
+          }
+          commitIndependence(ledger, phase, decision)
           recordGatePass(gatePhase, evidence)
         }
         // D2b: snapshot only on a passing gate — never on fail/pending, never cleared.

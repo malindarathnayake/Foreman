@@ -60,8 +60,22 @@ In this order, so an earlier problem is reported before a later one:
 | No independent review, complete native review, or eligible verification record was recorded at or after the phase's latest unit verdict. A `cross_exam` record never counts | `REVIEW REQUIRED: ...` (names how many older reviews exist and why current records do not count) | `user_override: true`, recorded as `review_override` |
 | A review recorded since the latest verdict carries a finding classified `confirmed` | `CONFIRMED FINDINGS: phase 'p2' has 1 confirmed review finding(s) ... codex: src/a.ts:42 null deref ...` | `user_override: true`, recorded as `confirmed_override` with the count |
 | A review recorded since the latest verdict is `completion: partial` or `failed`, or has zero findings with no `checked` list and no `completion: complete` | `INCOMPLETE REVIEW: phase 'p2' has 1 review(s) ... gemini: zero findings with no examined list` | `user_override: true`, recorded as `incomplete_override` with the count |
+| A unit in the phase escaped an earlier gate and the escape is unclassified | `ESCAPE UNCLASSIFIED: phase 'p2' has 1 post-gate escape(s) not yet classified: u5 (gate #1, same_provider)` | `user_override: true`, recorded as `escape_override` |
+| This would be the third consecutive counted pass carried by same-provider review alone | `INDEPENDENCE BOUND: phase 'p4' would be counted pass #4 on same_provider review since the last receipted cross-vendor seat ...` | `user_override: true`, recorded as `independence_override` |
 
 A passing gate snapshots a hash of every unit's id, verdict, and verdict timestamp. If a unit changes afterwards, `read_ledger` and `session_orient` report the gate as stale. Nothing is blocked by staleness; it is a flag for you.
+
+## What carried the pass: basis, receipts, escapes
+
+The seat rule above decides whether a gate passes. Since 0.6.19 the ledger also records what carried each counted pass and what happened to the code afterwards, so the cost of a cheaper review path becomes visible instead of assumed.
+
+**Basis.** Every counted pass (a first pass, or a re-pass over a changed unit set) is stamped with a basis class: `receipted_external` (a seat Foreman launched on another vendor, bound to the record by receipt), `declared_external` (an independent record with no receipt, which is every record written before 0.6.19), `same_provider` (a native Codex review, or a receipted seat on the host's own vendor), a `delta:` variant for an eligible verification carrying its baseline's class, or `override`. Per-basis totals survive the bounded history.
+
+**Receipts.** `invoke_advisor` writes a hash-chained receipt for every run and returns `seat_receipt` and `packet_sha256` in its meta block. Copy both into `record_review` as `seat_receipt` and `packet_hash`. The ledger refuses a receipt that does not exist, names a different prompt, belongs to a failed run, was already bound, or ran before the newest verdict or attempt. On Codex an unreceipted independent record is stored with a warning and counts against the bound below.
+
+**Independence bound.** Three consecutive counted passes carried by same-provider review alone (or by an override) are the limit. The next is refused until a receipted cross-vendor seat resets the streak, or you override on the record. This is what makes the erosion of cross-vendor review bounded rather than merely visible.
+
+**Escapes.** After a gate passes, a rejection, a non-pass verdict, or a new attempt on one of its units records an escape against that gate. The ledger demands a class (`original_defect`, `remediation_defect`, `test_gap`, `process`, `new_scope`) before the unit passes again: `record_escape { class }`, or `escape_class` on the rejection itself. `record_escape { class, source: "later" }` records a defect found in a later phase or in production. `read_ledger { query: "review_outcomes" }` reports gates and escapes per basis; after enough projects, that table is how a review path earns or loses its standing. Rank never enters review sufficiency.
 
 ## Corrections: reuse baseline review coverage
 

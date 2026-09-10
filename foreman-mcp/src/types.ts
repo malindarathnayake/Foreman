@@ -346,6 +346,8 @@ export interface Phase {
   escape_totals?: EscapeTotals
   /** Gate passed via data.user_override while `escapes` unclassified escapes stood (durable, auditable). */
   escape_override?: { ts: string; escapes: number }
+  /** Gate passed via data.user_override at the independence bound; `streak` is the count it would have exceeded. */
+  independence_override?: { ts: string; streak: number }
 }
 
 export interface PhaseScope {
@@ -363,6 +365,8 @@ export interface LedgerFile {
   phases: Record<string, Phase>
   /** CCR compression aggregate keyed by tool name (bounded: names come from the compression allowlist). Consumed by 5b. */
   ccr_stats?: Record<string, { calls: number; tokens_before: number; tokens_after: number }>
+  /** 0.6.19: consecutive weak-basis counted gate passes since the last receipted cross-vendor pass; phases ≤ STREAK_MAX + 1. */
+  independence?: { streak: number; phases: string[] }
 }
 
 // ─── Zod Schemas for MCP Tool Input Validation ───────────────────────────────

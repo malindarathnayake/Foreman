@@ -24,6 +24,14 @@ export const GATE_NATIVE_IDS_MAX = 6
 export const ESCAPE_RETENTION = 20
 /** Classes that count as defects in the report; the rest are recorded and rendered apart. */
 export const DEFECT_CLASSES: ReadonlySet<EscapeClass> = new Set<EscapeClass>(["original_defect", "remediation_defect"])
+// ─── Independence bound (slice 5) ─────────────────────────────────────────────
+// A streak, not a weight: a weight sums claims about actors Foreman cannot identify; a
+// streak counts gates the ledger authored and needs no opinion of how good a same-provider
+// review was, only how long it has been the sole basis. 'override' is weak so a seatless
+// pass can never buy independence back. Only a receipted cross-vendor seat resets it.
+export const STREAK_MAX = 3
+export const WEAK_BASES: ReadonlySet<BasisClass> = new Set<BasisClass>(["same_provider", "delta:same_provider", "override"])
+export const RESET_BASES: ReadonlySet<BasisClass> = new Set<BasisClass>(["receipted_external"])
 /** A receipted seat below either floor is 'receipted', never 'receipted_external' (slice 4). */
 export const RECEIPT_MIN_BYTES_IN = 1024
 export const RECEIPT_MIN_BYTES_OUT = 200
@@ -283,6 +291,56 @@ export function classifyEscape(
   return escape
 }
 
+// ─── Independence bound ──────────────────────────────────────────────────────
+
+/**
+ * Weak on every host for the weak set; on a Codex-host record an unreceipted
+ * 'declared_external' is weak too (arbitration C2): there Foreman provides the receipted
+ * path, and an unreceipted independent record cannot be told apart from relabelled native
+ * output. On other hosts it is neutral: native does not exist there, so neither does the
+ * erosion the bound targets.
+ */
+export function isWeakBasis(evidence: GateEvidence): boolean {
+  return WEAK_BASES.has(evidence.basis) || (evidence.basis === "declared_external" && evidence.host === "codex")
+}
+
+export interface IndependenceDecision {
+  weak: boolean
+  reset: boolean
+  /** A re-gate of a phase already in the streak neither spends nor resets. */
+  already: boolean
+  streak: number
+  phases: string[]
+  /** Set when the pass would exceed STREAK_MAX without an override. */
+  refusal?: string
+}
+
+/** Evaluate the bound for one counted pass. Pure; the caller applies `commitIndependence`. */
+export function independenceDecision(ledger: LedgerFile, phase: string, evidence: GateEvidence): IndependenceDecision {
+  const s = ledger.independence ?? { streak: 0, phases: [] }
+  const weak = isWeakBasis(evidence)
+  const reset = RESET_BASES.has(evidence.basis)
+  const already = s.phases.includes(phase)
+  const decision: IndependenceDecision = { weak, reset, already, streak: s.streak, phases: s.phases }
+  if (weak && !already && s.streak >= STREAK_MAX) {
+    const hint = evidence.host === "codex" ? "invoke_advisor { cli: 'claude' | 'gemini' }" : "invoke_advisor { cli: 'codex' | 'gemini' }"
+    decision.refusal =
+      `INDEPENDENCE BOUND: phase '${phase}' would be counted pass #${s.streak + 1} on ${evidence.basis} review since the last receipted cross-vendor seat ` +
+      `(prior: ${s.phases.join(", ") || "none"}; bound ${STREAK_MAX}). Run ${hint} and record it stage:'independent' with seat_receipt and packet_hash ` +
+      "copied from its meta block, or set data.user_override: true (recorded on the phase as independence_override)."
+  }
+  return decision
+}
+
+/** Apply a decision after the pass is accepted (with or without an override). */
+export function commitIndependence(ledger: LedgerFile, phase: string, decision: IndependenceDecision): void {
+  if (decision.reset) {
+    ledger.independence = { streak: 0, phases: [] }
+  } else if (decision.weak && !decision.already) {
+    ledger.independence = { streak: decision.streak + 1, phases: [...decision.phases, phase].slice(-(STREAK_MAX + 1)) }
+  }
+}
+
 // ─── Report ──────────────────────────────────────────────────────────────────
 
 function emptyTotals(): GateTotals {
@@ -347,6 +405,7 @@ export function renderReviewOutcomes(ledger: LedgerFile, phaseFilter?: string): 
     counted_passes: countedPasses,
     regates,
     escapes_unclassified: unclassified,
+    independence: `streak ${ledger.independence?.streak ?? 0}/${STREAK_MAX}${ledger.independence?.phases.length ? ` (${ledger.independence.phases.join(", ")})` : ""}`,
     note: "Basis is what carried each counted gate pass; the seat rule itself is unchanged. Rates are per unit-gate over first gates. Escape counts are a floor: only contradictions written to the ledger are seen.",
   })
   const basisKeys: Array<BasisClass | "legacy"> = [

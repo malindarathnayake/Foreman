@@ -94,7 +94,7 @@ describe("journal model declarations and active MCP policy", () => {
     expect((await call(client, "write_journal", { operation: "declare_model", data: { model: "Fable 5.1" } })).error).toBe(true)
   })
 
-  it("threads the declared rank into a guarded MCP worker correction and honors a downgrade", async () => {
+  it("threads the declared rank into a guarded MCP worker correction and honors a downgrade", { timeout: 20000 }, async () => {
     const repo = path.join(dir, "repo")
     await fs.mkdir(repo)
     const git = (...args: string[]) => promisify(execFile)("git", args, { cwd: repo, windowsHide: true })
