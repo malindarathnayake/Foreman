@@ -86,6 +86,7 @@ export async function readSessionState(
       units_total: 0,
       units_passed: 0,
       units_remaining: 0,
+      escapes_unclassified: 0,
       unsupported_capabilities: unsupportedCapabilities(host),
       stale_gates: "none",
       state_drift: progressTarget ? `progress:${progressTarget};ledger:no_phases` : "none",
@@ -99,9 +100,12 @@ export async function readSessionState(
   let phases_done = 0
   let units_total = 0
   let units_passed = 0
+  let escapes_unclassified = 0
   for (const key of phaseKeys) {
     const phase = ledger.phases[key]
     if (isPhaseDone(phase)) phases_done++
+    // 0.6.19: a post-gate defect awaiting classification blocks the next pass on its unit.
+    escapes_unclassified += (phase.escapes ?? []).filter((e) => e.class === "unclassified").length
     // Declared-but-unregistered units are pending, just as they are for resume routing.
     units_total += unitUniverse(phase).length
     units_passed += Object.values(phase.units).filter(unit => unit.v === "pass").length
@@ -320,6 +324,7 @@ export async function readSessionState(
     units_total,
     units_passed,
     units_remaining: units_total - units_passed,
+    escapes_unclassified,
     unsupported_capabilities: unsupportedCapabilities(host),
     stale_gates: staleGates.length === 0 ? "none" : staleGates.join(","),
     state_drift,

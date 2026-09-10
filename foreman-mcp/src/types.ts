@@ -172,7 +172,7 @@ export interface Unit {
   /** Direct fixes recorded as attempts, newest last, capped at 20. */
   direct_fixes?: DirectFix[]
   /** A pass verdict that waived ATTEMPT REQUIRED or the cap through data.user_override. */
-  cap_override?: { ts: string; attempt: number; failed: number; waived: Array<"cap" | "attempt"> }
+  cap_override?: { ts: string; attempt: number; failed: number; waived: Array<"cap" | "attempt" | "escape"> }
   /** Owner grants for attempts past the cap, newest last, capped at 20. Enforcement reads the newest only. */
   cap_grants?: CapGrant[]
 }
@@ -275,6 +275,36 @@ export interface GateEvidence {
   policy_version: 1
 }
 
+// ─── Escapes (0.6.19 slice 3): a gated unit contradicted after its gate ─────────
+// Existence is server-authored from the writes the pit-boss must make anyway (a
+// rejection, a non-pass verdict, a new attempt); only the class is declared, from a
+// closed enum, and the ledger demands it before the next pass.
+export type EscapeClass = "original_defect" | "remediation_defect" | "test_gap" | "process" | "new_scope" | "unclassified"
+export type EscapeSource = "rejection" | "reopen" | "post_gate_attempt" | "later"
+export type EscapeFinder = "external_seat" | "native_review" | "worker_delta" | "tests" | "user" | "production" | "other"
+export interface Escape {
+  ts: string
+  unit_id: string
+  attempt: number
+  /** 0 / gate_units_hash.ts for a phase gated before 0.6.19. */
+  gate_seq: number
+  gate_ts: string
+  basis: BasisClass | "legacy"
+  host?: HostId
+  /** Deduped; the first entry is the detector. */
+  sources: EscapeSource[]
+  in_delta_scope?: boolean
+  class: EscapeClass
+  classified_ts?: string
+  found_by?: EscapeFinder
+  note?: string
+}
+export interface EscapeTotals {
+  total: number
+  by_basis: Partial<Record<BasisClass | "legacy", number>>
+  by_class: Partial<Record<EscapeClass, number>>
+}
+
 export interface GateTotals {
   gates: number
   regates: number
@@ -310,6 +340,12 @@ export interface Phase {
   gate_history?: GateEvidence[]
   /** Scalar totals per basis class; survive gate_history and review trimming. */
   gate_totals?: Partial<Record<BasisClass, GateTotals>>
+  /** Post-gate contradictions of gated units, newest last, ≤ ESCAPE_RETENTION. */
+  escapes?: Escape[]
+  /** Scalar totals; survive escapes[] trimming. */
+  escape_totals?: EscapeTotals
+  /** Gate passed via data.user_override while `escapes` unclassified escapes stood (durable, auditable). */
+  escape_override?: { ts: string; escapes: number }
 }
 
 export interface PhaseScope {
@@ -381,6 +417,24 @@ const AddRejectionInput = z.object({
     r: z.string().max(10000),
     msg: z.string().max(10000),
     ts: z.string().max(10000),
+    // 0.6.19: classify the escape at the moment of rejection when the unit is gated.
+    escape_class: z.enum(["original_defect", "remediation_defect", "test_gap", "process", "new_scope"]).optional(),
+  }),
+})
+
+// 0.6.19 (slice 3): classify a post-gate defect, or record one found out of band.
+// The unit must be registered; a typo never creates a phantom unit that blocks the gate.
+const EscapeClassSchema = z.enum(["original_defect", "remediation_defect", "test_gap", "process", "new_scope"])
+const RecordEscapeInput = z.object({
+  operation: z.literal("record_escape"),
+  unit_id: z.string().max(10000),
+  phase: z.string().max(10000),
+  data: z.object({
+    class: EscapeClassSchema,
+    // 'later' = a defect in this unit's gated code found in a later phase, in production, or by the user.
+    source: z.literal("later").optional(),
+    found_by: z.enum(["external_seat", "native_review", "worker_delta", "tests", "user", "production", "other"]).optional(),
+    note: z.string().max(500).optional(),
   }),
 })
 
@@ -520,6 +574,7 @@ export const WriteLedgerInputSchema = z.discriminatedUnion("operation", [
   SetPhaseScopeInput,
   RecordReviewInput,
   AuthorizeAttemptsInput,
+  RecordEscapeInput,
 ])
 
 export type WriteLedgerInput = z.infer<typeof WriteLedgerInputSchema>
@@ -815,6 +870,7 @@ export const LedgerOperationDataSchemas = {
   set_phase_scope: SetPhaseScopeInput.shape.data,
   record_review: RecordReviewInput.shape.data,
   authorize_attempts: AuthorizeAttemptsInput.shape.data,
+  record_escape: RecordEscapeInput.shape.data,
 } as const
 
 export const ReadJournalInputSchema = z.object({

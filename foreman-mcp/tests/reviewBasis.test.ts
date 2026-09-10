@@ -256,7 +256,7 @@ describe("read_ledger review_outcomes", () => {
     const text = await handleReadLedger(ledgerPath, { query: "review_outcomes" })
     expect(text).toContain("gated_phases: 1")
     expect(text).toContain("counted_passes: 1")
-    expect(text).toMatch(/same_provider\s*\|\s*1\s*\|\s*0\s*\|\s*1\s*\|\s*3\.0\s*\|\s*0\/0\/1\s*\|\s*codex:1/)
+    expect(text).toMatch(/same_provider\s*\|\s*1\s*\|\s*0\s*\|\s*1\s*\|\s*3\.0\s*\|\s*0\s*\|\s*0\s*\|\s*0\s*\|\s*0\/0\/1\s*\|\s*codex:1/)
     expect(await handleReadLedger(ledgerPath, { query: "review_outcomes", phase: "nope" })).toContain("phase not found")
   })
   it("renderReviewOutcomes is a pure function of the ledger", async () => {

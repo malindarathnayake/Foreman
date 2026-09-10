@@ -13,7 +13,7 @@ import {
   normalizedPaths, samePaths, workerDeltaBlocker, verificationIneligibility,
   prospectiveVerification, prospectiveWorkerDelta,
 } from "./reviewPredicates.js"
-import { classifyGate, recordGatePass } from "./reviewBasis.js"
+import { applyEscape, classifyEscape, classifyGate, coveringGate, recordGatePass, unclassifiedEscapes } from "./reviewBasis.js"
 
 // Re-exported so existing importers of the gate predicates keep one entry point.
 export { reviewIncompleteness, REVIEW_RETENTION, trimReviews, verificationIneligibility }
@@ -352,6 +352,9 @@ async function applyOperation(
             throw new Error("RANK CORRECTION: correction.files must remain inside the previous frozen authorized file scope.")
           }
         }
+        // 0.6.19: a new attempt on a unit its gate still covers is a contradiction of that
+        // gate. Recorded before the attempt is allocated, while the snapshot still matches.
+        if (unit.v === "pass") applyEscape(ledger.phases[phase], unit_id, unit, "post_gate_attempt", new Date().toISOString())
         // D2a delegation cap, on server-authored counters since 0.6.4 (see
         // ensureAttemptState): two reviewers rejecting one attempt still fire it once.
         const { attempt, cap_grant_id } = allocateAttempt(unit, unit_id, "delegation", data.user_override)
@@ -390,6 +393,7 @@ async function applyOperation(
             `unit '${unit_id}' has none — delegate first.`
           )
         }
+        if (unit.v === "pass") applyEscape(ledger.phases[phase], unit_id, unit, "post_gate_attempt", new Date().toISOString())
         const { attempt, cap_grant_id } = allocateAttempt(unit, unit_id, "direct fix", data.user_override)
         unit.direct_fixes ??= []
         unit.direct_fixes.push({
@@ -469,7 +473,7 @@ async function applyOperation(
         // attempt needs an override anyway, so that is the message to send the model to.
         ensureAttemptState(unit)
         const failed = unit.epoch_failed ?? 0
-        const waived: Array<"cap" | "attempt"> = []
+        const waived: Array<"cap" | "attempt" | "escape"> = []
         if (failed >= ATTEMPT_CAP && unit.cap_override_attempt !== unit.attempt_seq) {
           if (data.user_override !== true) {
             throw new Error(
@@ -528,8 +532,27 @@ async function applyOperation(
             g.override = { ts: new Date().toISOString() }
           }
         }
+        // 0.6.19: a post-gate defect on this unit must be classified before it passes again.
+        // The verdict is the write the pit-boss cannot skip after a fix, so the demand is
+        // never optional. Sequenced after the repository guard so earlier messages are unchanged.
+        const open = unclassifiedEscapes(ledger.phases[phase], unit_id)
+        if (open.length > 0) {
+          const e = open[open.length - 1]
+          if (data.user_override !== true) {
+            throw new Error(
+              `ESCAPE UNCLASSIFIED: unit '${unit_id}' escaped gate #${e.gate_seq} (${e.basis}) via ${e.sources.join("+")}. ` +
+              "Record write_ledger record_escape { class: original_defect | remediation_defect | test_gap | process | new_scope, found_by?, note? } " +
+              "before the pass verdict, or set data.user_override: true (recorded as cap_override.waived:'escape')."
+            )
+          }
+          waived.push("escape")
+          unit.cap_override = { ts: new Date().toISOString(), attempt: unit.attempt_seq ?? 0, failed, waived }
+        }
       }
       const unit = ledger.phases[phase].units[unit_id]
+      // 0.6.19: any non-pass verdict on a unit its gate still covers is a contradiction of
+      // that gate (fail, pending, inconclusive alike). Recorded before the verdict lands.
+      if (data.v !== "pass" && unit.v === "pass") applyEscape(ledger.phases[phase], unit_id, unit, "reopen", new Date().toISOString())
       unit.v = data.v
       // R1: verdict timestamp — consumed by the D2b gate-staleness snapshot (3d).
       unit.v_ts = new Date().toISOString()
@@ -578,6 +601,13 @@ async function applyOperation(
       })
       if (unit.rej.length > 20) unit.rej = unit.rej.slice(-20)
       recordFailure(unit)
+      // 0.6.19: a rejection of a unit its gate still covers is an escape of that gate.
+      // Recorded before the reopen below, while the legacy coverage fallback can still
+      // see the pass verdict. data.escape_class classifies it in the same write.
+      const escape = applyEscape(ledger.phases[phase], unit_id, unit, "rejection", new Date().toISOString(), data.escape_class)
+      const escapeNote = escape
+        ? `; post-gate escape #${escape.gate_seq} recorded (${escape.basis})${escape.class === "unclassified" ? " — classify with record_escape" : ""}`
+        : ""
       // Field feedback 2026-09 (Codex R1): a rejection contradicts a standing pass verdict.
       // Leaving v:'pass' in place let a rejected unit stay gate-passable and hid it from
       // session_orient's active_rejections. Reopen to 'pending'; the fix must re-verdict.
@@ -586,9 +616,10 @@ async function applyOperation(
         unit.v_ts = new Date().toISOString()
         return (
           `verdict reopened: unit '${unit_id}' was 'pass'; this rejection reset it to 'pending' — ` +
-          "re-run set_verdict after the fix (the phase gate is blocked until then)"
+          "re-run set_verdict after the fix (the phase gate is blocked until then)" + escapeNote
         )
       }
+      if (escapeNote) return `rejection recorded${escapeNote}`
       break
     }
     case "declare_phase_units": {
@@ -837,6 +868,21 @@ async function applyOperation(
         const newHash = computeGateUnitsHash(gatePhase.units, gatePhase.declared_units)
         const counted = gatePhase.g !== "pass" || newHash !== gatePhase.gate_units_hash?.hash
         if (counted) {
+          // 0.6.19: the field data must be complete or it is noise — a phase cannot be
+          // counted passed while a post-gate defect in it is still unclassified.
+          const openEscapes = unclassifiedEscapes(gatePhase)
+          if (openEscapes.length > 0) {
+            if (data.user_override !== true) {
+              const shown = openEscapes.slice(0, 5).map((e) => `${e.unit_id} (gate #${e.gate_seq}, ${e.basis})`).join("; ")
+              throw new Error(
+                `ESCAPE UNCLASSIFIED: phase '${phase}' has ${openEscapes.length} post-gate escape(s) not yet classified: ${shown}. ` +
+                "Record write_ledger record_escape { class } for each before the gate can pass, " +
+                "or set data.user_override: true to waive it; the waiver is recorded on the phase as escape_override."
+              )
+            }
+            gatePhase.escape_override = { ts: now, escapes: openEscapes.length }
+            gateOverrides.push("escape")
+          }
           const evidence = classifyGate({
             host, phaseObj: gatePhase, currentReviews, allReviews, modelRank, ts: now,
             seats: [...independent, ...native, ...eligibleVerifications],
@@ -938,6 +984,35 @@ async function applyOperation(
       // Round 6: bounded history that never evicts a record the gate is blocking on.
       p.reviews = trimReviews(p.reviews, latestVerdictTs(p))
       break
+    }
+    case "record_escape": {
+      // 0.6.19 (slice 3). Classifies the newest unclassified escape on a registered unit,
+      // or records an out-of-band defect (source:'later') on a unit its gate still covers.
+      // Never creates a unit, never touches verdicts, attempts, grants or the gate.
+      const { phase, unit_id, data } = operation
+      const phaseObj = ledger.phases[phase]
+      const unit = phaseObj?.units[unit_id]
+      if (!phaseObj || !unit) {
+        throw new Error(`ESCAPE BLOCKED: unit '${unit_id}' is not registered in phase '${phase}'; an escape is attributed to an existing gated unit.`)
+      }
+      const now = new Date().toISOString()
+      const classified = classifyEscape(phaseObj, unit_id, data.class, now, { found_by: data.found_by, note: data.note })
+      if (classified) {
+        return `escape #${classified.gate_seq} on '${unit_id}' classified ${data.class} (${classified.basis})`
+      }
+      if (data.source === "later") {
+        if (!coveringGate(phaseObj, unit_id, unit.attempt_seq ?? 0)) {
+          throw new Error(
+            `ESCAPE BLOCKED: unit '${unit_id}' has an attempt after its last counted gate (or was never gated), so a later defect cannot be attributed to that gate. ` +
+            "Reject the unit instead; the rejection records the escape against the gate that covers the current attempt, if any."
+          )
+        }
+        const escape = applyEscape(phaseObj, unit_id, unit, "later", now, data.class, { found_by: data.found_by, note: data.note })
+        return `escape #${escape!.gate_seq} on '${unit_id}' recorded ${data.class} (${escape!.basis}, found later)`
+      }
+      throw new Error(
+        `ESCAPE BLOCKED: no unclassified escape on '${unit_id}'; pass data.source:'later' to record an out-of-band defect on a gated unit.`
+      )
     }
     case "authorize_attempts": {
       const { phase, unit_id, data } = operation

@@ -10,7 +10,7 @@
  * Pure functions over ledger data. No I/O. Never imports ledger.ts.
  */
 import type {
-  BasisClass, GateEvidence, GateTotals, LedgerFile, Phase, PhaseReview, Provider,
+  BasisClass, Escape, EscapeClass, EscapeFinder, EscapeSource, GateEvidence, GateTotals, LedgerFile, Phase, PhaseReview, Provider, Unit,
 } from "../types.js"
 import type { HostId } from "./hostProfiles.js"
 import type { ModelRank } from "./modelRank.js"
@@ -21,6 +21,9 @@ export const OUTCOMES_POLICY_VERSION = 1 as const
 export const GATE_HISTORY = 5
 export const GATE_SEATS_MAX = 10
 export const GATE_NATIVE_IDS_MAX = 6
+export const ESCAPE_RETENTION = 20
+/** Classes that count as defects in the report; the rest are recorded and rendered apart. */
+export const DEFECT_CLASSES: ReadonlySet<EscapeClass> = new Set<EscapeClass>(["original_defect", "remediation_defect"])
 /** A receipted seat below either floor is 'receipted', never 'receipted_external' (slice 4). */
 export const RECEIPT_MIN_BYTES_IN = 1024
 export const RECEIPT_MIN_BYTES_OUT = 200
@@ -186,6 +189,100 @@ export function recordGatePass(phaseObj: Phase, evidence: GateEvidence): void {
   t.tokens_unreported += evidence.tokens.unreported
 }
 
+// ─── Escapes ─────────────────────────────────────────────────────────────────
+// Coverage is keyed on the per-unit attempt snapshot the gate stamped, never on a
+// verdict timestamp: a pass→pass re-verdict bumps v_ts with no new attempt and must not
+// exit coverage, while a new attempt is itself the contradiction. Nothing here reads
+// phase.g, so reopening the gate before a rejection changes nothing.
+
+export type Covering = { legacy: false; gate: GateEvidence } | { legacy: true; ts: string }
+
+/** The counted gate whose snapshot still covers this unit at this attempt, or null. */
+export function coveringGate(phase: Phase, unitId: string, attempt: number): Covering | null {
+  const history = phase.gate_history
+  if (history?.length) {
+    for (let i = history.length - 1; i >= 0; i--) {
+      const g = history[i]
+      if (g.unit_attempts[unitId] === attempt) return { legacy: false, gate: g }
+    }
+    return null
+  }
+  // A phase gated before 0.6.19 has no snapshot: fall back to the D2b stamp.
+  const unit = phase.units[unitId]
+  if (phase.gate_units_hash && unit?.v === "pass" && (unit.v_ts ?? "") <= phase.gate_units_hash.ts) {
+    return { legacy: true, ts: phase.gate_units_hash.ts }
+  }
+  return null
+}
+
+function bumpEscapeTotals(phase: Phase, basis: Escape["basis"], from: EscapeClass | null, to: EscapeClass): void {
+  phase.escape_totals ??= { total: 0, by_basis: {}, by_class: {} }
+  const t = phase.escape_totals
+  if (from === null) {
+    t.total += 1
+    t.by_basis[basis] = (t.by_basis[basis] ?? 0) + 1
+  } else {
+    t.by_class[from] = Math.max(0, (t.by_class[from] ?? 0) - 1)
+  }
+  t.by_class[to] = (t.by_class[to] ?? 0) + 1
+}
+
+/**
+ * Record that a covered unit was contradicted. Keyed by (unit_id, gate_seq): the first
+ * event creates the escape, later ones on the same key only add their source. Returns
+ * the escape when the unit is covered, else null (nothing to attribute).
+ */
+export function applyEscape(
+  phase: Phase, unitId: string, unit: Unit, source: EscapeSource, ts: string,
+  cls?: EscapeClass, extra?: { found_by?: EscapeFinder; note?: string }
+): Escape | null {
+  const attempt = unit.attempt_seq ?? 0
+  const covering = coveringGate(phase, unitId, attempt)
+  if (!covering) return null
+  const gateSeq = covering.legacy ? 0 : covering.gate.seq
+  phase.escapes ??= []
+  const existing = phase.escapes.find((e) => e.unit_id === unitId && e.gate_seq === gateSeq)
+  if (existing) {
+    if (!existing.sources.includes(source)) existing.sources.push(source)
+    return existing
+  }
+  const escape: Escape = covering.legacy
+    ? { ts, unit_id: unitId, attempt, gate_seq: 0, gate_ts: covering.ts, basis: "legacy", sources: [source], class: cls ?? "unclassified" }
+    : {
+      ts, unit_id: unitId, attempt, gate_seq: covering.gate.seq, gate_ts: covering.gate.ts, basis: covering.gate.basis,
+      host: covering.gate.host, sources: [source],
+      ...(covering.gate.delta_units ? { in_delta_scope: covering.gate.delta_units.includes(unitId) } : {}),
+      class: cls ?? "unclassified",
+    }
+  if (cls) escape.classified_ts = ts
+  if (extra?.found_by) escape.found_by = extra.found_by
+  if (extra?.note) escape.note = extra.note
+  phase.escapes.push(escape)
+  if (phase.escapes.length > ESCAPE_RETENTION) phase.escapes = phase.escapes.slice(-ESCAPE_RETENTION)
+  bumpEscapeTotals(phase, escape.basis, null, escape.class)
+  return escape
+}
+
+/** Unclassified escapes in a phase, optionally for one unit. Array position is the order, never ts. */
+export function unclassifiedEscapes(phase: Phase, unitId?: string): Escape[] {
+  return (phase.escapes ?? []).filter((e) => e.class === "unclassified" && (unitId === undefined || e.unit_id === unitId))
+}
+
+/** Classify the newest unclassified escape on a unit. Returns it, or null when there is none. */
+export function classifyEscape(
+  phase: Phase, unitId: string, cls: EscapeClass, ts: string, extra?: { found_by?: EscapeFinder; note?: string }
+): Escape | null {
+  const open = unclassifiedEscapes(phase, unitId)
+  const escape = open.at(-1)
+  if (!escape) return null
+  bumpEscapeTotals(phase, escape.basis, "unclassified", cls)
+  escape.class = cls
+  escape.classified_ts = ts
+  if (extra?.found_by) escape.found_by = extra.found_by
+  if (extra?.note) escape.note = extra.note
+  return escape
+}
+
 // ─── Report ──────────────────────────────────────────────────────────────────
 
 function emptyTotals(): GateTotals {
@@ -209,11 +306,24 @@ export function renderReviewOutcomes(ledger: LedgerFile, phaseFilter?: string): 
 
   const totals = new Map<BasisClass, GateTotals>()
   const hosts = new Map<BasisClass, Map<string, number>>()
+  const escapes = new Map<BasisClass | "legacy", { defect: number; other: number; unclassified: number }>()
+  const byClass: Partial<Record<EscapeClass, number>> = {}
   let gatedPhases = 0
   let countedPasses = 0
   let regates = 0
-  for (const [, phase] of phases) {
+  let unclassified = 0
+  const phaseRows: string[][] = []
+  for (const [phaseId, phase] of phases) {
     if (phase.gate_history?.length) gatedPhases += 1
+    for (const e of phase.escapes ?? []) {
+      const agg = escapes.get(e.basis) ?? { defect: 0, other: 0, unclassified: 0 }
+      if (e.class === "unclassified") { agg.unclassified += 1; unclassified += 1 }
+      else if (DEFECT_CLASSES.has(e.class)) agg.defect += 1
+      else agg.other += 1
+      escapes.set(e.basis, agg)
+      byClass[e.class] = (byClass[e.class] ?? 0) + 1
+      if (phaseFilter) phaseRows.push([phaseId, e.unit_id, String(e.attempt), `#${e.gate_seq}`, e.basis, e.sources.join("+"), e.class, e.found_by ?? "-", e.note ?? ""])
+    }
     for (const [basis, t] of Object.entries(phase.gate_totals ?? {}) as Array<[BasisClass, GateTotals]>) {
       const agg = totals.get(basis) ?? emptyTotals()
       agg.gates += t.gates; agg.regates += t.regates; agg.units += t.units; agg.seat_agents += t.seat_agents
@@ -236,18 +346,32 @@ export function renderReviewOutcomes(ledger: LedgerFile, phaseFilter?: string): 
     gated_phases: gatedPhases,
     counted_passes: countedPasses,
     regates,
-    note: "Basis is what carried each counted gate pass; the seat rule itself is unchanged. Rates are per unit-gate over first gates.",
+    escapes_unclassified: unclassified,
+    note: "Basis is what carried each counted gate pass; the seat rule itself is unchanged. Rates are per unit-gate over first gates. Escape counts are a floor: only contradictions written to the ledger are seen.",
   })
-  const rows = BASIS_PRECEDENCE.filter((b) => totals.has(b)).map((basis) => {
-    const t = totals.get(basis)!
-    const gates = t.gates + t.regates
-    const perGate = gates > 0 ? (t.seat_agents / gates).toFixed(1) : "-"
-    const byHost = [...(hosts.get(basis) ?? new Map()).entries()].map(([h, n]) => `${h}:${n}`).join(" ") || "-"
-    return [basis, String(t.gates), String(t.regates), String(t.units), perGate,
-      `${k(t.tokens_receipted)}/${k(t.tokens_declared)}/${t.tokens_unreported}`, byHost]
+  const basisKeys: Array<BasisClass | "legacy"> = [
+    ...BASIS_PRECEDENCE.filter((b) => totals.has(b) || escapes.has(b)),
+    ...(escapes.has("legacy") ? ["legacy" as const] : []),
+  ]
+  const rows = basisKeys.map((basis) => {
+    const t = basis === "legacy" ? undefined : totals.get(basis)
+    const e = escapes.get(basis) ?? { defect: 0, other: 0, unclassified: 0 }
+    const gates = t ? t.gates + t.regates : 0
+    const perGate = t && gates > 0 ? (t.seat_agents / gates).toFixed(1) : "-"
+    const hostMap = basis === "legacy" ? undefined : hosts.get(basis)
+    const byHost = [...(hostMap ?? new Map<string, number>()).entries()].map(([h, n]) => `${h}:${n}`).join(" ") || "-"
+    return [basis, t ? String(t.gates) : "-", t ? String(t.regates) : "-", t ? String(t.units) : "-", perGate,
+      String(e.defect), String(e.other), String(e.unclassified),
+      t ? `${k(t.tokens_receipted)}/${k(t.tokens_declared)}/${t.tokens_unreported}` : "-", byHost]
   })
   const table = rows.length > 0
-    ? toTable(["basis", "gates", "regates", "units", "agents/gate", "tok(receipted/declared/unreported)", "hosts"], rows)
+    ? toTable(["basis", "gates", "regates", "units", "agents/gate", "esc(defect)", "other", "uncls", "tok(receipted/declared/unreported)", "hosts"], rows)
     : "no counted gate passes recorded since 0.6.19"
-  return `${header}\n${table}`
+  const classes = (["original_defect", "remediation_defect", "test_gap", "process", "new_scope", "unclassified"] as EscapeClass[])
+    .map((c) => `${c} ${byClass[c] ?? 0}`).join("  ")
+  const footer = `escape classes: ${classes}`
+  const detail = phaseFilter && phaseRows.length > 0
+    ? "\n" + toTable(["phase", "unit", "attempt", "gate", "basis", "sources", "class", "found_by", "note"], phaseRows)
+    : ""
+  return `${header}\n${table}\n${footer}${detail}`
 }
