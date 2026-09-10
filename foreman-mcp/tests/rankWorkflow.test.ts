@@ -326,3 +326,51 @@ describe("portable worker-delta verification", () => {
     await expect(gate()).rejects.toThrow(kind === "confirmed" ? /CONFIRMED FINDINGS/ : /INCOMPLETE REVIEW/)
   })
 })
+
+describe("0.6.19 structural bounds on worker-delta records", () => {
+  it("refuses a verifier that is a baseline native agent or any worker in the phase", async () => {
+    await initial()
+    // a worker on another unit, never a correcting worker, is still in play
+    await write({ operation: "set_unit_status", phase: "p1", unit_id: "u2", data: {
+      s: "delegated", brief: "Implement the second unit of this phase.", preflight: PREFLIGHT, worker_id: "worker-two",
+    } })
+    await write({ operation: "set_verdict", phase: "p1", unit_id: "u2", data: { v: "pass", via: "worker" } })
+    const ts = await baseline(true)
+    await correction(); await guard(); await verdict()
+    for (const id of ["baseline-verifier", "reviewer-a", "worker-two"]) {
+      await expect(delta(ts, { verifier_id: id })).rejects.toThrow(/is a baseline native agent or a worker in this phase/)
+    }
+    await delta(ts)
+    await gate()
+  })
+  it("requires checked to list every file in evidence.files; extra entries are fine", async () => {
+    const ts = await ready()
+    await expect(write({ operation: "record_review", phase: "p1", data: {
+      advisor: "fresh-verifier", stage: "verification", completion: "complete", checked: ["src/a.ts"], findings: [], evidence: evidence(ts),
+    } })).rejects.toThrow(/checked must list every file in evidence.files \(missing: tests\/a.test.ts\)/)
+    await write({ operation: "record_review", phase: "p1", data: {
+      advisor: "fresh-verifier", stage: "verification", completion: "complete", checked: [...FILES, "docs/spec.md"], findings: [], evidence: evidence(ts),
+    } })
+    await gate()
+  })
+  it("caps verification records per baseline on a server scalar and refuses the third", async () => {
+    const ts = await ready()
+    await delta(ts)
+    await delta(ts)
+    expect((await readLedger(ledgerPath)).phases.p1.reviews!.find((r) => r.ts === ts)!.delta_count).toBe(2)
+    await expect(delta(ts)).rejects.toThrow(/already carries 2 verification record\(s\) \(cap 2\)/)
+    await gate()
+  })
+  it("leaves legacy delta records (no basis_version) on the 0.6.18 predicates at the gate", async () => {
+    const ts = await ready(true)
+    await delta(ts)
+    const ledger = await readLedger(ledgerPath)
+    const rec = ledger.phases.p1.reviews!.at(-1)!
+    delete rec.basis_version
+    rec.checked = ["something-else"]
+    rec.evidence!.verifier_id = "baseline-verifier"
+    await fs.writeFile(ledgerPath, JSON.stringify(ledger))
+    await gate()
+    expect((await readLedger(ledgerPath)).phases.p1.g).toBe("pass")
+  })
+})

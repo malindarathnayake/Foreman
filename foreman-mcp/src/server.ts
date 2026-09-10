@@ -43,7 +43,7 @@ import { formatSchemaError, isZodError } from "./lib/schemaError.js"
 import { readJournal, initSession, declareModel, logEvent, endSession } from "./lib/journal.js"
 import { resolveModelRank, type ModelRank } from "./lib/modelRank.js"
 import { invokeAdvisor, advisorRunMeta, formatAdvisorResult, GEMINI_ADVISOR_MODEL, CODEX_ADVISOR_MODEL } from "./tools/invokeAdvisor.js"
-import { appendReceipt, receiptsPathFor, receiptFailure, sha256Hex, CLI_PROVIDER, type ReceiptCli } from "./lib/seatReceipts.js"
+import { appendReceipt, receiptsPathFor, receiptFailure, sha256Hex, CLI_PROVIDER } from "./lib/seatReceipts.js"
 import { sessionOrient } from "./tools/sessionOrient.js"
 import { renderIncludes, loadSkill } from "./lib/skillLoader.js"
 import { hostStatus } from "./tools/hostStatus.js"
@@ -335,7 +335,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       const meta = advisorRunMeta(args.cli, result, args.prompt, pinned)
       const extra: string[] = []
       try {
-        const cli = args.cli as ReceiptCli
+        const cli = args.cli as keyof typeof CLI_PROVIDER
         const receipt = await appendReceipt(receiptsPathFor(ledgerPath), {
           cli,
           provider: CLI_PROVIDER[cli],
@@ -508,7 +508,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
     },
     async (args, _extra) => {
-      const text = await handleInvokeCouncil(args, { journalPath })
+      const text = await handleInvokeCouncil(args, { journalPath, receiptsPath: receiptsPathFor(ledgerPath) })
       return textResult(text)
     }
   )

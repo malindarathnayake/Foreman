@@ -13,7 +13,7 @@ import { createServer } from "../src/server.js"
 import { invokeAdvisor } from "../src/tools/invokeAdvisor.js"
 import { readLedger, writeLedger } from "../src/lib/ledger.js"
 import {
-  appendConsumed, appendReceipt, readReceipts, receiptFailure, receiptsPathFor, sha256Hex, type ReceiptInput,
+  appendConsumed, appendReceipt, providerFromModelId, readReceipts, receiptFailure, receiptsPathFor, sha256Hex, type ReceiptInput,
 } from "../src/lib/seatReceipts.js"
 import type { HostId } from "../src/lib/hostProfiles.js"
 import type { WriteLedgerInput } from "../src/types.js"
@@ -253,5 +253,28 @@ describe("the gate basis reads provenance Foreman wrote", () => {
     await record({ seat_receipt: tiny.id, packet_hash: tiny.prompt_sha256 }, "codex")
     await gate("codex")
     expect((await readLedger(ledgerPath)).phases.p1.gate_history![0].basis).toBe("receipted")
+  })
+})
+
+describe("council receipts", () => {
+  it("providerFromModelId is a prefix allowlist; everything else is unknown", () => {
+    expect(providerFromModelId("anthropic/claude-opus-5")).toBe("anthropic")
+    expect(providerFromModelId("claude-fable-5-1")).toBe("anthropic")
+    expect(providerFromModelId("openai/gpt-6-astra")).toBe("openai")
+    expect(providerFromModelId("o3-pro")).toBe("openai")
+    expect(providerFromModelId("google/gemini-3.1-pro")).toBe("google")
+    expect(providerFromModelId("moonshotai/kimi-k2")).toBe("unknown")
+    expect(providerFromModelId("loopback/mock-model")).toBe("unknown")
+  })
+  it("an unknown-vendor council receipt is 'receipted' on every host and never promotes to external", async () => {
+    await passingUnit("u1", "codex")
+    const unknownA = await receipt({ cli: "council", provider: "unknown", model_served: "moonshotai/kimi-k2" })
+    const unknownB = await receipt({ cli: "council", provider: "unknown", model_served: "loopback/mock-model" })
+    await record({ advisor: "kimi", seat_receipt: unknownA.id, packet_hash: unknownA.prompt_sha256 }, "codex")
+    await record({ advisor: "mock", seat_receipt: unknownB.id, packet_hash: unknownB.prompt_sha256 }, "codex")
+    await gate("codex")
+    const stamp = (await readLedger(ledgerPath)).phases.p1.gate_history![0]
+    expect(stamp.basis).toBe("receipted")
+    expect(stamp.seats.map((s) => s.basis)).toEqual(["receipted", "receipted"])
   })
 })

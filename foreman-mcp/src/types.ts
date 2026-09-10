@@ -237,7 +237,7 @@ export type Provider = "anthropic" | "openai" | "google" | "unknown"
 /** Server-authored provenance copied from a seat receipt at record_review (slice 4). */
 export interface SeatProvenance {
   receipt: string
-  cli: "claude" | "codex" | "gemini"
+  cli: "claude" | "codex" | "gemini" | "council"
   provider: Provider
   model_served: string
   reasoning_effort?: string

@@ -25,11 +25,25 @@ import type { Provider } from "../types.js"
 import { canonicalStringify } from "./eventsSidecar.js"
 
 export const RECEIPTS_FILE = ".foreman-seats.jsonl"
-export type ReceiptCli = "claude" | "codex" | "gemini"
+export type ReceiptCli = "claude" | "codex" | "gemini" | "council"
 export type ReceiptFailure = "empty_stdout" | "echoed_prompt" | "model_substituted" | "resolution_failed" | "nonzero_exit"
 
 /** Vendor from the CLI Foreman launched. Never parsed from output. */
-export const CLI_PROVIDER: Readonly<Record<ReceiptCli, Provider>> = { claude: "anthropic", codex: "openai", gemini: "google" }
+export const CLI_PROVIDER: Readonly<Record<Exclude<ReceiptCli, "council">, Provider>> = { claude: "anthropic", codex: "openai", gemini: "google" }
+
+/**
+ * Vendor of a council seat from its configured model id, by a server-side prefix allowlist
+ * (OpenRouter-style `vendor/model` or a bare vendor-specific id). Anything else is 'unknown',
+ * which the basis classes as 'receipted', never as external: council seats are arbitrary
+ * endpoints whose vendor is config text, so the allowlist attests nothing beyond the prefix.
+ */
+export function providerFromModelId(model: string): Provider {
+  const id = model.trim().toLowerCase()
+  if (id.startsWith("anthropic/") || id.startsWith("claude")) return "anthropic"
+  if (id.startsWith("openai/") || id.startsWith("gpt-") || /^o[1-9]/.test(id)) return "openai"
+  if (id.startsWith("google/") || id.startsWith("gemini")) return "google"
+  return "unknown"
+}
 
 export interface SeatReceipt {
   v: 1

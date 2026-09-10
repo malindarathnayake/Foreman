@@ -131,6 +131,12 @@ export function samePaths(left: string[], right: string[]): boolean {
   return JSON.stringify(normalizedPaths(left)) === JSON.stringify(normalizedPaths(right))
 }
 
+/** Verification records a baseline may carry (0.6.19 slice 6). Enforced at record time on a server scalar, never by counting reviews[]. */
+export const MAX_DELTA_PER_BASELINE = 2
+
+/** The record-level fields the 0.6.19 structural bounds read; absent on the prospective hint. */
+export type DeltaReviewShape = Pick<PhaseReview, "checked" | "basis_version">
+
 /** Worker delta reviews extend complete coverage, never an unaccounted interval of attempts. */
 export function workerDeltaBlocker(
   phaseKey: string,
@@ -138,7 +144,9 @@ export function workerDeltaBlocker(
   evidence: VerificationEvidence,
   upperTs: string,
   allReviews: PhaseReview[],
-  events: SidecarEvent[]
+  events: SidecarEvent[],
+  /** 0.6.19: records with basis_version 2 carry structural bounds legacy deltas do not. */
+  review?: DeltaReviewShape
 ): string | null {
   const baseline = allReviews.find((r) => r.ts === evidence.baseline_review_ts &&
     (r.stage === undefined || r.stage === "independent" || r.stage === "native"))
@@ -212,6 +220,20 @@ export function workerDeltaBlocker(
   if (!samePaths([...coveredFiles], evidence.files)) {
     return "evidence.files must cover exactly the frozen authorized files across worker corrections"
   }
+  // 0.6.19 (slice 6): structural bounds on the verifier and its coverage. Declared ids are
+  // strings compared for distinctness, not identities Foreman verifies; the bound is that the
+  // verifier is a fresh string against every id already in play. [CWE-290]
+  if (review?.basis_version === 2) {
+    const verifier = evidence.verifier_id.trim()
+    const inPlay = new Set<string>([
+      ...(baseline.native ? [...baseline.native.reviewers.map((s) => s.agent_id), baseline.native.verifier_id] : []),
+      ...Object.values(phaseObj.units).flatMap((u) => (u.delegations ?? []).map((d) => d.worker_id).filter((id): id is string => !!id)),
+    ])
+    if (inPlay.has(verifier)) return `verifier_id '${verifier}' is a baseline native agent or a worker in this phase; the verifier must be fresh`
+    const checked = new Set(normalizedPaths(review.checked ?? []))
+    const missing = normalizedPaths(evidence.files).filter((file) => !checked.has(file))
+    if (missing.length > 0) return `checked must list every file in evidence.files (missing: ${missing.slice(0, 5).join(", ")})`
+  }
   return null
 }
 
@@ -278,7 +300,7 @@ export function verificationIneligibility(
     const incomplete = reviewIncompleteness(review)
     if (incomplete) return incomplete
     if (!review.model_rank?.permissions.delta_review) return "worker_delta has no recorded TopRank authorization"
-    return workerDeltaBlocker(phaseKey, phaseObj, ev, review.ts, allReviews, events)
+    return workerDeltaBlocker(phaseKey, phaseObj, ev, review.ts, allReviews, events, review)
   }
   return verificationBlocker(phaseKey, phaseObj, ev, review.ts, allReviews, events)
 }

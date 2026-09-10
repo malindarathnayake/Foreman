@@ -72,7 +72,9 @@ export function seatBasis(r: PhaseReview, host: HostId, allReviews: PhaseReview[
     if (!prov) return "declared_external"
     const hp = hostProvider(r.host ?? host)
     const trivial = prov.bytes_in < RECEIPT_MIN_BYTES_IN || prov.bytes_out < RECEIPT_MIN_BYTES_OUT
-    if (trivial || hp === null) return "receipted"
+    // An unknown vendor (a council seat outside the prefix allowlist) is receipted, never
+    // external: Foreman holds no proof it differs from the host's.
+    if (trivial || hp === null || prov.provider === "unknown") return "receipted"
     return prov.provider !== hp ? "receipted_external" : "same_provider"
   }
   if (r.stage === "native") return "same_provider"
@@ -126,7 +128,7 @@ export function classifyGate(input: ClassifyGateInput): GateEvidence {
     const basis = seatBasis(r, host, allReviews)
     if (basis === null) continue
     classes.push(basis)
-    if (r.provenance && basis === "receipted") receiptedProviders.add(r.provenance.provider)
+    if (r.provenance && basis === "receipted" && r.provenance.provider !== "unknown") receiptedProviders.add(r.provenance.provider)
     const nativeIds = r.native
       ? [...r.native.reviewers.map((s) => s.agent_id), r.native.verifier_id].slice(0, GATE_NATIVE_IDS_MAX)
       : undefined
@@ -341,6 +343,55 @@ export function commitIndependence(ledger: LedgerFile, phase: string, decision: 
   }
 }
 
+// ─── Owner-review triggers ───────────────────────────────────────────────────
+// Rendered, never statistical, and none changes a gate rule by itself. Each names the
+// change the owner would consider and the count that puts it on the table.
+
+export const TRIGGER_T1_DEFECTS = 3
+export const TRIGGER_T1_UNIT_GATES = 10
+export const TRIGGER_T4_OVERRIDES = 3
+
+export interface OutcomeAggregate {
+  /** Per basis: first-gate unit count and defect-class escape count. */
+  byBasis: Map<BasisClass | "legacy", { unitGates: number; defects: number }>
+  declaredExternalOnCodex: number
+  independenceOverrides: number
+}
+
+/** Fold every phase of a ledger into the counts the triggers read. Pure. */
+export function aggregateOutcomes(ledger: LedgerFile): OutcomeAggregate {
+  const byBasis = new Map<BasisClass | "legacy", { unitGates: number; defects: number }>()
+  const bump = (basis: BasisClass | "legacy") => {
+    const agg = byBasis.get(basis) ?? { unitGates: 0, defects: 0 }
+    byBasis.set(basis, agg)
+    return agg
+  }
+  let declaredExternalOnCodex = 0
+  let independenceOverrides = 0
+  for (const phase of Object.values(ledger.phases)) {
+    for (const [basis, t] of Object.entries(phase.gate_totals ?? {}) as Array<[BasisClass, GateTotals]>) bump(basis).unitGates += t.units
+    for (const e of phase.escapes ?? []) if (DEFECT_CLASSES.has(e.class)) bump(e.basis).defects += 1
+    for (const g of phase.gate_history ?? []) if (g.basis === "declared_external" && g.host === "codex") declaredExternalOnCodex += 1
+    if (phase.independence_override) independenceOverrides += 1
+  }
+  return { byBasis, declaredExternalOnCodex, independenceOverrides }
+}
+
+export function renderTriggers(agg: OutcomeAggregate): string[] {
+  const lines: string[] = ["owner-review triggers:"]
+  const weak: Array<BasisClass | "legacy"> = ["same_provider", "delta:same_provider", "declared_external", "delta:declared_external"]
+  for (const basis of weak) {
+    const a = agg.byBasis.get(basis)
+    if (!a) continue
+    const met = a.defects >= TRIGGER_T1_DEFECTS && a.unitGates >= TRIGGER_T1_UNIT_GATES
+    lines.push(`  T1 ${basis} loses seat status: ${a.defects} defect escape(s) / ${a.unitGates} unit-gate(s) (needs >=${TRIGGER_T1_DEFECTS} and >=${TRIGGER_T1_UNIT_GATES}) — ${met ? "ON THE TABLE" : "not yet"}`)
+  }
+  lines.push(`  T2 receipts mandatory on codex: ${agg.declaredExternalOnCodex} unreceipted external gate(s) on a codex host — ${agg.declaredExternalOnCodex > 0 ? "ON THE TABLE" : "not yet"}`)
+  lines.push("  T3 reviewer-rank rule (weight/threshold): precondition ABSENT — the host returns no served model or effort for native agents")
+  lines.push(`  T4 bound constant or weak set: ${agg.independenceOverrides} independence override(s) (needs >=${TRIGGER_T4_OVERRIDES}) — ${agg.independenceOverrides >= TRIGGER_T4_OVERRIDES ? "ON THE TABLE" : "not yet"}`)
+  return lines
+}
+
 // ─── Report ──────────────────────────────────────────────────────────────────
 
 function emptyTotals(): GateTotals {
@@ -432,5 +483,7 @@ export function renderReviewOutcomes(ledger: LedgerFile, phaseFilter?: string): 
   const detail = phaseFilter && phaseRows.length > 0
     ? "\n" + toTable(["phase", "unit", "attempt", "gate", "basis", "sources", "class", "found_by", "note"], phaseRows)
     : ""
-  return `${header}\n${table}\n${footer}${detail}`
+  const scoped: LedgerFile = { ...ledger, phases: Object.fromEntries(phases) }
+  const triggers = renderTriggers(aggregateOutcomes(scoped)).join("\n")
+  return `${header}\n${table}\n${footer}${detail}\n${triggers}`
 }

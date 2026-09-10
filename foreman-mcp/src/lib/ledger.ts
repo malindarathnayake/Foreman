@@ -11,7 +11,7 @@ import { resolveModelRank, type ModelRank } from "./modelRank.js"
 import {
   latestVerdictTs, reviewIncompleteness, isSuperseded, REVIEW_RETENTION, trimReviews,
   normalizedPaths, samePaths, workerDeltaBlocker, verificationIneligibility,
-  prospectiveVerification, prospectiveWorkerDelta,
+  prospectiveVerification, prospectiveWorkerDelta, MAX_DELTA_PER_BASELINE,
 } from "./reviewPredicates.js"
 import {
   applyEscape, classifyEscape, classifyGate, commitIndependence, coveringGate, independenceDecision, recordGatePass, unclassifiedEscapes,
@@ -971,8 +971,19 @@ async function applyOperation(
           const incomplete = reviewIncompleteness({ ...data, ts: "" })
           if (incomplete) throw new Error(`RANK VERIFICATION INCOMPLETE: ${incomplete}.`)
           const why = workerDeltaBlocker(phase, p, data.evidence, new Date().toISOString(), p.reviews ?? [],
-            sidecarReader ? await sidecarReader() : [])
+            sidecarReader ? await sidecarReader() : [], { checked: data.checked, basis_version: 2 })
           if (why) throw new Error(`RANK VERIFICATION: ${why}.`)
+          // 0.6.19 (slice 6): a baseline carries at most MAX_DELTA_PER_BASELINE verification
+          // records. The count lives on the baseline as a server scalar (protected from
+          // trimming while a current verification names it), never on a count over reviews[].
+          const baseline = (p.reviews ?? []).find((r) => r.ts === data.evidence!.baseline_review_ts &&
+            (r.stage === undefined || r.stage === "independent" || r.stage === "native"))
+          if (baseline) {
+            if ((baseline.delta_count ?? 0) >= MAX_DELTA_PER_BASELINE) {
+              throw new Error(`RANK VERIFICATION: baseline ${baseline.ts} already carries ${baseline.delta_count} verification record(s) (cap ${MAX_DELTA_PER_BASELINE}); run a full checkpoint review.`)
+            }
+            baseline.delta_count = (baseline.delta_count ?? 0) + 1
+          }
         }
       } else if (data.evidence !== undefined) {
         throw new Error("VERIFICATION EVIDENCE: data.evidence is accepted with stage:'verification' only.")
