@@ -1,5 +1,6 @@
 import { z } from "zod"
 import type { ModelRank } from "./lib/modelRank.js"
+import type { HostId } from "./lib/hostProfiles.js"
 
 // ─── Ledger Types ─────────────────────────────────────────────────────────────
 
@@ -208,6 +209,80 @@ export interface PhaseReview {
   model_rank?: ModelRank
   /** Server snapshot of attempts covered by this independent/native baseline. */
   unit_attempts?: Record<string, number>
+  /** Stamped on every record written since 0.6.19; absent = legacy record (neutral to the independence bound). */
+  basis_version?: 2
+  /** Host that wrote the record (server-authored). */
+  host?: HostId
+  /** Server-authored from a seat receipt; present only when record_review bound one (0.6.19 slice 4). */
+  provenance?: SeatProvenance
+  /** Server scalar on a baseline: verification records recorded against it (survives review trimming). */
+  delta_count?: number
+}
+
+// ─── Review outcomes (0.6.19): what kind of evidence carried a gate ───────────
+// Closed enums only: every value below is a metric key. Ids, hashes and timestamps
+// stay on records. The seat predicate is unchanged; these classify what satisfied it.
+
+/** Basis class of one seat or of a whole gate pass. */
+export type BasisClass =
+  | "receipted_external"   // Foreman-launched CLI seat, provider differs from the host provider, bound to the packet
+  | "receipted"            // Foreman-launched CLI seat whose vendor relation to the pit-boss is unknowable, or below the bytes floor
+  | "declared_external"    // stage undefined/'independent' with no receipt (every record before 0.6.19)
+  | "same_provider"        // complete stage:'native' on the Codex host, or a receipted seat on the host's own vendor
+  | "delta:receipted_external" | "delta:declared_external" | "delta:same_provider"   // eligible verification, by its baseline's class
+  | "override"             // review_override: no seat at all
+
+export type Provider = "anthropic" | "openai" | "google" | "unknown"
+
+/** Server-authored provenance copied from a seat receipt at record_review (slice 4). */
+export interface SeatProvenance {
+  receipt: string
+  cli: "claude" | "codex" | "gemini"
+  provider: Provider
+  model_served: string
+  reasoning_effort?: string
+  bytes_in: number
+  bytes_out: number
+  tokens_used?: number
+}
+
+/** One counted gate pass. Server-authored; copies advisor/ts/stage so evicted reviews stay attributable. */
+export interface GateEvidence {
+  seq: number
+  ts: string
+  host: HostId
+  basis: BasisClass
+  /** ≤10 seats. native_ids ≤6. */
+  seats: Array<{
+    advisor: string; ts: string; stage: string; basis: BasisClass
+    kind?: "worker_delta" | "direct_fix"; baseline_ts?: string; receipt?: string; verifier_id?: string; native_ids?: string[]
+  }>
+  /** Current records by stage, seats or not. */
+  present: Partial<Record<"independent" | "native" | "verification" | "fan" | "cross_exam", number>>
+  /** Same shape as PhaseReview.unit_attempts: the coverage key for escapes. */
+  unit_attempts: Record<string, number>
+  units: number
+  /** Native reviewers + verifier, 1 per independent record, 1 per verification. Cost proxy. */
+  seat_agents: number
+  regate: boolean
+  flagged: boolean
+  agent_class_declared?: "frontier" | "capable" | "compact"
+  overrides: Array<"seat_minimum" | "discipline" | "review" | "confirmed" | "incomplete" | "escape" | "independence">
+  rank: { weight: 0 | 1 | 2 | 3; declared: boolean }
+  /** evidence.units of the carrying verification when basis is delta:*. */
+  delta_units?: string[]
+  tokens: { receipted: number; declared: number; unreported: number }
+  policy_version: 1
+}
+
+export interface GateTotals {
+  gates: number
+  regates: number
+  units: number
+  seat_agents: number
+  tokens_receipted: number
+  tokens_declared: number
+  tokens_unreported: number
 }
 
 export interface Phase {
@@ -231,6 +306,10 @@ export interface Phase {
   confirmed_override?: { ts: string; findings: number }
   /** Gate passed via data.user_override while `reviews` current reviews were partial, failed, or silent without an examined list (durable, auditable). */
   incomplete_override?: { ts: string; reviews: number }
+  /** Counted gate passes, newest last, ≤ GATE_HISTORY (0.6.19). An idempotent re-pass stamps nothing. */
+  gate_history?: GateEvidence[]
+  /** Scalar totals per basis class; survive gate_history and review trimming. */
+  gate_totals?: Partial<Record<BasisClass, GateTotals>>
 }
 
 export interface PhaseScope {
@@ -448,7 +527,7 @@ export type WriteLedgerInput = z.infer<typeof WriteLedgerInputSchema>
 export const ReadLedgerInputSchema = z.object({
   unit_id: z.string().max(10000).optional(),
   phase: z.string().max(10000).optional(),
-  query: z.enum(["verdicts", "rejections", "phase_gates", "reviews", "full", "delegation_metrics"]).optional(),
+  query: z.enum(["verdicts", "rejections", "phase_gates", "reviews", "full", "delegation_metrics", "review_outcomes"]).optional(),
   verdict: z.enum(["pass", "fail", "pending", "inconclusive"]).optional(),
   include_notes: z.boolean().optional(),
   cursor: z.number().int().min(0).max(1000000).optional(),

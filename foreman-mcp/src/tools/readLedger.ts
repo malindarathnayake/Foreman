@@ -2,6 +2,7 @@ import path from "path"
 import { computeGateUnitsHash, readLedgerWithStatus } from "../lib/ledger.js"
 import { toKeyValue, toTable } from "../lib/toon.js"
 import { renderDelegationMetrics } from "../lib/delegationMetrics.js"
+import { renderReviewOutcomes } from "../lib/reviewBasis.js"
 import type { ReadLedgerInput, Unit } from "../types.js"
 
 const DEFAULT_PAGE_LIMIT = 50
@@ -199,6 +200,9 @@ export async function handleReadLedger(filePath: string, input: ReadLedgerInput)
         input.phase,
       )
     }
+    case "review_outcomes":
+      // 0.6.19: recomputed from per-phase scalar totals on every read; never a rollup.
+      return boundNonPageOutput(renderReviewOutcomes(ledger, input.phase), query, input.phase)
     case "full":
     default:
       if (input.phase && !ledger.phases[input.phase]) {

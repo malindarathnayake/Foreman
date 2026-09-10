@@ -1,7 +1,7 @@
 import fs from "fs/promises"
 import path from "path"
 import { createHash } from "crypto"
-import type { CapGrant, DelegationGuard, LedgerFile, Phase, PhaseReview, Unit, WriteLedgerInput } from "../types.js"
+import type { CapGrant, DelegationGuard, GateEvidence, LedgerFile, Phase, PhaseReview, Unit, WriteLedgerInput } from "../types.js"
 import type { HostId } from "./hostProfiles.js"
 import { detectTestFiles } from "./detectTestFiles.js"
 import { atomicWriteFile } from "./atomicWrite.js"
@@ -13,6 +13,7 @@ import {
   normalizedPaths, samePaths, workerDeltaBlocker, verificationIneligibility,
   prospectiveVerification, prospectiveWorkerDelta,
 } from "./reviewPredicates.js"
+import { classifyGate, recordGatePass } from "./reviewBasis.js"
 
 // Re-exported so existing importers of the gate predicates keep one entry point.
 export { reviewIncompleteness, REVIEW_RETENTION, trimReviews, verificationIneligibility }
@@ -699,8 +700,11 @@ async function applyOperation(
         // D13 seat minimum: a flagged phase (hot_path / security_boundary) requires a
         // frontier-class judgment seat to pass its gate. Declared-input validation ONLY —
         // the class is never inferred from model ids or anything else.
+        // 0.6.19: every waiver the gate accepts is listed on the gate stamp (gate_history).
+        const gateOverrides: GateEvidence["overrides"] = []
         const scope = ledger.phases[phase].scope
         if (scope?.hot_path || scope?.security_boundary) {
+          if (data.agent_class !== "frontier" && data.user_override === true) gateOverrides.push("seat_minimum")
           if (data.agent_class !== "frontier" && data.user_override !== true) {
             const flags = [
               scope.hot_path ? "hot_path" : null,
@@ -717,7 +721,9 @@ async function applyOperation(
         // gate-pass-requires-all-pass + D13 checks and before the D2b snapshot. A block
         // here (throw) prevents the snapshot and the g:'pass' write.
         if (sidecarReader) {
+          const before = ledger.phases[phase].discipline_overrides?.length ?? 0
           await disciplineAdherenceGate(phase, ledger.phases[phase], data, sidecarReader)
+          if ((ledger.phases[phase].discipline_overrides?.length ?? 0) > before) gateOverrides.push("discipline")
         }
         // Field feedback 2026-09 (Codex R2) + docs deliberation: a gate is a reviewed
         // checkpoint of the CURRENT state. Reviews count only when recorded at or after
@@ -749,23 +755,23 @@ async function applyOperation(
           ? currentReviews.filter((r) => r.stage === "native" && reviewIncompleteness(r) === null)
           : []
         const ineligible: string[] = []
-        let eligibleVerification = false
+        const eligibleVerifications: PhaseReview[] = []
         const verifications = currentReviews.filter((r) => r.stage === "verification")
         const events = sidecarReader ? await sidecarReader() : []
         if (verifications.length > 0) {
           for (const r of verifications) {
             const why = verificationIneligibility(phase, gatePhase, r, allReviews, events)
-            if (why === null) eligibleVerification = true
+            if (why === null) eligibleVerifications.push(r)
             else ineligible.push(`${r.advisor}: ${why}`)
           }
         }
-        if (independent.length === 0 && native.length === 0 && !eligibleVerification) {
+        if (independent.length === 0 && native.length === 0 && eligibleVerifications.length === 0) {
           if (data.user_override !== true) {
             const stale = allReviews.length > currentReviews.length
               ? ` ${allReviews.length - currentReviews.length} older review(s) exist but predate the latest unit verdict — a review recorded before a re-verdict does not cover the current code; re-run the review.`
               : ""
             const notSeats = currentReviews.length > 0
-              ? ` ${currentReviews.length} current record(s) do not count as a seat: a cross_exam never does, a fan never does (same-model perspective, not independence — present its report and take the owner's decision), and a verification counts only for direct-fix re-verdicts${ineligible.length > 0 ? ` (${ineligible.join("; ")})` : ""}.`
+              ? ` ${currentReviews.length} current record(s) do not count as a seat: a cross_exam never does, a fan never does (same-model perspective, not independence — present its report and take the owner's decision), and a verification counts only when eligible (a legacy direct-fix re-verdict, or a TopRank worker_delta on a retained complete baseline)${ineligible.length > 0 ? ` (${ineligible.join("; ")})` : ""}.`
               : ""
             throw new Error(
               `REVIEW REQUIRED: phase '${phase}' has no record_review entry recorded at or after its latest unit verdict.${stale}${notSeats} ` +
@@ -778,6 +784,7 @@ async function applyOperation(
             )
           }
           gatePhase.review_override = { ts: new Date().toISOString() }
+          gateOverrides.push("review")
         } else {
           const confirmed = currentReviews.flatMap((r) =>
             r.findings
@@ -795,6 +802,7 @@ async function applyOperation(
               )
             }
             gatePhase.confirmed_override = { ts: new Date().toISOString(), findings: confirmed.length }
+            gateOverrides.push("confirmed")
           }
           // Round 3 (Codex): a collapsed parse yields a review with zero findings and no
           // examined list, which used to satisfy the gate. Silence is approval only when
@@ -817,16 +825,28 @@ async function applyOperation(
               )
             }
             gatePhase.incomplete_override = { ts: new Date().toISOString(), reviews: incomplete.length }
+            gateOverrides.push("incomplete")
           }
         }
-      }
-      // D2b: snapshot only on a passing gate — never on fail/pending, never cleared.
-      // Read paths recompute and flag STALE; nothing is ever blocked on staleness.
-      if (data.g === "pass") {
-        ledger.phases[phase].gate_units_hash = {
-          hash: computeGateUnitsHash(ledger.phases[phase].units, ledger.phases[phase].declared_units),
-          ts: new Date().toISOString(),
+        // 0.6.19: a COUNTED pass is one that changes the gate — first pass, or a re-pass
+        // over a different unit set. Re-issuing g:'pass' over the same snapshot stamps
+        // nothing, so the totals and the independence streak cannot be inflated by
+        // repeating the call. The stamp records what carried the pass (its basis); the
+        // seat predicate above is unchanged.
+        const now = new Date().toISOString()
+        const newHash = computeGateUnitsHash(gatePhase.units, gatePhase.declared_units)
+        const counted = gatePhase.g !== "pass" || newHash !== gatePhase.gate_units_hash?.hash
+        if (counted) {
+          const evidence = classifyGate({
+            host, phaseObj: gatePhase, currentReviews, allReviews, modelRank, ts: now,
+            seats: [...independent, ...native, ...eligibleVerifications],
+            agentClass: data.agent_class, overrides: gateOverrides,
+          })
+          recordGatePass(gatePhase, evidence)
         }
+        // D2b: snapshot only on a passing gate — never on fail/pending, never cleared.
+        // Read paths recompute and flag STALE; nothing is ever blocked on staleness.
+        gatePhase.gate_units_hash = { hash: newHash, ts: now }
       }
       ledger.phases[phase].g = data.g
       break
@@ -905,6 +925,9 @@ async function applyOperation(
           ? `Native Codex subagents; same-provider review, not cross-vendor independence.${data.limitations ? ` ${data.limitations}` : ""}`
           : data.limitations,
         stage: data.stage,
+        // 0.6.19: presence of basis_version is the legacy switch for the independence bound.
+        basis_version: 2,
+        host,
         ...(data.native !== undefined ? { native: data.native } : {}),
         ...(data.evidence !== undefined ? { evidence: data.evidence } : {}),
         ...(data.evidence?.kind === "worker_delta" ? { model_rank: modelRank } : {}),

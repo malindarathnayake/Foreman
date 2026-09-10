@@ -209,11 +209,11 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     "read_ledger",
     {
       title: "Read Ledger",
-      description: "Reads the Foreman ledger with bounded output. Table queries are paged (cursor/limit, max 100), phase-filterable, and omit verdict notes unless include_notes:true. Oversized full/metrics reads return guidance instead of flooding host context. Query 'delegation_metrics' derives worker-delegation metrics from the events sidecar.",
+      description: "Reads the Foreman ledger with bounded output. Table queries are paged (cursor/limit, max 100), phase-filterable, and omit verdict notes unless include_notes:true. Oversized full/metrics reads return guidance instead of flooding host context. Query 'delegation_metrics' derives worker-delegation metrics from the events sidecar. Query 'review_outcomes' reports counted gate passes and escapes per review basis.",
       inputSchema: z.strictObject({
         unit_id: z.string().max(10000).optional(),
         phase: z.string().max(10000).optional(),
-        query: z.enum(["verdicts", "rejections", "phase_gates", "reviews", "full", "delegation_metrics"]).optional(),
+        query: z.enum(["verdicts", "rejections", "phase_gates", "reviews", "full", "delegation_metrics", "review_outcomes"]).optional(),
         verdict: z.enum(["pass", "fail", "pending", "inconclusive"]).optional(),
         include_notes: z.boolean().optional(),
         cursor: z.number().int().min(0).max(1000000).optional(),
