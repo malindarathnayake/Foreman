@@ -35,6 +35,10 @@ export async function handleWriteLedger(filePath: string, rawInput: unknown, hos
   }
   const combined = [warning, truncated].filter(Boolean).join(" | ")
   if (combined) result.warning = combined
+  // 0.6.21: a delegation's attempt id is what the worker's heartbeat and close_attempt name.
+  if (parsed.operation === "set_unit_status" && parsed.data.s === "delegated") {
+    result.attempt = String(ledger.phases[parsed.phase]?.units[parsed.unit_id]?.attempt_seq ?? 0)
+  }
 
   // ─── R3 sidecar hook (Unit 4g) ────────────────────────────────────────────
   // Runs strictly AFTER the `writeLedger` call above has already succeeded and

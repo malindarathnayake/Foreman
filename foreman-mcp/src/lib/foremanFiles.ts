@@ -32,8 +32,10 @@ export const RECEIPTS_FILE = ".foreman-seats.jsonl"
 export const PROGRESS_MARKDOWN = "PROGRESS.md"
 
 /** Reserved dot-file names: Foreman-owned wherever they sit. A user has no file of these names. */
+/** 0.6.21: worker heartbeats; guard-excluded like every state file, and never a fence mark. */
+export const HEARTBEAT_FILE = ".foreman-heartbeat.jsonl"
 export const FOREMAN_STATE_NAMES: ReadonlySet<string> = new Set([
-  LEDGER_FILE, PROGRESS_STATE_FILE, JOURNAL_FILE, EVENTS_FILE, RECEIPTS_FILE,
+  LEDGER_FILE, PROGRESS_STATE_FILE, JOURNAL_FILE, EVENTS_FILE, RECEIPTS_FILE, HEARTBEAT_FILE,
 ])
 
 /**
@@ -83,6 +85,7 @@ export function foremanFileScope(paths: ForemanPaths): ForemanFileScope {
     state: [
       paths.ledgerPath, paths.progressPath, paths.journalPath,
       eventsPathFor(paths.ledgerPath), receiptsPathFor(paths.ledgerPath),
+      path.join(path.dirname(paths.ledgerPath), HEARTBEAT_FILE),
     ].map((p) => path.resolve(p)),
     fenced: [path.resolve(paths.docsDir, PROGRESS_MARKDOWN)],
   }

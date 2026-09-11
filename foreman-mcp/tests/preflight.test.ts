@@ -102,6 +102,13 @@ describe("preflight records", () => {
       expect(await findPreflight(file, h)).toBeNull()
       await appendPreflight(file, { ...base, status: "pass" })
       expect((await findPreflight(file, h))?.status).toBe("pass")
+      // the newest record decides: a later failure supersedes the pass
+      await appendPreflight(file, { ...base, status: "fail" })
+      expect(await findPreflight(file, h)).toBeNull()
+      // a pass on another unit does not carry to this one
+      await appendPreflight(file, { ...base, unit_id: "u2", status: "pass" })
+      expect((await findPreflight(file, h, "u2"))?.unit_id).toBe("u2")
+      expect(await findPreflight(file, h, "u1")).toBeNull()
     } finally {
       await fs.rm(dir, { recursive: true, force: true })
     }

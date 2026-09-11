@@ -133,7 +133,12 @@ export interface Delegation {
   /** Server-resolved orchestration policy when this attempt was recorded. */
   model_rank?: ModelRank
   correction?: { kind: "mechanical" | "bounded"; from_attempt: number; files: string[] }
+  /** 0.6.21: how this attempt ended. `rejected` is server-authored from a rejection or fail verdict; the rest are closed by close_attempt. Never affects attempt ids, counters or the cap. */
+  outcome?: AttemptOutcome
+  outcome_note?: string
 }
+
+export type AttemptOutcome = "delivered" | "blocked" | "rejected" | "validation_only"
 
 /**
  * Owner authorization for attempts past the cap (v0.6.5, field feedback round 5). One
@@ -201,6 +206,25 @@ export interface Unit {
   cap_grants?: CapGrant[]
   /** 0.6.20: the latest verify_oracle run on this unit. Server-authored. */
   oracle?: { ts: string; mutations: number; killed: number; survivors: string[]; invalid: string[] }
+  /** 0.6.21: lifetime attempt outcomes; durable scalars because delegations[] is trimmed at 20. */
+  outcomes?: Partial<Record<AttemptOutcome, number>>
+  /** 0.6.21: server-executed contract probes, newest last, ≤10. */
+  probes?: ProbeRecord[]
+}
+
+export interface ProbeRecord {
+  ts: string
+  method: "GET" | "HEAD"
+  /** origin + path; the query is never stored. */
+  target: string
+  status: number | null
+  bytes: number
+  sha256: string
+  asserted: string[]
+  passed: boolean
+  failed?: string[]
+  /** Environment variable NAMES the request used; never values. */
+  credentials?: string[]
 }
 
 /** A single classified review finding. Shared with normalize_review output. */
@@ -643,6 +667,20 @@ const RecordFactInput = z.object({
   }),
 })
 
+// 0.6.21 (field report): attempts ended for reasons other than failure had no record, so a
+// unit with six attempts and zero rejections read like a unit in trouble. close_attempt
+// labels a non-failure ending; it changes no attempt id, counter, guard or verdict.
+const CloseAttemptInput = z.object({
+  operation: z.literal("close_attempt"),
+  unit_id: z.string().max(10000),
+  phase: z.string().max(10000),
+  data: z.object({
+    attempt: z.number().int().min(1),
+    outcome: z.enum(["delivered", "blocked", "validation_only"]),
+    note: z.string().trim().min(10).max(2000),
+  }),
+})
+
 export const WriteLedgerInputSchema = z.discriminatedUnion("operation", [
   SetUnitStatusInput,
   SetVerdictInput,
@@ -654,6 +692,7 @@ export const WriteLedgerInputSchema = z.discriminatedUnion("operation", [
   AuthorizeAttemptsInput,
   RecordEscapeInput,
   RecordFactInput,
+  CloseAttemptInput,
 ])
 
 export type WriteLedgerInput = z.infer<typeof WriteLedgerInputSchema>
@@ -981,6 +1020,7 @@ export const LedgerOperationDataSchemas = {
   authorize_attempts: AuthorizeAttemptsInput.shape.data,
   record_escape: RecordEscapeInput.shape.data,
   record_fact: RecordFactInput.shape.data,
+  close_attempt: CloseAttemptInput.shape.data,
 } as const
 
 export const ReadJournalInputSchema = z.object({

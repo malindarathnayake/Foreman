@@ -270,9 +270,11 @@ export async function runTests(
   timeoutMs: number = 60000,
   maxOutputChars: number = 8000,
   filters?: OutputFilterOptions,
+  /** 0.6.21: working directory for the child (verify_oracle runs in its repo_root); default the server cwd. */
+  cwd?: string,
 ): Promise<string> {
   const allowedRunners = getAllowedRunners()
-  const pinned = pinnedToolchain(runner, allowedRunners)
+  const pinned = pinnedToolchain(runner, allowedRunners, cwd ?? process.cwd())
   if (pinned && !pinned.ok) return `error: ${pinned.error}`
   if (!pinned && !allowedRunners.includes(runner)) {
     return Promise.resolve(
@@ -313,6 +315,7 @@ export async function runTests(
 
     const child = spawn(resolution.plan.command, [...resolution.plan.args, ...args], {
       stdio: ['pipe', 'pipe', 'pipe'],
+      ...(cwd !== undefined ? { cwd } : {}),
     })
 
     child.stdin.end()

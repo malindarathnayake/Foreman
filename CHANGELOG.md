@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.6.21 - 2026-09-10
+
+A third field report and a Codex deliberation over the designs (gpt-6-astra, adversarial). One design was vetoed and two shipped defects were found in 0.6.20 code.
+
+- **Fixed in shipped code.** The fence check never fired through the real tool path: recording the snapshot rewrites the ledger, and the ledger was one of the marked files, so `stateMoved` was always true; marks now cover the progress-state file only, with a test through `repo_guard`. The preflight lookup let an earlier pass survive a later failure and let a pass on one unit satisfy another; the newest record for a brief decides and a unit's records are its own. `verify_oracle` overwrote a file blindly on restore; it now refuses when the file holds neither the mutation nor the original, runs each guard configuration unmutated first (a red baseline invalidates every mutation under it, never a kill), classifies timeouts and aborted runs as invalid, warns when no guard argument names the mutated file's directory, and runs in the repository root (`run_tests` gained a working directory).
+- **Typed attempt outcomes.** `close_attempt { attempt, outcome: delivered | blocked | validation_only, note }` labels a non-failure ending once; a rejection or fail verdict marks the attempt `rejected` and that label is server-authored and cannot be relabelled. Lifetime counters live on the unit because the delegation history is trimmed. Attempt ids, the failure cap, `needs_attempt`, the guard and the verdict are untouched.
+- **Worker heartbeats.** Workers append `{ts, phase, unit, attempt, files, note}` to `.foreman-heartbeat.jsonl` beside the ledger, a Foreman-owned file the guard excludes and never a fence mark; `worker_status` reports the newest heartbeat for the unit's current attempt, files touched so far, and stale lines from earlier attempts. Advisory. The delegation result now names the attempt.
+- **Per-unit phase ownership.** `phase_ownership` sweeps every unit against its own Files column and assigns each outside reference to the unit whose Files hold it, or UNASSIGNED; the report carries a hash and says it is stale once a unit lands. The compile probe waits for an isolated execution primitive.
+- **Contract probe.** `contract_probe` sends a GET or HEAD from Foreman's own HTTP client, resolves header values from environment variable names it never prints, evaluates explicit assertions (2xx, exact status, min bytes, contains, non-empty JSON path so a 200 with zero rows fails), and records origin, path, status, bytes and body hash on the unit. In a phase whose scope declares `has_api`, `preflight_check` refuses a brief until the unit has a passing probe; the requirement comes from the phase scope, not a caller flag.
+- **Two actors, one tree.** `pitboss_paths` was vetoed: content cannot attribute a write to an actor, and an exemption would have widened what delta review leaves unchecked. Instead the protocol says the pit-boss does not write Docs/ or the harness while a worker window is open, records discoveries with `record_fact`, amends after the verdict, and closes a validation-only re-check as `validation_only`.
+
 ## 0.6.20 - 2026-09-10
 
 Two field reports in one day, eleven items, all built. The attestation-shaped ones became checks.

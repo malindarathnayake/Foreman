@@ -103,6 +103,9 @@ export async function handleReadLedger(filePath: string, input: ReadLedgerInput)
       failed_since_pass: unit.epoch_failed === undefined ? "n/a" : String(unit.epoch_failed),
       needs_attempt: unit.needs_attempt ? "true" : "false",
       cap_grant: describeGrant(unit),
+      outcomes: Object.entries(unit.outcomes ?? {}).map(([k, v]) => `${k}:${v}`).join(" ") || "none recorded",
+      probes: unit.probes?.length ? `${unit.probes.filter((p) => p.passed).length} passed / ${unit.probes.length} (newest ${unit.probes.at(-1)!.method} ${unit.probes.at(-1)!.target} -> ${unit.probes.at(-1)!.status ?? "transport error"})` : "none",
+      oracle: unit.oracle ? `${unit.oracle.killed}/${unit.oracle.mutations} killed, survivors ${unit.oracle.survivors.join(",") || "none"}` : "none",
     }), "unit", input.phase)
   }
 

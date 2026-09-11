@@ -57,6 +57,9 @@ import { preflightCheck, PreflightCheckInputSchema } from "./tools/preflightChec
 import { renderOracle, runOracle, VerifyOracleInputSchema } from "./tools/verifyOracle.js"
 import { recordOracle } from "./lib/ledger.js"
 import { preflightPathFor } from "./lib/preflight.js"
+import { phaseOwnership, PhaseOwnershipInputSchema } from "./tools/phaseOwnership.js"
+import { contractProbe, ContractProbeInputSchema } from "./tools/contractProbe.js"
+import { workerStatus, WorkerStatusInputSchema } from "./tools/workerStatus.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -373,21 +376,22 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     {
       title: "Write Ledger",
       description: [
-        "Writes one ledger operation. Data shapes are in the input schema (data field); a rejected call returns a hint per field plus the expected shape.",
+        "Writes one ledger operation. Data shapes are in the input schema; a rejected call returns per-field hints.",
         "",
         "Operations (phase required; unit_id where noted):",
-        "  set_unit_status (unit_id) — delegated needs brief ≥20 chars + preflight, optionally data.rejection (its finding); a ranked correction reuses the worker; direct_fix is legacy-only. Past 3 failures: grant or user_override.",
-        "  set_verdict (unit_id) — v:'pass' needs a prior delegation, an attempt after the latest failure (ATTEMPT REQUIRED), past the cap a grant or user_override (cap_override), a ≥5-word note on a no-test/no-build phase, and no unclassified escape (escape_class classifies one); v:'fail' is a failed attempt.",
-        "  add_rejection (unit_id) — counts a failed attempt; reopens a passed unit; on a gated unit records an escape (data.escape_class classifies it).",
+        "  set_unit_status (unit_id) — delegated needs brief ≥20 chars + preflight, optional data.rejection; a ranked correction reuses the worker; direct_fix is legacy-only. Past 3 failures: grant or user_override.",
+        "  set_verdict (unit_id) — v:'pass' needs a prior delegation, an attempt after the latest failure (ATTEMPT REQUIRED), past the cap a grant or user_override (cap_override), a ≥5-word note on a no-test phase, no unclassified escape (escape_class classifies); v:'fail' is a failed attempt.",
+        "  add_rejection (unit_id) — a failed attempt; reopens a passed unit; on a gated unit records an escape (escape_class classifies).",
         "  record_escape (unit_id) — classifies a post-gate defect; source:'later' for one found later; refused when the unit never escaped.",
-        "  authorize_attempts (unit_id) — the owner's decision, once: N attempts past the cap; refused below it or while a grant is open; a pass closes it.",
+        "  close_attempt (unit_id) — non-failure ending: delivered | blocked | validation_only; no id, counter or cap changes; a rejection/fail marks it rejected.",
+        "  authorize_attempts (unit_id) — the owner's decision, once: N attempts past the cap; refused below it or with a grant open; a pass closes it.",
         "  declare_phase_units — declared id set (cap 200); retire needs a reason; frozen once the gate is 'pass'.",
-        "  update_phase_gate — g:'pass' needs every unit passed, declared ids registered, a current seat review (cross_exam never counts) with no 'confirmed' finding or incomplete record, and no unclassified escape; user_override waives these, recorded on the phase.",
+        "  update_phase_gate — g:'pass' needs every unit passed, declared ids registered, a current seat review (cross_exam never counts) with no 'confirmed' finding or incomplete record, no unclassified escape; user_override waives, recorded on the phase.",
         "  set_phase_scope — once per phase; hot_path/security_boundary make the gate require agent_class:'frontier'.",
-        "  record_review — every finding needs a classification; zero findings need checked[] or completion:'complete'; 'confirmed' blocks the gate; verification needs evidence. Limit: checked ≤50 entries of ≤400 chars. Longer entries are cut with a marker, not refused.",
+        "  record_review — every finding needs a classification; zero findings need checked[] or completion:'complete'; 'confirmed' blocks the gate; verification needs evidence. Limit: checked ≤50 entries of ≤400 chars.",
       ].join("\n"),
       inputSchema: z.strictObject({
-        operation: z.enum(["set_unit_status", "set_verdict", "add_rejection", "declare_phase_units", "update_phase_gate", "set_phase_scope", "record_review", "authorize_attempts", "record_escape", "record_fact"]),
+        operation: z.enum(["set_unit_status", "set_verdict", "add_rejection", "declare_phase_units", "update_phase_gate", "set_phase_scope", "record_review", "authorize_attempts", "record_escape", "record_fact", "close_attempt"]),
         unit_id: z.string().max(10000).optional(),
         phase: z.string().max(10000).optional(),
         data: z.record(z.string(), z.unknown()).describe(
@@ -761,7 +765,46 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       outputSchema: TextOutputSchema,
       annotations: { title: "Preflight Check", readOnlyHint: false, destructiveHint: false },
     },
-    async (args, _extra) => textResult(await preflightCheck(args, preflightPathFor(ledgerPath)))
+    async (args, _extra) => textResult(await preflightCheck(args, preflightPathFor(ledgerPath), ledgerPath))
+  )
+
+  // 0.6.21 (field report): ownership is discovered at worker time; find it once at phase start.
+  server.registerTool(
+    "phase_ownership",
+    {
+      title: "Phase Ownership",
+      description: "Runs the ownership sweep once for every unit in a phase (each against its own Files column) and assigns every outside reference to the unit whose Files hold it, or UNASSIGNED. Dispatch sites with a default arm first. Advisory and lexical; stale once a unit lands, so re-run after each. Names are matched as written (ops.Kind), not resolved.",
+      inputSchema: PhaseOwnershipInputSchema.strict(),
+      outputSchema: TextOutputSchema,
+      annotations: { title: "Phase Ownership", readOnlyHint: true, destructiveHint: false },
+    },
+    async (args, _extra) => textResult(await phaseOwnership(args))
+  )
+
+  // 0.6.21 (field report): the live-contract step, executed by Foreman, recorded as a receipt.
+  server.registerTool(
+    "contract_probe",
+    {
+      title: "Contract Probe",
+      description: "Sends a GET or HEAD to a real endpoint from Foreman's own HTTP client and records the result on the unit: status, bytes, body hash, and the assertions evaluated (2xx by default; optional exact status, min_bytes, contains, json_nonempty_path so a 200 with zero rows fails). Header values may be ${ENV:NAME}; the value is never printed or stored. In a phase whose scope declares has_api, preflight_check refuses a brief until the unit has a passing probe. Side-effect-free by construction.",
+      inputSchema: ContractProbeInputSchema.strict(),
+      outputSchema: TextOutputSchema,
+      annotations: { title: "Contract Probe", readOnlyHint: false, destructiveHint: false },
+    },
+    async (args, _extra) => textResult(await contractProbe(args, ledgerPath))
+  )
+
+  // 0.6.21 (field report): a heartbeat line turns a ten-minute blind spot into a progress line.
+  server.registerTool(
+    "worker_status",
+    {
+      title: "Worker Status",
+      description: "Reads the worker heartbeat file (.foreman-heartbeat.jsonl beside the ledger; workers append {ts, phase, unit, attempt, files, note} every few tool calls) and reports the last heartbeat age, files touched so far and stale lines from earlier attempts, keyed on the unit's current attempt. Advisory: self-reported activity, not progress; never clears, rejects or terminates an attempt.",
+      inputSchema: WorkerStatusInputSchema.strict(),
+      outputSchema: TextOutputSchema,
+      annotations: { title: "Worker Status", readOnlyHint: true, destructiveHint: false },
+    },
+    async (args, _extra) => textResult(await workerStatus(args, ledgerPath))
   )
 
   // 0.6.20 (field report): the protocol asked for a mutation probe and shipped no tool. Every host.

@@ -10,8 +10,7 @@ import { execFileSync } from "child_process"
 import {
   DEFAULT_PATHS, DEFAULT_SCOPE, EVENTS_FILE, FOREMAN_STATE_NAMES, JOURNAL_FILE, LEDGER_FILE, PROGRESS_MARKDOWN,
   PROGRESS_STATE_FILE, RECEIPTS_FILE, STATE_SIDE_SUFFIX, canonicalPath, eventsPathFor, fenceBlocksOf, fencedFingerprint,
-  foremanFileScope, isForemanStateFile, receiptsPathFor, relativeScope, stripFences, type RelativeScope,
-} from "../src/lib/foremanFiles.js"
+  foremanFileScope, isForemanStateFile, receiptsPathFor, relativeScope, stripFences, type RelativeScope, HEARTBEAT_FILE } from "../src/lib/foremanFiles.js"
 import { receiptsPathFor as receiptsPathFromSeats, RECEIPTS_FILE as RECEIPTS_FROM_SEATS, appendReceipt } from "../src/lib/seatReceipts.js"
 import { FENCE_END, FENCE_START, parseFencedBlock } from "../src/lib/progressFence.js"
 import * as writeProgressTool from "../src/tools/writeProgress.js"
@@ -33,8 +32,8 @@ function foremanSplice(existing: string, checklist = "- [x] u1 — pass\n"): str
 }
 
 describe("one list, imported by the writers", () => {
-  it("the reserved names are the five state files and nothing else", () => {
-    expect([...FOREMAN_STATE_NAMES].sort()).toEqual([EVENTS_FILE, JOURNAL_FILE, LEDGER_FILE, PROGRESS_STATE_FILE, RECEIPTS_FILE].sort())
+  it("the reserved names are the six state files and nothing else", () => {
+    expect([...FOREMAN_STATE_NAMES].sort()).toEqual([EVENTS_FILE, JOURNAL_FILE, LEDGER_FILE, PROGRESS_STATE_FILE, RECEIPTS_FILE, HEARTBEAT_FILE].sort())
     expect(FOREMAN_STATE_NAMES.has(PROGRESS_MARKDOWN)).toBe(false)
   })
 
@@ -55,7 +54,7 @@ describe("one list, imported by the writers", () => {
     expect(writeProgressTool.parseFencedBlock).toBe(parseFencedBlock)
   })
 
-  it("the scope names the five state files beside the ledger and PROGRESS.md in docsDir", () => {
+  it("the scope names the six state files beside the ledger and PROGRESS.md in docsDir", () => {
     const scope = foremanFileScope(DEFAULT_PATHS)
     expect(scope.state.map((p) => path.basename(p)).sort()).toEqual([...FOREMAN_STATE_NAMES].sort())
     expect(scope.state).toContain(path.resolve(eventsPathFor(DEFAULT_PATHS.ledgerPath)))
@@ -174,7 +173,7 @@ describe("relativeScope", () => {
       })
       const r = await relativeScope(scope, dir)
       expect([...r.state].sort()).toEqual([
-        "Docs/.foreman-events.jsonl", "Docs/.foreman-journal.json", "Docs/.foreman-ledger.json", "Docs/.foreman-seats.jsonl",
+        "Docs/.foreman-events.jsonl", "Docs/.foreman-heartbeat.jsonl", "Docs/.foreman-journal.json", "Docs/.foreman-ledger.json", "Docs/.foreman-seats.jsonl",
       ])
       expect([...r.fenced]).toEqual(["Docs/PROGRESS.md"])
       // The root itself, and a sibling directory with the root as a prefix, are outside.
@@ -199,7 +198,7 @@ describe("relativeScope", () => {
         docsDir: path.join(link, "Docs"),
       })
       const r = await relativeScope(scope, dir)
-      expect(r.state.size).toBe(5)
+      expect(r.state.size).toBe(6)
       expect([...r.fenced]).toEqual(["Docs/PROGRESS.md"])
       // And the other way round: a link-spelled root against a real-spelled scope.
       const r2 = await relativeScope(foremanFileScope({
@@ -208,7 +207,7 @@ describe("relativeScope", () => {
         journalPath: path.join(dir, "Docs", ".foreman-journal.json"),
         docsDir: path.join(dir, "Docs"),
       }), link)
-      expect(r2.state.size).toBe(5)
+      expect(r2.state.size).toBe(6)
     } finally {
       await fs.rm(link, { recursive: true, force: true })
     }
@@ -264,6 +263,6 @@ describe("T9: the writers and the guard agree", () => {
     expect(out.snapshot.entries.map((e) => e.path)).toEqual(["Docs/PROGRESS.md"])
     expect(out.snapshot.entries[0].fenced).toBe(true)
     expect(out.snapshot.entries[0].fwt).toBe(fencedFingerprint("# Plan\n"))
-    expect(out.foreman_files).toBe(6)
+    expect(out.foreman_files).toBe(7)
   })
 })

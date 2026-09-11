@@ -329,7 +329,12 @@ export async function appendPreflight(filePath: string, record: PreflightRecord)
   await fs.appendFile(filePath, JSON.stringify(record) + "\n", "utf-8")
 }
 
-export async function findPreflight(filePath: string, briefHashValue: string): Promise<PreflightRecord | null> {
+/**
+ * The NEWEST record for this brief hash decides (a later failure supersedes an earlier
+ * pass), and when a unit is named only that unit's records count: a pass obtained on
+ * another unit, or before a stronger check, cannot be replayed (Codex review, 2026-09-10).
+ */
+export async function findPreflight(filePath: string, briefHashValue: string, unitId?: string): Promise<PreflightRecord | null> {
   let raw: string
   try {
     raw = await fs.readFile(filePath, "utf-8")
@@ -337,15 +342,17 @@ export async function findPreflight(filePath: string, briefHashValue: string): P
     if ((err as NodeJS.ErrnoException).code === "ENOENT") return null
     throw err
   }
-  let found: PreflightRecord | null = null
+  let newest: PreflightRecord | null = null
   for (const line of raw.split("\n")) {
     if (!line.trim()) continue
     try {
       const rec = JSON.parse(line) as PreflightRecord
-      if (rec.brief_hash === briefHashValue && rec.status === "pass") found = rec
+      if (rec.brief_hash !== briefHashValue) continue
+      if (unitId !== undefined && rec.unit_id !== unitId) continue
+      newest = rec
     } catch {
       continue
     }
   }
-  return found
+  return newest !== null && newest.status === "pass" ? newest : null
 }

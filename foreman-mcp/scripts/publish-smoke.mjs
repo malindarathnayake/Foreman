@@ -78,6 +78,9 @@ export const EXPECTED_TOOLS = [
   "claude_workflows_init",
   "preflight_check",
   "verify_oracle",
+  "phase_ownership",
+  "contract_probe",
+  "worker_status",
 ]
 
 const JSONRPC_TIMEOUT_MS = 60_000

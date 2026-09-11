@@ -35,7 +35,7 @@ import fs from "fs/promises"
 import path from "path"
 import { runExternalCli } from "./externalCli.js"
 import {
-  DEFAULT_SCOPE, EMPTY_RELATIVE_SCOPE, fenceBlocksOf, fencedFingerprint, isForemanStateFile, relativeScope,
+  DEFAULT_SCOPE, EMPTY_RELATIVE_SCOPE, PROGRESS_STATE_FILE, fenceBlocksOf, fencedFingerprint, isForemanStateFile, relativeScope,
   type ForemanFileScope, type RelativeScope,
 } from "./foremanFiles.js"
 import type { RepoEntry, RepoSnapshot } from "../types.js"
@@ -312,8 +312,13 @@ export async function takeSnapshot(
   // 0.6.20 (verifier [CWE-345]): the fence interior is excluded from the fingerprint, so a
   // worker could plant content inside it. A Foreman fence write always accompanies a
   // progress-state write; marking the state files lets compare demand that pairing.
+  // Only the progress-state file is marked. Recording the snapshot itself rewrites the
+  // ledger, so a ledger mark would move on every attempt and the check would never fire
+  // (Codex review, 2026-09-10); write_progress is the only Foreman writer of the fence,
+  // and it always rewrites the progress-state file in the same call.
   const marks: Record<string, string> = {}
   for (const p of [...rel.state].sort()) {
+    if (path.basename(p) !== PROGRESS_STATE_FILE) continue
     try {
       marks[p] = createHash("sha256").update(await fs.readFile(path.join(dir, p))).digest("hex").slice(0, 16)
     } catch { /* absent state file: no mark */ }

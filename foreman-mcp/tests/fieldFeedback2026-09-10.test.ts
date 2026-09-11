@@ -10,6 +10,7 @@ import { appendPreflight, briefHash, preflightPathFor } from "../src/lib/preflig
 import { readProgress, writeProgress } from "../src/lib/progress.js"
 import { handleReadLedger } from "../src/tools/readLedger.js"
 import { compareSnapshots, takeSnapshot } from "../src/lib/repoGuard.js"
+import { handleRepoGuard } from "../src/tools/repoGuard.js"
 import type { HostId } from "../src/lib/hostProfiles.js"
 import type { WriteLedgerInput, WriteProgressInput } from "../src/types.js"
 
@@ -52,6 +53,9 @@ describe("preflight receipt on the delegation", () => {
     const { warning } = await write(delegated("u1", { symbols_grepped: ["x"], self_consistent: true, receipt: hash }))
     expect(warning).toBeUndefined()
     expect((await readLedger(ledgerPath)).phases.p1.units.u1.delegations![0].preflight.receipt).toBe(hash)
+    // a pass obtained on u1 does not carry to u2 (Codex review 2026-09-10): u2 needs its own record
+    await expect(write(delegated("u2", { symbols_grepped: ["x"], self_consistent: true, receipt: hash }))).rejects.toThrow(/on unit 'u2' \(the newest record for this brief decides/)
+    await appendPreflight(file, { ...base, unit_id: "u2", status: "pass" })
     // a legacy count is still accepted on a project that has adopted the check, with the receipt
     await write(delegated("u2", { symbols_grepped: 3, self_consistent: true, receipt: hash }))
   })
@@ -143,6 +147,21 @@ describe("fenced-block change without a Foreman progress write", () => {
       after = await takeSnapshot(repo, [], [], undefined, fscope)
       if (after.status !== "ok") throw new Error("snapshot failed")
       expect(compareSnapshots(before.snapshot, after.snapshot, after.scope)).toEqual([])
+
+      // Through the real tool path: recording the snapshot rewrites the ledger, which must
+      // NOT count as the Foreman write that legitimises a fence edit (Codex review 2026-09-10).
+      const toolLedger = path.join(repo, "Docs", ".foreman-ledger.json")
+      await writeLedger(toolLedger, { operation: "set_unit_status", phase: "p1", unit_id: "u1", data: {
+        s: "delegated", brief: "Implement the bounded change for this unit", preflight: { symbols_grepped: ["x"], self_consistent: true },
+      } } as WriteLedgerInput)
+      await fs.writeFile(md, "# Plan\n<!-- foreman:checklist-start -->\n- [ ] u1\n<!-- foreman:checklist-end -->\n")
+      await fs.writeFile(state, '{"phases":{}}')
+      const guardPaths = { ledgerPath: toolLedger, progressPath: state, journalPath: path.join(repo, "Docs", ".foreman-journal.json"), docsDir: path.join(repo, "Docs") }
+      const snap = await handleRepoGuard({ operation: "snapshot", phase: "p1", unit_id: "u1", project_dir: repo, files: [], allowed_files: [] } as never, guardPaths)
+      expect(snap).toContain("status: recorded")
+      await fs.writeFile(md, "# Plan\n<!-- foreman:checklist-start -->\n- [x] u1 pass\n<!-- foreman:checklist-end -->\n")
+      const cmp = await handleRepoGuard({ operation: "compare", phase: "p1", unit_id: "u1", project_dir: repo, files: [] } as never, guardPaths)
+      expect(cmp).toContain("Foreman-fenced block changed with no Foreman progress write: Docs/PROGRESS.md")
     } finally {
       await fs.rm(repo, { recursive: true, force: true })
     }

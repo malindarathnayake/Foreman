@@ -57,7 +57,7 @@ export interface OracleReport {
   results: MutationResult[]
 }
 
-type Runner = (runner: string, args: string[], timeoutMs: number) => Promise<string>
+type Runner = (runner: string, args: string[], timeoutMs: number, cwd: string) => Promise<string>
 
 function sha(text: Buffer): string {
   return createHash("sha256").update(text).digest("hex")
@@ -68,10 +68,48 @@ function exitCodeOf(output: string): number | null {
   return m ? Number(m[1]) : null
 }
 
-/** Run every mutation, restoring the tree after each. Throws only on a failed restore. */
-export async function runOracle(input: VerifyOracleInput, runner: Runner = (r, a, t) => runTests(r, a, t)): Promise<OracleReport> {
+/** Why a run cannot be read as a behavioural verdict: refused, never started, timed out, or aborted. */
+function inconclusive(output: string): string | null {
+  if (output.startsWith("error:")) return output.split("\n")[0].slice(0, 200)
+  if (/^timed_out:\s*true/m.test(output)) return "guard timed out; a timeout is not a kill"
+  const code = exitCodeOf(output)
+  if (code === null || code === -1) return "guard did not start or was aborted (exit -1); not a kill"
+  return null
+}
+
+/** A guard argument that names the mutated file's directory, or a Make-style target that cannot be checked. */
+function relevanceHint(file: string, args: string[]): string {
+  const dir = path.posix.dirname(file.replace(/\\/g, "/"))
+  if (dir === ".") return ""
+  const pathArgs = args.filter((a) => /[\\/]/.test(a))
+  if (pathArgs.length === 0) return ""
+  return pathArgs.some((a) => a.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/\.\.\.$/, "").startsWith(dir) || dir.startsWith(a.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/\.\.\.$/, "")))
+    ? ""
+    : " (hint: no guard argument names this file's directory; the guard may not exercise it)"
+}
+
+/**
+ * Run every mutation, restoring the tree after each. Throws only on a failed or unsafe
+ * restore. Per Codex review (2026-09-10): each distinct guard configuration is run once
+ * UNMUTATED first and must be green, or every mutation under it is invalid; a timed-out,
+ * refused or aborted mutated run is invalid, never a kill; and the restore refuses to
+ * overwrite bytes that are neither the mutation nor the original, so a concurrent write
+ * during the probe is never silently erased.
+ */
+export async function runOracle(input: VerifyOracleInput, runner: Runner = (r, a, t, c) => runTests(r, a, t, undefined, undefined, c)): Promise<OracleReport> {
   const root = path.resolve(input.repo_root ?? process.cwd())
   const results: MutationResult[] = []
+  const baselines = new Map<string, string | null>()   // config key -> null when green, else the reason it is red
+  const baselineFor = async (m: VerifyOracleInput["mutations"][number]): Promise<string | null> => {
+    const key = JSON.stringify([m.runner, m.args])
+    if (!baselines.has(key)) {
+      const out = await runner(m.runner, m.args, input.timeout_ms, root)
+      const bad = inconclusive(out)
+      const code = exitCodeOf(out)
+      baselines.set(key, bad !== null ? `baseline red: ${bad}` : code !== 0 ? `baseline red: guard exits ${code} unmutated; fix the guard before probing` : null)
+    }
+    return baselines.get(key)!
+  }
   for (const m of input.mutations) {
     const abs = path.resolve(root, m.file)
     if (path.relative(root, abs).startsWith("..")) {
@@ -91,16 +129,28 @@ export async function runOracle(input: VerifyOracleInput, runner: Runner = (r, a
       results.push({ label: m.label, file: m.file, outcome: "invalid", exit_code: null, detail: `old text occurs ${count} times; it must occur exactly once` })
       continue
     }
+    const red = await baselineFor(m)
+    if (red !== null) {
+      results.push({ label: m.label, file: m.file, outcome: "invalid", exit_code: null, detail: red })
+      continue
+    }
     const originalHash = sha(original)
+    const mutated = Buffer.from(text.replace(m.old, m.new), "utf-8")
+    const mutatedHash = sha(mutated)
     let output = ""
     try {
-      await fs.writeFile(abs, text.replace(m.old, m.new), "utf-8")
-      output = await runner(m.runner, m.args, input.timeout_ms)
+      await fs.writeFile(abs, mutated)
+      output = await runner(m.runner, m.args, input.timeout_ms, root)
     } finally {
       let restoredHash: string | null = null
       let cause = ""
       try {
-        await fs.writeFile(abs, original)
+        const current = sha(await fs.readFile(abs))
+        if (current === mutatedHash) {
+          await fs.writeFile(abs, original)
+        } else if (current !== originalHash) {
+          throw new Error("the file changed during the probe and holds neither the mutation nor the original; it was left untouched")
+        }
         restoredHash = sha(await fs.readFile(abs))
       } catch (err) {
         cause = err instanceof Error ? err.message : String(err)
@@ -108,17 +158,19 @@ export async function runOracle(input: VerifyOracleInput, runner: Runner = (r, a
       if (restoredHash !== originalHash) {
         throw new Error(
           `ORACLE RESTORE FAILED: ${m.file} does not match its original bytes after mutation '${m.label}'` +
-          `${cause ? ` (${cause})` : ""}; restore it from version control before doing anything else.`
+          `${cause ? ` (${cause})` : ""}; inspect it before doing anything else.`
         )
       }
     }
     const code = exitCodeOf(output)
-    if (output.startsWith("error:")) {
-      results.push({ label: m.label, file: m.file, outcome: "invalid", exit_code: code, detail: output.split("\n")[0].slice(0, 200) })
-    } else if (code === null || code === 0) {
-      results.push({ label: m.label, file: m.file, outcome: "survived", exit_code: code, detail: "guard test stayed green with the control removed" })
+    const bad = inconclusive(output)
+    const hint = relevanceHint(m.file, m.args)
+    if (bad !== null) {
+      results.push({ label: m.label, file: m.file, outcome: "invalid", exit_code: code, detail: bad + hint })
+    } else if (code === 0) {
+      results.push({ label: m.label, file: m.file, outcome: "survived", exit_code: code, detail: "guard test stayed green with the control removed" + hint })
     } else {
-      results.push({ label: m.label, file: m.file, outcome: "killed", exit_code: code, detail: "guard test failed with the control removed" })
+      results.push({ label: m.label, file: m.file, outcome: "killed", exit_code: code, detail: "guard test failed with the control removed" + hint })
     }
   }
   return {

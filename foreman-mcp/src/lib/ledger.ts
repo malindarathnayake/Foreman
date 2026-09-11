@@ -19,6 +19,7 @@ import {
 } from "./reviewBasis.js"
 import { appendConsumed, readReceipts, receiptsPathFor, type ReceiptsState } from "./seatReceipts.js"
 import { briefHash, findPreflight, preflightPathFor } from "./preflight.js"
+import type { ProbeRecord } from "../types.js"
 import { eventsPathFor } from "./foremanFiles.js"
 
 /** Receipts file access for one write: read on demand, consumption applied after the operation succeeds. */
@@ -176,6 +177,14 @@ function recordFailure(unit: Unit): void {
   if (unit.last_failed_attempt !== current) {
     unit.epoch_failed = (unit.epoch_failed ?? 0) + 1
     unit.last_failed_attempt = current
+  }
+  // 0.6.21: failure evidence is the one outcome the pit-boss never declares. It overrides
+  // any label close_attempt gave this attempt, and it is counted once per attempt.
+  const d = unit.delegations?.find((x) => x.attempt === current)
+  if (d && d.outcome !== "rejected") {
+    if (d.outcome !== undefined) unit.outcomes![d.outcome] = Math.max(0, (unit.outcomes?.[d.outcome] ?? 1) - 1)
+    d.outcome = "rejected"
+    unit.outcomes = { ...(unit.outcomes ?? {}), rejected: (unit.outcomes?.rejected ?? 0) + 1 }
   }
 }
 
@@ -460,10 +469,10 @@ async function applyOperation(
                 ". Run preflight_check { phase, unit_id, brief, symbols, files } and copy its brief_hash."
               )
             }
-            const record = await findPreflight(receipts.preflightFile, hash)
+            const record = await findPreflight(receipts.preflightFile, hash, unit_id)
             if (!record) {
               throw new Error(
-                `PREFLIGHT RECEIPT: no passing preflight record for brief ${hash}. Run preflight_check on this exact brief and fix what it refuses ` +
+                `PREFLIGHT RECEIPT: no passing preflight record for brief ${hash} on unit '${unit_id}' (the newest record for this brief decides; a pass on another unit does not carry). Run preflight_check on this exact brief and unit and fix what it refuses ` +
                 "(symbols missing from the spec, dead citations) before delegating."
               )
             }
@@ -1301,6 +1310,22 @@ async function applyOperation(
         `ESCAPE BLOCKED: no unclassified escape on '${unit_id}'; pass data.source:'later' to record an out-of-band defect on a gated unit.`
       )
     }
+    case "close_attempt": {
+      // 0.6.21: a non-failure ending, labelled once, bound to an explicit attempt. Orthogonal
+      // to attempt ids, epoch_failed, needs_attempt, the cap, the guard and the verdict.
+      const { phase, unit_id, data } = operation
+      const unit = ledger.phases[phase]?.units[unit_id]
+      if (!unit) throw new Error(`CLOSE BLOCKED: unit '${unit_id}' is not registered in phase '${phase}'.`)
+      const d = unit.delegations?.find((x) => x.attempt === data.attempt)
+      if (!d) throw new Error(`CLOSE BLOCKED: unit '${unit_id}' has no retained delegation for attempt #${data.attempt} (retained: ${(unit.delegations ?? []).map((x) => x.attempt).join(", ") || "none"}).`)
+      if (d.outcome === "rejected") throw new Error(`CLOSE BLOCKED: attempt #${data.attempt} carries failure evidence (a rejection or fail verdict); that outcome is server-authored and stands.`)
+      if (d.outcome !== undefined) return `attempt #${data.attempt} already closed as ${d.outcome}; nothing changed`
+      d.outcome = data.outcome
+      d.outcome_note = data.note
+      unit.outcomes = { ...(unit.outcomes ?? {}), [data.outcome]: (unit.outcomes?.[data.outcome] ?? 0) + 1 }
+      const counts = Object.entries(unit.outcomes).map(([k, v]) => `${k}:${v}`).join(" ")
+      return `attempt #${data.attempt} closed as ${data.outcome} (lifetime ${counts}); attempt ids, the failure cap and needs_attempt are unchanged`
+    }
     case "record_fact": {
       // 0.6.20: bounded per-phase facts, newest last; the same key replaces its older entry.
       const { phase, data } = operation
@@ -1515,3 +1540,21 @@ export async function recordOracle(
     await atomicWriteFile(filePath, JSON.stringify(ledger), { scrub })
   })
 }
+
+/**
+ * Record a server-executed contract probe on a unit (0.6.21). Not a write_ledger
+ * operation: Foreman sent the request and evaluated the assertions itself. Newest last,
+ * bounded at 10; the preflight requirement reads the newest passing one.
+ */
+export async function recordProbe(filePath: string, phase: string, unitId: string, record: ProbeRecord): Promise<void> {
+  return withLedgerLock(filePath, async () => {
+    const read = await readLedgerWithStatus(filePath)
+    const ledger = read.ledger
+    const unit = ledger.phases[phase]?.units[unitId]
+    if (!unit) throw new Error(`PROBE BLOCKED: unit '${unitId}' is not registered in phase '${phase}'; register it (set_unit_status) before probing its contract.`)
+    unit.probes = [...(unit.probes ?? []), record].slice(-10)
+    ledger.ts = new Date().toISOString()
+    await atomicWriteFile(filePath, JSON.stringify(ledger), { scrub })
+  })
+}
+export type { ProbeRecord }
