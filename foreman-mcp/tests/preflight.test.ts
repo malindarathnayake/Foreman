@@ -69,6 +69,8 @@ describe("ownership sweep", () => {
     await fs.writeFile(path.join(root, "internal", "kinds.go"), "package internal\ntype Kind int\nconst (KindA Kind = iota\nKindB)\n")
     await fs.writeFile(path.join(root, "internal", "runner", "runner.go"), "package runner\nfunc dispatch(k Kind) {\n switch k {\n case KindA:\n  run()\n default:\n  reject()\n }\n}\n")
     await fs.writeFile(path.join(root, "internal", "runner", "quality.go"), "package runner\nvar names = map[Kind]string{KindA: \"a\"}\n")
+    await fs.writeFile(path.join(root, "internal", "runner", "labels.go"), "package runner\nvar labels = map[Kind]string{KindA: \"a\", KindB: \"b\"}\n")
+    await fs.writeFile(path.join(root, "internal", "note.go"), "package internal\n// Kind is documented here\n")
     await fs.writeFile(path.join(root, "internal", "unrelated.go"), "package internal\nfunc x() {}\n")
     await fs.writeFile(path.join(root, "node_modules", "x", "index.js"), "Kind KindA switch default:")
     await fs.writeFile(path.join(root, "README.md"), "Kind")
@@ -78,9 +80,14 @@ describe("ownership sweep", () => {
   })
   it("lists files outside the declared set that reference the type, dispatch sites with default arms first", async () => {
     const report = await ownershipSweep(root, ["Kind"], ["KindB"], ["internal/kinds.go"])
-    expect(report.outside.map((h) => h.file)).toEqual(["internal/runner/runner.go", "internal/runner/quality.go"])
-    expect(report.outside[0]).toMatchObject({ dispatch: true, default_arm: true, references: ["Kind"] })
-    expect(report.outside[1]).toMatchObject({ dispatch: true, default_arm: false })
+    expect(report.outside.map((h) => [h.file, h.status])).toEqual([
+      ["internal/runner/runner.go", "at_risk"],            // dispatch + default arm, KindB absent: the silent fall-through
+      ["internal/runner/quality.go", "reference"],         // a map over Kind, no default arm, KindB absent
+      ["internal/note.go", "reference"],
+      ["internal/runner/labels.go", "present"],            // already names KindB: reassurance
+    ])
+    expect(report.outside[0]).toMatchObject({ dispatch: true, default_arm: true, references: ["Kind"], members_present: [] })
+    expect(report.outside[3].members_present).toEqual(["KindB"])
     expect(report.truncated).toBe(false)
   })
   it("returns nothing to scan when no names are given", async () => {

@@ -139,6 +139,15 @@ export interface OwnershipHit {
   dispatch: boolean
   /** A default arm exists: the new member falls through silently unless the file changes. */
   default_arm: boolean
+  /** Members the unit introduces that this file already names. */
+  members_present: string[]
+  /**
+   * Field feedback 2026-09-10: for a member the unit introduces, PRESENCE at a site is
+   * reassurance and ABSENCE at a dispatch site with a default arm is the risk. `at_risk` =
+   * dispatch site, default arm, none of the members present; `present` = at least one
+   * member already named; `reference` = mentions the type, no dispatch shape.
+   */
+  status: "at_risk" | "present" | "reference"
 }
 
 export interface OwnershipReport {
@@ -187,6 +196,7 @@ export async function ownershipSweep(repoRoot: string, typeNames: string[], memb
   const wordRe = (n: string) => new RegExp(`(?<![A-Za-z0-9_])${n.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9_])`)
   const nameRes = names.map((n) => [n, wordRe(n)] as const)
   const typeRes = typeNames.map((n) => wordRe(n))
+  const memberRes = members.map((n) => [n, wordRe(n)] as const)
   for await (const rel of walk(repoRoot, "", state)) {
     if (declared.has(normalizePath(rel))) continue
     let text: string
@@ -201,10 +211,13 @@ export async function ownershipSweep(repoRoot: string, typeNames: string[], memb
     if (references.length === 0) continue
     const dispatch = typeRes.some((re) => re.test(text)) && /\b(switch|match|case)\b|map\[|Record<|Map<|\bdispatch\b|\bregistry\b/.test(text)
     const default_arm = /\bdefault\s*:|_\s*=>|\belse\s*\{?\s*$/m.test(text)
-    outside.push({ file: normalizePath(rel), references, dispatch, default_arm })
+    const members_present = memberRes.filter(([, re]) => re.test(text)).map(([n]) => n)
+    const status: OwnershipHit["status"] = members_present.length > 0 ? "present" : dispatch && default_arm ? "at_risk" : "reference"
+    outside.push({ file: normalizePath(rel), references, dispatch, default_arm, members_present, status })
     if (outside.length >= 50) break
   }
-  outside.sort((a, b) => Number(b.dispatch && b.default_arm) - Number(a.dispatch && a.default_arm) || Number(b.dispatch) - Number(a.dispatch) || a.file.localeCompare(b.file))
+  const rank = (h: OwnershipHit) => (h.status === "at_risk" ? 0 : h.status === "reference" ? 1 : 2)
+  outside.sort((a, b) => rank(a) - rank(b) || Number(b.dispatch) - Number(a.dispatch) || a.file.localeCompare(b.file))
   return { scanned: state.count, truncated: state.count >= MAX_FILES, outside }
 }
 

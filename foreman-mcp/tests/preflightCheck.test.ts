@@ -98,7 +98,7 @@ Guard the nil client with \`ErrClientUnavailable\` (\`internal/cfsource/cfapi/cl
     expect(text).toContain("ops finding")
     expect(text).toContain("ErrClientUnavailable")
     expect(text).toContain("FILES OUTSIDE THE DECLARED SET")
-    expect(text).toMatch(/internal\/cfsource\/cfapi\/client\.go\s*\|\s*Kind\s*\|\s*true\s*\|\s*true/)
+    expect(text).toMatch(/internal\/cfsource\/cfapi\/client\.go\s*\|\s*at_risk\s*\|\s*Kind\s*\|\s*-\s*\|\s*true\s*\|\s*true/)
   })
 
   it("names the missing directive and accepts directive text directly", async () => {

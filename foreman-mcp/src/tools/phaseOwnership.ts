@@ -51,21 +51,26 @@ export async function phaseOwnership(raw: PhaseOwnershipInput): Promise<string> 
     for (const hit of report.outside as OwnershipHit[]) {
       const owner = ownerOf.get(hit.file)
       if (!owner) unassigned.add(hit.file)
-      rows.push([u.unit_id, hit.file, owner ?? "UNASSIGNED", hit.references.join(" "), hit.dispatch ? "yes" : "no", hit.default_arm ? "yes" : "no"])
+      rows.push([u.unit_id, hit.file, owner ?? "UNASSIGNED", hit.status, hit.references.join(" "), hit.dispatch ? "yes" : "no", hit.default_arm ? "yes" : "no"])
     }
   }
-  rows.sort((a, b) => (a[2] === "UNASSIGNED" ? -1 : 0) - (b[2] === "UNASSIGNED" ? -1 : 0) || (b[5] === "yes" ? 1 : 0) - (a[5] === "yes" ? 1 : 0) || a[0].localeCompare(b[0]))
+  const rank = (r: string[]) => (r[3] === "at_risk" ? 0 : r[3] === "reference" ? 1 : 2)
+  rows.sort((a, b) => rank(a) - rank(b) || (a[2] === "UNASSIGNED" ? -1 : 0) - (b[2] === "UNASSIGNED" ? -1 : 0) || a[0].localeCompare(b[0]))
+  const atRisk = rows.filter((r) => r[3] === "at_risk").length
+  const present = rows.filter((r) => r[3] === "present").length
   const body = rows.map((r) => r.join("|")).join("\n")
   const hash = createHash("sha256").update(body, "utf-8").digest("hex").slice(0, 16)
   const head = toKeyValue({
     phase: input.phase,
     units: input.units.length,
     sites_outside_declared_files: rows.length,
+    at_risk: `${atRisk} (dispatch site with a default arm and none of the introduced members named: the new member falls through silently)`,
+    present: `${present} (a member the unit introduces is already named there: reassurance, not risk)`,
     unassigned_files: unassigned.size ? [...unassigned].sort().join(",") : "none",
     scanned: `${scanned}${truncated ? " (truncated: 50-site cap or 5000-file walk; treat the list as a floor)" : ""}`,
     report_hash: hash,
-    note: "Advisory, lexical, and stale once any unit lands: re-run after each unit. UNASSIGNED means no unit's Files column holds a file that must change; assign it before delegating. A dispatch site with a default arm drops a new member silently. Names are matched as written (ops.Kind finds ops.Kind, not an import alias); a compile is the authority when one is available.",
+    note: "Advisory, lexical, and stale once any unit lands: re-run after each unit. Read at_risk first; present rows are sites already handling the member (a vocabulary declared up front); reference rows merely mention the type. UNASSIGNED means no unit's Files column holds a file that must change; assign it before delegating. Names are matched as written (ops.Kind finds ops.Kind, not an import alias); a compile is the authority when one is available.",
   })
-  const table = rows.length ? toTable(["introducing_unit", "file", "owner", "references", "dispatch", "default_arm"], rows) : "no sites outside the declared files"
+  const table = rows.length ? toTable(["introducing_unit", "file", "owner", "status", "references", "dispatch", "default_arm"], rows) : "no sites outside the declared files"
   return `${head}\n${table}`
 }

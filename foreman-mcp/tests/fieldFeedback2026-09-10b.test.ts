@@ -142,14 +142,19 @@ describe("phase ownership", () => {
       await fs.writeFile(path.join(root, "internal", "kinds.go"), "package internal\ntype Kind int\n")
       await fs.writeFile(path.join(root, "internal", "runner", "runner.go"), "package runner\nfunc d(k Kind) { switch k { default: } }\n")
       await fs.writeFile(path.join(root, "internal", "runner", "quality.go"), "package runner\nvar m = map[Kind]string{}\n")
+      await fs.writeFile(path.join(root, "internal", "runner", "labels.go"), "package runner\nvar l = map[Kind]string{KindGraphQL: \"g\"}\n")
       const text = await phaseOwnership({ phase: "p11", repo_root: root, units: [
         { unit_id: "p11.2", files: ["internal/kinds.go"], type_names: ["Kind"], introduces: ["KindGraphQL"] },
         { unit_id: "p11.5", files: ["internal/runner/runner.go"], type_names: [], introduces: [] },
       ] })
-      expect(text).toContain("sites_outside_declared_files: 2")
-      expect(text).toContain("unassigned_files: internal/runner/quality.go")
-      expect(text).toMatch(/p11\.2\s*\|\s*internal\/runner\/quality\.go\s*\|\s*UNASSIGNED/)
-      expect(text).toMatch(/p11\.2\s*\|\s*internal\/runner\/runner\.go\s*\|\s*p11\.5\s*\|\s*Kind\s*\|\s*yes\s*\|\s*yes/)
+      expect(text).toContain("sites_outside_declared_files: 3")
+      expect(text).toContain("at_risk: 1 (")
+      expect(text).toContain("present: 1 (")
+      expect(text).toContain("unassigned_files: internal/runner/labels.go,internal/runner/quality.go")
+      expect(text).toMatch(/p11\.2\s*\|\s*internal\/runner\/runner\.go\s*\|\s*p11\.5\s*\|\s*at_risk\s*\|\s*Kind\s*\|\s*yes\s*\|\s*yes/)
+      expect(text).toMatch(/p11\.2\s*\|\s*internal\/runner\/labels\.go\s*\|\s*UNASSIGNED\s*\|\s*present/)
+      // at_risk rows come first, present rows last
+      expect(text.indexOf("at_risk |")).toBeLessThan(text.indexOf("present |"))
       expect(text).toContain("report_hash:")
       expect(text).toContain("stale once any unit lands")
     } finally {

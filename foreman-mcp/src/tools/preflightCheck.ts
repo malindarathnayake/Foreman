@@ -148,6 +148,6 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
   if (drifted.length) sections.push(`\nDRIFTED CITATIONS (advisory: fix the line before the worker reads it)\n${toTable(["citation", "kind", "detail"], drifted.map((c) => [c.raw, c.kind, c.detail]))}`)
   if (coverage.uncovered.length) sections.push(`\nDIRECTIVE SENTENCES WITH NO ECHO IN THE BRIEF (advisory: each is an omission or a paraphrase that dropped its identifiers)\n${coverage.uncovered.slice(0, 40).map((s) => `- ${s}`).join("\n")}`)
   if (flags.length) sections.push(`\nCONTRADICTION MARKERS (advisory)\n${flags.map((f) => `- ${f.kind}: ${f.detail}`).join("\n")}`)
-  if (ownership.outside.length) sections.push(`\nFILES OUTSIDE THE DECLARED SET THAT REFERENCE THE TYPE (advisory: a dispatch site with a default arm drops the new member silently)\n${toTable(["file", "references", "dispatch", "default_arm"], ownership.outside.map((h) => [h.file, h.references.join(" "), String(h.dispatch), String(h.default_arm)]))}`)
+  if (ownership.outside.length) sections.push(`\nFILES OUTSIDE THE DECLARED SET THAT REFERENCE THE TYPE (advisory: at_risk = dispatch site with a default arm and no introduced member named; present = the member is already handled there)\n${toTable(["file", "status", "references", "members_present", "dispatch", "default_arm"], ownership.outside.map((h) => [h.file, h.status, h.references.join(" "), h.members_present.join(" ") || "-", String(h.dispatch), String(h.default_arm)]))}`)
   return sections.join("\n")
 }
