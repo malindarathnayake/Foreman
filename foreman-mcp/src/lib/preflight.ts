@@ -17,6 +17,7 @@ import fs from "fs/promises"
 import path from "path"
 import { createHash } from "crypto"
 import { PREFLIGHT_FILE } from "./foremanFiles.js"
+import type { ForwardObligation } from "../types.js"
 
 export { PREFLIGHT_FILE }
 export const PREFLIGHT_POLICY_VERSION = 1 as const
@@ -232,13 +233,17 @@ export async function ownershipSweep(repoRoot: string, typeNames: string[], memb
 
 export interface CitationCheck {
   raw: string
-  kind: "file_line" | "file" | "test_name"
-  status: "ok" | "dead" | "drifted"
+  /** 0.6.24: `test_selector` is a `-run <regex>` operand (Go semantics, first slash component). */
+  kind: "file_line" | "file" | "test_name" | "test_selector"
+  /** 0.6.24: `forward` = the brief orders it into existence (preflight_check `creates`); the pass verdict checks the promise. */
+  status: "ok" | "dead" | "drifted" | "forward"
   detail: string
 }
 
 const FILE_REF = /(?<![\w/.-])((?:[\w.-]+\/)+[\w.-]+\.[A-Za-z]{1,10})(?::(\d+)(?:-(\d+))?)?(?![\w/])/g
 const TEST_NAME = /\b(Test[A-Z][A-Za-z0-9_]{3,}|test_[a-z0-9_]{4,})\b/g
+/** `-run X`, `-run=X`, `-test.run X`, quoted or bare. The operand is a Go regex, not an identifier. */
+const RUN_SELECTOR = /(?:^|\s)(?:-run|-test\.run)(?:=|\s+)(?:'([^']+)'|"([^"]+)"|([^\s'";,)]+))/g
 
 export function extractCitations(brief: string): Array<{ raw: string; kind: CitationCheck["kind"]; file?: string; line?: number; name?: string }> {
   const out: Array<{ raw: string; kind: CitationCheck["kind"]; file?: string; line?: number; name?: string }> = []
@@ -249,7 +254,19 @@ export function extractCitations(brief: string): Array<{ raw: string; kind: Cita
     seen.add(raw)
     out.push(m[2] !== undefined ? { raw, kind: "file_line", file: m[1], line: Number(m[2]) } : { raw, kind: "file", file: m[1] })
   }
-  for (const m of brief.matchAll(TEST_NAME)) {
+  // 0.6.24 (field report): the spec's own checkpoint rows say `-run TestMapNormalises`, a
+  // prefix regex, which the identifier scan below read as an unknown test. Selectors are
+  // lifted out first and their span is blanked so the identifier scan does not see them.
+  let scan = brief
+  for (const m of brief.matchAll(RUN_SELECTOR)) {
+    const operand = m[1] ?? m[2] ?? m[3]
+    const raw = m[0].trim()
+    scan = scan.slice(0, m.index!) + " ".repeat(m[0].length) + scan.slice(m.index! + m[0].length)
+    if (seen.has(raw)) continue
+    seen.add(raw)
+    out.push({ raw, kind: "test_selector", name: operand })
+  }
+  for (const m of scan.matchAll(TEST_NAME)) {
     if (seen.has(m[1])) continue
     seen.add(m[1])
     out.push({ raw: m[1], kind: "test_name", name: m[1] })
@@ -257,9 +274,85 @@ export function extractCitations(brief: string): Array<{ raw: string; kind: Cita
   return out.slice(0, 100)
 }
 
-export async function checkCitations(repoRoot: string, brief: string): Promise<CitationCheck[]> {
+const GO_TEST_DECL = /^func\s+(Test[A-Za-z0-9_]*)\s*\(/gm
+
+/** Strip line and block comments so a name mentioned in a comment is not a declaration. */
+function stripComments(text: string, file: string): string {
+  const py = /\.py$/i.test(file)
+  return py
+    ? text.replace(/#.*$/gm, "")
+    : text.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "").replace(/^\s*#.*$/gm, "")
+}
+
+/**
+ * True when `name` is DECLARED as a test in `text` (Go func, Python def, C#/Java/Rust
+ * method or fn, or a JS/TS string-named it/test/describe). A comment, a call or a reference
+ * does not count: this is what the forward-declaration promise is checked against.
+ */
+export function testDeclared(text: string, name: string, file = ""): boolean {
+  const n = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const src = stripComments(text, file)
+  const forms = [
+    new RegExp(`(^|\\n)\\s*func\\s+${n}\\s*\\(`),
+    new RegExp(`(^|\\n)\\s*(?:async\\s+)?def\\s+${n}\\s*\\(`),
+    new RegExp(`\\b(?:void|Task|async\\s+Task|fn|def)\\s+${n}\\s*\\(`),
+    new RegExp(`\\b(?:it|test|describe)(?:\\.(?:only|skip|each))?\\s*\\(\\s*["'\`]${n}["'\`]`),
+  ]
+  return forms.some((re) => re.test(src))
+}
+
+const TEST_FILE = /(_test\.go|\.test\.[cm]?[jt]sx?|\.spec\.[cm]?[jt]sx?|(^|\/)test_[^/]*\.py|_test\.py|_spec\.rb|Tests?\.cs|Test\.java|Tests\.java)$/i
+
+/** Normalize a `creates` list: paths forward-slashed, names deduplicated. */
+export function normalizeObligations(creates: Array<{ file: string; tests?: string[] }>): ForwardObligation[] {
+  const byFile = new Map<string, Set<string>>()
+  for (const c of creates) {
+    const f = c.file.replace(/\\/g, "/").replace(/^\.\//, "")
+    const set = byFile.get(f) ?? new Set<string>()
+    for (const t of c.tests ?? []) set.add(t.trim())
+    byFile.set(f, set)
+  }
+  return [...byFile.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([file, tests]) => ({ file, tests: [...tests].sort() }))
+}
+
+/** Merge obligations carried from an earlier attempt with the new ones (a follow-up brief cannot drop a promise). */
+export function mergeObligations(previous: ForwardObligation[] | undefined, next: ForwardObligation[]): ForwardObligation[] {
+  return normalizeObligations([...(previous ?? []), ...next])
+}
+
+/**
+ * Every promise that is not yet kept: a forward file that does not exist, or a test name not
+ * declared in its file. Read from the repository root the server knows, never from the call.
+ */
+export async function forwardUnmet(repoRoot: string, obligations: ForwardObligation[]): Promise<string[]> {
+  const unmet: string[] = []
+  for (const o of obligations) {
+    const abs = path.resolve(repoRoot, o.file)
+    if (path.relative(repoRoot, abs).startsWith("..")) {
+      unmet.push(`${o.file}: escapes the repository root`)
+      continue
+    }
+    let text: string
+    try {
+      text = await fs.readFile(abs, "utf-8")
+    } catch {
+      unmet.push(`${o.file}: not created`)
+      continue
+    }
+    for (const t of o.tests) {
+      if (!testDeclared(text, t, o.file)) unmet.push(`${o.file}: ${t} is not declared there (a comment, call or reference does not count)`)
+    }
+  }
+  return unmet
+}
+
+export async function checkCitations(repoRoot: string, brief: string, creates: ForwardObligation[] = []): Promise<CitationCheck[]> {
   const cites = extractCitations(brief)
   const results: CitationCheck[] = []
+  const forwardFiles = new Set(creates.map((c) => c.file))
+  const forwardTests = new Map<string, string>()
+  for (const c of creates) for (const t of c.tests) forwardTests.set(t, c.file)
+  const forwardTestFiles = creates.filter((c) => TEST_FILE.test(c.file)).map((c) => c.file)
   let sources: Map<string, string> | null = null
   const loadSources = async () => {
     if (sources) return sources
@@ -277,13 +370,48 @@ export async function checkCitations(repoRoot: string, brief: string): Promise<C
     return sources
   }
   for (const c of cites) {
+    if (c.kind === "test_selector") {
+      // Go semantics: the operand is a regex; a slash separates subtest components, the first
+      // names top-level tests. An anchored form stays anchored; a bare prefix matches longer
+      // names and the matches are reported, never presented as proof the intended test ran.
+      const first = c.name!.split("/")[0]
+      let re: RegExp
+      try {
+        re = new RegExp(first)
+      } catch {
+        results.push({ raw: c.raw, kind: c.kind, status: "dead", detail: `'${first}' is not a valid regular expression` })
+        continue
+      }
+      const src = await loadSources()
+      const matched = new Set<string>()
+      for (const [file, text] of src) {
+        if (!/_test\.go$/.test(file)) continue
+        for (const m of text.matchAll(GO_TEST_DECL)) if (re.test(m[1])) matched.add(m[1])
+      }
+      if (matched.size) {
+        const names = [...matched].sort()
+        results.push({ raw: c.raw, kind: c.kind, status: "ok", detail: `matches ${names.slice(0, 6).join(", ")}${names.length > 6 ? ` (+${names.length - 6})` : ""}` })
+        continue
+      }
+      const promised = [...forwardTests.keys()].filter((t) => re.test(t))
+      results.push(promised.length
+        ? { raw: c.raw, kind: c.kind, status: "forward", detail: `no declared Go test matches yet; ${promised.join(", ")} promised in ${[...new Set(promised.map((t) => forwardTests.get(t)))].join(", ")}` }
+        : { raw: c.raw, kind: c.kind, status: "dead", detail: "no func Test… declaration under the root matches this selector; declare it under creates if the unit adds it" })
+      continue
+    }
     if (c.kind === "test_name") {
       const src = await loadSources()
       const re = new RegExp(`(?<![A-Za-z0-9_])${c.name}(?![A-Za-z0-9_])`)
       const hit = [...src.entries()].find(([, text]) => re.test(text))
-      results.push(hit
-        ? { raw: c.raw, kind: c.kind, status: "ok", detail: `defined or referenced in ${hit[0]}` }
-        : { raw: c.raw, kind: c.kind, status: "dead", detail: "no source file under the root names this test" })
+      if (hit) {
+        results.push({ raw: c.raw, kind: c.kind, status: "ok", detail: `defined or referenced in ${hit[0]}` })
+      } else if (forwardTests.has(c.name!)) {
+        results.push({ raw: c.raw, kind: c.kind, status: "forward", detail: `promised in ${forwardTests.get(c.name!)}; the pass verdict requires it declared there` })
+      } else {
+        results.push({ raw: c.raw, kind: c.kind, status: "dead", detail: forwardTestFiles.length
+          ? `no source file under the root names this test; if the unit adds it, list it under creates: [{ file: "${forwardTestFiles[0]}", tests: ["${c.name}"] }]`
+          : "no source file under the root names this test" })
+      }
       continue
     }
     const abs = path.resolve(repoRoot, c.file!)
@@ -295,7 +423,9 @@ export async function checkCitations(repoRoot: string, brief: string): Promise<C
     try {
       text = await fs.readFile(abs, "utf-8")
     } catch {
-      results.push({ raw: c.raw, kind: c.kind, status: "dead", detail: "file not found" })
+      results.push(forwardFiles.has(c.file!.replace(/\\/g, "/"))
+        ? { raw: c.raw, kind: c.kind, status: "forward", detail: c.kind === "file_line" ? "promised under creates; a line number on a file that does not exist yet is not checked" : "promised under creates; the pass verdict requires it to exist" }
+        : { raw: c.raw, kind: c.kind, status: "dead", detail: "file not found (list it under creates if the unit creates it)" })
       continue
     }
     if (c.kind === "file") {
@@ -334,6 +464,8 @@ export interface PreflightRecord {
   ownership_outside: number
   /** 0.6.22: the unit's spec contract digest at preflight time; the delegation refuses when the contract moved. */
   contract_sha256?: string
+  /** 0.6.24: files and tests the brief orders into existence; frozen onto the delegation, checked at the pass verdict. */
+  forward?: ForwardObligation[]
 }
 
 export function preflightPathFor(ledgerPath: string): string {

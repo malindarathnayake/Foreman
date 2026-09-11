@@ -1,31 +1,41 @@
 /**
- * live_smoke (0.6.22, architecture council 2026-09-10). Runs the UNIT'S OWN code path
- * against the real system through the project's real runner, and records a receipt the
- * verdict gate reads. This is what turned "94.6% coverage, six killed mutations, green
- * suite, clean guard" into "cannot complete a single HTTPS request": Foreman's HTTP client
- * proves the endpoint; only the application's transport proves the application.
+ * live_smoke (0.6.22, architecture council 2026-09-10; deliverables 0.6.24, Codex
+ * deliberation). Runs the UNIT'S OWN code path against the real system through the
+ * project's real runner, and records a receipt the verdict gate reads. This is what turned
+ * "94.6% coverage, six killed mutations, green suite, clean guard" into "cannot complete a
+ * single HTTPS request": Foreman's HTTP client proves the endpoint; only the application's
+ * transport proves the application.
  *
  * The call carries a plan id and nothing else. The command, working directory, required
- * environment names, harness inventory, application inputs and checks come from the smoke
- * plan registered in the spec's foreman-contract block, so a caller cannot substitute
- * `echo pass` for the harness. The receipt binds the current attempt, the contract digest,
- * a digest of the harness files and a digest of the application inputs; set_verdict pass
- * in a has_api phase recomputes those digests and refuses when any moved. A run whose
- * inputs change while it executes is invalid. A newer failed run supersedes a pass.
+ * environment names, harness inventory, application inputs, deliverables and checks come
+ * from the plan registered in the spec's foreman-contract block, so a caller cannot
+ * substitute `echo pass` for the harness. The receipt binds the current attempt, the
+ * contract digest, a digest of the harness files, a digest of the application inputs and,
+ * for every declared deliverable, the digest of the bytes the run produced and what Foreman
+ * observed on them. set_verdict pass recomputes those digests and refuses when any moved.
  *
- * What this proves: Foreman executed the frozen recipe on these bytes at this time and saw
- * this result. What it does not prove: that the harness honestly exercises production
- * code. That is what harness review is for, and the harness inventory is what it reviews.
+ * Deliverables (0.6.24): a declared output must be ABSENT before the run and present after
+ * it, so "these bytes appeared during Foreman's run" is a fact and a pre-seeded compliant
+ * file cannot stand in for the producer. Assertions are evaluated on the produced bytes;
+ * a values_in reference is checked against the digest frozen on the delegation, so the
+ * worker cannot rewrite the allowed set it is measured against.
+ *
+ * What this proves: Foreman executed the frozen recipe on these bytes at this time, saw this
+ * result, and observed these properties on what appeared. What it does not prove: that the
+ * harness honestly exercises production code, or that the properties are the right ones.
+ * That is what harness review and the deliverable inventory are for.
  */
 import path from "path"
 import { createHash } from "crypto"
+import fs from "fs/promises"
 import { z } from "zod"
 import { runTests } from "./runTests.js"
 import { recordSmoke, type SmokeReceipt } from "../lib/ledger.js"
-import { digestPaths, unitContract } from "../lib/specContract.js"
+import { digestFile, digestPaths, digestReferences, evaluateDeliverable, readReferences, unitContract } from "../lib/specContract.js"
 import { readLedgerWithStatus } from "../lib/ledger.js"
 import { resolveNamedCredentials } from "../lib/foremanEnv.js"
 import { toKeyValue } from "../lib/toon.js"
+import type { DeliverableReceipt } from "../types.js"
 
 export const LiveSmokeInputSchema = z.object({
   phase: z.string().max(10000),
@@ -63,10 +73,15 @@ export async function liveSmoke(
   if (!unit) return toKeyValue({ status: "error", error: "unit_unknown", hint: `unit '${input.unit_id}' is not registered in phase '${input.phase}'; delegate first` })
   const attempt = unit.attempt_seq ?? 0
   if (attempt === 0) return toKeyValue({ status: "error", error: "no_attempt", hint: "a smoke binds to an attempt; record the delegation first" })
+  const delegation = unit.delegations?.find((d) => d.attempt === attempt)
 
   const { contract, error } = await unitContract(specPath, input.unit_id)
   if (error) return toKeyValue({ status: "error", error: "contract_invalid", detail: error })
   if (!contract) return toKeyValue({ status: "error", error: "contract_missing", hint: `no \`\`\`foreman-contract block names unit '${input.unit_id}' in ${path.basename(specPath)}` })
+  // 0.6.24: the plan that runs is the plan the attempt was delegated under.
+  if (delegation?.contract_sha256 !== undefined && delegation.contract_sha256 !== contract.contract_sha256) {
+    return toKeyValue({ status: "error", error: "contract_changed", hint: `the spec contract for unit '${input.unit_id}' changed since attempt #${attempt} was delegated (${delegation.contract_sha256} -> ${contract.contract_sha256}); re-run preflight_check and re-delegate` })
+  }
   const plan = contract.contract.smoke
   if (!plan) return toKeyValue({ status: "error", error: "smoke_null", hint: `unit '${input.unit_id}' declares smoke: null (reviewed: no external contract); nothing to run` })
   if (plan.id !== input.plan_id) return toKeyValue({ status: "error", error: "plan_unknown", hint: `unit '${input.unit_id}' registers smoke plan '${plan.id}', not '${input.plan_id}'` })
@@ -77,7 +92,23 @@ export async function liveSmoke(
 
   const harnessBefore = await digestPaths(projectRoot, plan.harness_files)
   const inputsBefore = await digestPaths(projectRoot, plan.input_files)
-  if (harnessBefore.missing.length) return toKeyValue({ status: "error", error: "harness_missing", files: harnessBefore.missing.join(","), hint: "every harness file in the plan must exist; a missing harness is a broken plan, not an empty one" })
+  if (harnessBefore.missing.length) return toKeyValue({ status: "error", error: "harness_missing", files: harnessBefore.missing.join(","), hint: "every harness file in the plan must exist inside the root; a missing harness is a broken plan, not an empty one" })
+  if (harnessBefore.truncated || inputsBefore.truncated) return toKeyValue({ status: "error", error: "inventory_incomplete", hint: "the harness or input inventory exceeds what one digest can observe; narrow input_files to the code the smoke exercises" })
+
+  // 0.6.24: deliverables must be absent before the run, and every reference must be the one frozen at delegation.
+  const deliverables = contract.contract.deliverables
+  for (const d of deliverables) {
+    const before = await digestFile(projectRoot, d.path)
+    if (before.exists) return toKeyValue({ status: "error", error: "deliverable_present_before", deliverable: d.id, path: d.path, hint: "a deliverable must not exist before the run so the bytes observed are the ones this run produced; remove stale outputs and run again" })
+  }
+  const refs = await digestReferences(projectRoot, contract.contract)
+  if (refs.missing.length) return toKeyValue({ status: "error", error: "reference_missing", files: refs.missing.join(","), hint: "every values_in reference file must exist inside the root" })
+  if (deliverables.some((d) => d.assertions.values_in)) {
+    const frozen = delegation?.references
+    if (!frozen) return toKeyValue({ status: "error", error: "reference_not_frozen", hint: `attempt #${attempt} was delegated before its values_in references were frozen; re-run preflight_check and re-delegate so the allowed set is bound to the attempt` })
+    const moved = Object.entries(refs.digests).filter(([p, sha]) => frozen[p] !== sha).map(([p]) => p)
+    if (moved.length) return toKeyValue({ status: "error", error: "reference_changed", files: moved.join(","), hint: "a values_in reference changed since delegation; the allowed set is frozen with the attempt and cannot be rewritten by the work it measures" })
+  }
 
   const cwd = path.resolve(projectRoot, plan.cwd)
   if (path.relative(projectRoot, cwd).startsWith("..")) return toKeyValue({ status: "error", error: "cwd_outside_root" })
@@ -107,6 +138,23 @@ export async function liveSmoke(
   if (harnessAfter.sha256 !== harnessBefore.sha256) failed.push("harness files changed during the run")
   if (inputsAfter.sha256 !== inputsBefore.sha256) failed.push("application inputs changed during the run")
 
+  // Deliverables: produced, observed, evaluated.
+  const references = await readReferences(projectRoot, contract.contract)
+  const produced: DeliverableReceipt[] = []
+  for (const d of deliverables) {
+    const after = await digestFile(projectRoot, d.path)
+    const problems: string[] = []
+    if (!after.exists) problems.push("not produced by the run")
+    else if (after.problem) problems.push(after.problem)
+    else {
+      const bytes = await fs.readFile(path.resolve(projectRoot, d.path))
+      problems.push(...evaluateDeliverable(bytes, d.assertions, references))
+    }
+    produced.push({ id: d.id, path: d.path, sha256: after.sha256, bytes: after.bytes, passed: problems.length === 0, ...(problems.length ? { failed: problems } : {}) })
+    if (problems.length) failed.push(`deliverable ${d.id}: ${problems.join("; ")}`)
+    else observations.push(`deliverable ${d.id} ${after.bytes} bytes ${after.sha256}`)
+  }
+
   const receipt: SmokeReceipt = {
     run_id: createHash("sha256").update(`${started}${input.unit_id}${attempt}${plan.id}`).digest("hex").slice(0, 16),
     ts: finished,
@@ -121,6 +169,8 @@ export async function liveSmoke(
     observations,
     passed: failed.length === 0,
     ...(failed.length ? { failed } : {}),
+    ...(produced.length ? { deliverables: produced } : {}),
+    ...(Object.keys(refs.digests).length ? { references: refs.digests } : {}),
   }
   let ledgerNote = ""
   try {
@@ -134,6 +184,7 @@ export async function liveSmoke(
     unit_id: input.unit_id,
     attempt,
     plan_id: plan.id,
+    run_id: receipt.run_id,
     command: `${plan.runner} ${plan.args.join(" ")}`.slice(0, 300),
     cwd: plan.cwd,
     credentials: plan.env.map((n) => `${n} (${creds.sources[n]})`).join(", ") || "none",
@@ -142,9 +193,10 @@ export async function liveSmoke(
     harness_sha256: receipt.harness_sha256,
     input_sha256: receipt.input_sha256,
     contract_sha256: receipt.contract_sha256,
+    deliverables: produced.length ? produced.map((p) => `${p.id}=${p.sha256 ?? "absent"} (${p.bytes} bytes, ${p.passed ? "pass" : "fail"})`).join("; ") : "none declared",
     observations: observations.join("; ") || "none",
     failed: failed.join("; ") || "none",
     recorded: ledgerNote ? `no (${ledgerNote})` : "yes (unit.smokes)",
-    note: "Foreman ran the frozen plan through the project's runner on these bytes. set_verdict pass in a has_api phase requires a passing smoke for the current attempt whose harness and input digests still match; a newer failed run supersedes a pass.",
+    note: "Foreman ran the frozen plan through the project's runner on these bytes and observed the declared deliverables. set_verdict pass requires a passing smoke for the current attempt whose harness, input, deliverable and reference digests still match; a newer failed run supersedes a pass. A review that carries the gate cites run_id in record_review smoke_receipts.",
   })
 }

@@ -18,7 +18,7 @@ import fs from "fs/promises"
 import path from "path"
 import { z } from "zod"
 import {
-  appendPreflight, briefHash, checkCitations, consistencyFlags, directiveCoverage, missingSymbols, ownershipSweep,
+  appendPreflight, briefHash, checkCitations, consistencyFlags, directiveCoverage, missingSymbols, normalizeObligations, ownershipSweep,
   PREFLIGHT_POLICY_VERSION, type PreflightRecord,
 } from "../lib/preflight.js"
 import { toKeyValue, toTable } from "../lib/toon.js"
@@ -40,6 +40,15 @@ export const PreflightCheckInputSchema = z.object({
   /** Types the unit extends (an enum, kind, registry) and the members it introduces. */
   type_names: z.array(z.string().trim().min(2).max(200)).max(20).default([]),
   introduces: z.array(z.string().trim().min(2).max(200)).max(50).default([]),
+  /**
+   * 0.6.24: files the unit CREATES and the tests it declares in them. A citation of one of
+   * these is `forward`, not dead; the promise is frozen onto the delegation and the pass
+   * verdict refuses until each file exists and each test is declared in it.
+   */
+  creates: z.array(z.strictObject({
+    file: z.string().min(1).max(4096),
+    tests: z.array(z.string().trim().regex(/^[A-Za-z_][A-Za-z0-9_ .'-]{1,199}$/)).max(50).default([]),
+  })).max(50).default([]),
   repo_root: z.string().max(4096).optional(),
 })
 export type PreflightCheckInput = z.infer<typeof PreflightCheckInputSchema>
@@ -133,9 +142,11 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
   const missing = missingSymbols(input.symbols, spec.length > 0 ? spec : directive)
   const coverage = directiveCoverage(directive, input.brief)
   const flags = consistencyFlags(input.brief)
-  const cites = await checkCitations(root, input.brief)
+  const forward = normalizeObligations(input.creates)
+  const cites = await checkCitations(root, input.brief, forward)
   const dead = cites.filter((c) => c.status === "dead")
   const drifted = cites.filter((c) => c.status === "drifted")
+  const promised = cites.filter((c) => c.status === "forward")
   const ownership = await ownershipSweep(root, input.type_names, input.introduces, input.files)
 
   const probeMissing = probeRequired && !contractMet
@@ -146,6 +157,7 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
     symbols: input.symbols.length, coverage_ratio: Number(coverage.ratio.toFixed(2)), uncovered: coverage.uncovered.length,
     flags: flags.length, dead_citations: dead.length, ownership_outside: ownership.outside.length,
     ...(contractSha !== undefined ? { contract_sha256: contractSha } : {}),
+    ...(forward.length ? { forward } : {}),
   }
   await appendPreflight(preflightFile, record)
 
@@ -155,6 +167,7 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
     brief_hash: hash,
     symbols_missing_from_spec: missing.join(",") || "none",
     dead_citations: dead.length,
+    forward_citations: promised.length,
     contract: contractStatus,
     drifted_citations: drifted.length,
     directive_sentences: coverage.sentences,
@@ -171,6 +184,7 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
   if (missing.length) sections.push(`\nSYMBOLS NOT IN SPEC\n${missing.map((s) => `- ${s}`).join("\n")}`)
   if (dead.length) sections.push(`\nDEAD CITATIONS (refused)\n${toTable(["citation", "kind", "detail"], dead.map((c) => [c.raw, c.kind, c.detail]))}`)
   if (drifted.length) sections.push(`\nDRIFTED CITATIONS (advisory: fix the line before the worker reads it)\n${toTable(["citation", "kind", "detail"], drifted.map((c) => [c.raw, c.kind, c.detail]))}`)
+  if (promised.length) sections.push(`\nFORWARD CITATIONS (promised under creates; the pass verdict refuses until each file exists and each test is declared in it)\n${toTable(["citation", "kind", "detail"], promised.map((c) => [c.raw, c.kind, c.detail]))}`)
   if (coverage.uncovered.length) sections.push(`\nDIRECTIVE SENTENCES WITH NO ECHO IN THE BRIEF (advisory: each is an omission or a paraphrase that dropped its identifiers)\n${coverage.uncovered.slice(0, 40).map((s) => `- ${s}`).join("\n")}`)
   if (flags.length) sections.push(`\nCONTRADICTION MARKERS (advisory)\n${flags.map((f) => `- ${f.kind}: ${f.detail}`).join("\n")}`)
   if (ownership.outside.length) sections.push(`\nFILES OUTSIDE THE DECLARED SET THAT REFERENCE THE TYPE (advisory: at_risk = dispatch site with a default arm and no introduced member named; present = the member is already handled there)\n${toTable(["file", "status", "references", "members_present", "dispatch", "default_arm"], ownership.outside.map((h) => [h.file, h.status, h.references.join(" "), h.members_present.join(" ") || "-", String(h.dispatch), String(h.default_arm)]))}`)

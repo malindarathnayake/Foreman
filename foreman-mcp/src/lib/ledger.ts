@@ -1,7 +1,7 @@
 import fs from "fs/promises"
 import path from "path"
 import { createHash } from "crypto"
-import type { CapGrant, Delegation, DelegationGuard, EscapeClass, GateEvidence, LedgerFile, Phase, PhaseReview, Unit, WriteLedgerInput } from "../types.js"
+import type { CapGrant, Delegation, DelegationGuard, EscapeClass, ForwardObligation, GateEvidence, LedgerFile, Phase, PhaseReview, Unit, WriteLedgerInput } from "../types.js"
 import type { HostId } from "./hostProfiles.js"
 import { detectTestFiles } from "./detectTestFiles.js"
 import { atomicWriteFile } from "./atomicWrite.js"
@@ -18,9 +18,9 @@ import {
   applyEscape, classifyEscape, classifyGate, commitIndependence, coveringGate, independenceDecision, recordGatePass, unclassifiedEscapes,
 } from "./reviewBasis.js"
 import { appendConsumed, readReceipts, receiptsPathFor, type ReceiptsState } from "./seatReceipts.js"
-import { briefHash, findPreflight, preflightPathFor } from "./preflight.js"
+import { briefHash, findPreflight, forwardUnmet, mergeObligations, preflightPathFor } from "./preflight.js"
 import type { ProbeRecord, SmokeReceipt } from "../types.js"
-import { unitContract, digestPaths } from "./specContract.js"
+import { unitContract, digestPaths, digestFile, digestReferences, referencePaths } from "./specContract.js"
 import { eventsPathFor } from "./foremanFiles.js"
 
 /** Receipts file access for one write: read on demand, consumption applied after the operation succeeds. */
@@ -435,6 +435,8 @@ async function applyOperation(
       // carried data.rejection gains the not-recorded suffix (catch at the end of the branch).
       let preflightNote: string | undefined
       let frozenContract: string | undefined
+      let frozenReferences: Record<string, string> | undefined
+      let preflightForward: ForwardObligation[] | undefined
       if (data.s === "delegated") try {
         // 0.6.22: one repository window per root. A delegation on another unit while a
         // window is open is refused; a new attempt on the same unit supersedes its window.
@@ -499,12 +501,31 @@ async function applyOperation(
               }
               frozenContract = contract?.contract_sha256
             }
+            // 0.6.24: the files and tests the brief promised (preflight_check `creates`) ride the attempt.
+            preflightForward = record.forward
           } else {
             preflightNote = "PREFLIGHT: attested only. Run preflight_check before delegating so the ledger can check the brief against the spec; once it has run in this project the receipt is required."
           }
         }
+        // 0.6.24 (Codex deliberation): the contract and every values_in reference are frozen on
+        // the attempt whenever the server knows the spec, not only when a preflight record was
+        // found: the verdict compares against these, so an exemption written later cannot lift
+        // a gate, and a worker cannot rewrite the allowed set it is measured against.
+        if (receipts?.specPath) {
+          const { contract, error: contractError } = await unitContract(receipts.specPath, unit_id)
+          if (contractError) throw new Error(`CONTRACT INVALID: the foreman-contract block for unit '${unit_id}' cannot be frozen on this attempt (${contractError}). Fix the block before delegating.`)
+          if (contract) {
+            frozenContract = contract.contract_sha256
+            if (receipts.projectRoot && referencePaths(contract.contract).length) {
+              const refs = await digestReferences(receipts.projectRoot, contract.contract)
+              if (refs.missing.length) throw new Error(`CONTRACT REFERENCE: values_in reference file(s) for unit '${unit_id}' do not exist inside the project root: ${refs.missing.join(", ")}. The allowed set is frozen at delegation and must exist first.`)
+              frozenReferences = refs.digests
+            }
+          }
+        }
         const now = new Date().toISOString()
         const unit = ledger.phases[phase].units[unit_id]
+        const carriedForward = mergeObligations(unit.delegations?.at(-1)?.forward, preflightForward ?? [])
         // The correction checks read delegations, the guard and the phase scope — never
         // rej[], the counters or v — so they run before the inline rejection mutates those.
         if (data.correction) {
@@ -592,6 +613,8 @@ async function applyOperation(
           ...(modelRank.session_id ? { session_id: modelRank.session_id, model_rank: modelRank } : {}),
           ...(data.correction ? { correction: data.correction } : {}),
           ...(frozenContract ? { contract_sha256: frozenContract } : {}),
+          ...(frozenReferences ? { references: frozenReferences } : {}),
+          ...(carriedForward.length ? { forward: carriedForward } : {}),
         })
         if (data.correction) unit.v = "pending"
         if (unit.delegations.length > 20) unit.delegations = unit.delegations.slice(-20)
@@ -695,7 +718,7 @@ async function applyOperation(
         // attempt needs an override anyway, so that is the message to send the model to.
         ensureAttemptState(unit)
         const failed = unit.epoch_failed ?? 0
-        const waived: Array<"cap" | "attempt" | "escape" | "smoke"> = []
+        const waived: Array<"cap" | "attempt" | "escape" | "smoke" | "contract" | "forward"> = []
         if (failed >= ATTEMPT_CAP && unit.cap_override_attempt !== unit.attempt_seq) {
           if (data.user_override !== true) {
             throw new Error(
@@ -774,37 +797,91 @@ async function applyOperation(
           waived.push("escape")
           unit.cap_override = { ts: new Date().toISOString(), attempt: unit.attempt_seq ?? 0, failed, waived }
         }
-        // 0.6.22 (architecture council): in a has_api phase the unit's own code path must
-        // have run against the real system for THIS attempt, on THESE bytes. The plan comes
-        // from the spec contract; the receipt's harness and input digests are recomputed
-        // here, so a smoke that ran before a later edit is stale. Sequenced last.
-        if (receipts?.specPath && ledger.phases[phase].scope?.has_api === true) {
+        if (receipts?.specPath) {
+          const current = unit.delegations?.find((d) => d.attempt === unit.attempt_seq)
           const { contract, error: contractError } = await unitContract(receipts.specPath, unit_id)
-          let why: string | null = null
-          if (contractError) why = `the spec contract for this unit is invalid (${contractError})`
-          else if (!contract) why = "phase scope has_api and no foreman-contract block names this unit (claims: [] and smoke: null is the reviewed opt-out)"
-          else if (contract.contract.smoke) {
-            const plan = contract.contract.smoke
-            const newest = (unit.smokes ?? []).filter((s) => s.attempt === unit.attempt_seq && s.plan_id === plan.id).at(-1)
-            if (!newest) why = `no live_smoke run for attempt #${unit.attempt_seq} (plan '${plan.id}')`
-            else if (!newest.passed) why = `the newest live_smoke for attempt #${unit.attempt_seq} failed (${(newest.failed ?? []).join("; ")})`
-            else if (newest.contract_sha256 !== contract.contract_sha256) why = "the spec contract changed since the smoke ran"
-            else if (receipts.projectRoot) {
-              const harness = await digestPaths(receipts.projectRoot, plan.harness_files)
-              const inputs = await digestPaths(receipts.projectRoot, plan.input_files)
-              if (harness.sha256 !== newest.harness_sha256) why = "harness files changed since the smoke ran"
-              else if (inputs.sha256 !== newest.input_sha256) why = "application inputs changed since the smoke ran"
+          // 0.6.24 (Codex deliberation): the contract the verdict reads is the contract the
+          // attempt was delegated under, checked BEFORE any exemption is interpreted: a
+          // `smoke: null` or `deliverables: []` written after delegation cannot lift a gate.
+          if (current?.contract_sha256 !== undefined) {
+            const changed = contractError ? `is now invalid (${contractError})`
+              : !contract ? "was removed from the spec"
+              : contract.contract_sha256 !== current.contract_sha256 ? `changed (${current.contract_sha256} -> ${contract.contract_sha256})` : null
+            if (changed !== null) {
+              if (data.user_override !== true) {
+                throw new Error(
+                  `CONTRACT CHANGED: unit '${unit_id}' attempt #${unit.attempt_seq} was delegated under spec contract ${current.contract_sha256} and that contract ${changed}. ` +
+                  "A contract amendment needs a new preflight_check and a new attempt under it; or set data.user_override: true (recorded as cap_override.waived:'contract')."
+                )
+              }
+              waived.push("contract")
+              unit.cap_override = { ts: new Date().toISOString(), attempt: unit.attempt_seq ?? 0, failed, waived }
             }
           }
-          if (why !== null) {
-            if (data.user_override !== true) {
-              throw new Error(
-                `SMOKE REQUIRED: unit '${unit_id}' cannot pass in has_api phase '${phase}': ${why}. ` +
-                "Run live_smoke { phase, unit_id, plan_id } after the worker returns and the guard clears, or set data.user_override: true (recorded as cap_override.waived:'smoke')."
-              )
+          // 0.6.24: every file and test the brief promised into existence must now be declared.
+          if (current?.forward?.length && receipts.projectRoot) {
+            const unmet = await forwardUnmet(receipts.projectRoot, current.forward)
+            if (unmet.length) {
+              if (data.user_override !== true) {
+                throw new Error(
+                  `FORWARD CITATIONS UNMET: unit '${unit_id}' promised files and tests at preflight (creates) that are not declared: ${unmet.slice(0, 6).join("; ")}${unmet.length > 6 ? ` (+${unmet.length - 6} more)` : ""}. ` +
+                  "The brief said the worker would create them; either it did not, or the names drifted. Fix the tree or the brief, or set data.user_override: true (recorded as cap_override.waived:'forward')."
+                )
+              }
+              waived.push("forward")
+              unit.cap_override = { ts: new Date().toISOString(), attempt: unit.attempt_seq ?? 0, failed, waived }
             }
-            waived.push("smoke")
-            unit.cap_override = { ts: new Date().toISOString(), attempt: unit.attempt_seq ?? 0, failed, waived }
+          }
+          // 0.6.22 (architecture council): in a has_api phase the unit's own code path must
+          // have run against the real system for THIS attempt, on THESE bytes. 0.6.24: a
+          // declared plan or deliverable is required in ANY phase — the field report's two
+          // silent failures were not API units. The receipt's harness, input, deliverable
+          // and reference digests are recomputed here, so a smoke that ran before a later
+          // edit is stale. Sequenced last.
+          const hasApi = ledger.phases[phase].scope?.has_api === true
+          const declared = contract !== null && (contract.contract.smoke !== null || contract.contract.deliverables.length > 0)
+          if (hasApi || declared) {
+            let why: string | null = null
+            if (contractError) why = `the spec contract for this unit is invalid (${contractError})`
+            else if (!contract) why = "phase scope has_api and no foreman-contract block names this unit (claims: [] and smoke: null is the reviewed opt-out)"
+            else if (contract.contract.smoke) {
+              const plan = contract.contract.smoke
+              const newest = (unit.smokes ?? []).filter((s) => s.attempt === unit.attempt_seq && s.plan_id === plan.id).at(-1)
+              if (!newest) why = `no live_smoke run for attempt #${unit.attempt_seq} (plan '${plan.id}')`
+              else if (!newest.passed) why = `the newest live_smoke for attempt #${unit.attempt_seq} failed (${(newest.failed ?? []).join("; ")})`
+              else if (newest.contract_sha256 !== contract.contract_sha256) why = "the spec contract changed since the smoke ran"
+              else if (receipts.projectRoot) {
+                const harness = await digestPaths(receipts.projectRoot, plan.harness_files)
+                const inputs = await digestPaths(receipts.projectRoot, plan.input_files)
+                if (harness.sha256 !== newest.harness_sha256) why = "harness files changed since the smoke ran"
+                else if (inputs.sha256 !== newest.input_sha256) why = "application inputs changed since the smoke ran"
+                else {
+                  for (const d of contract.contract.deliverables) {
+                    const rec = newest.deliverables?.find((x) => x.id === d.id)
+                    if (!rec || !rec.passed) { why = `deliverable '${d.id}' ${rec ? `failed in the newest smoke (${(rec.failed ?? []).join("; ")})` : "was not observed by the newest smoke"}`; break }
+                    const nowBytes = await digestFile(receipts.projectRoot, d.path)
+                    if (nowBytes.sha256 !== rec.sha256) { why = `deliverable '${d.id}' (${d.path}) ${nowBytes.exists ? "changed" : "disappeared"} since the smoke observed it`; break }
+                  }
+                  if (why === null && referencePaths(contract.contract).length) {
+                    const refs = await digestReferences(receipts.projectRoot, contract.contract)
+                    const frozen = current?.references ?? {}
+                    const moved = Object.entries(refs.digests).filter(([p, sha]) => frozen[p] !== sha).map(([p]) => p)
+                    if (refs.missing.length) why = `values_in reference missing: ${refs.missing.join(", ")}`
+                    else if (moved.length) why = `values_in reference changed since delegation: ${moved.join(", ")}`
+                  }
+                }
+              }
+            }
+            if (why !== null) {
+              if (data.user_override !== true) {
+                throw new Error(
+                  `SMOKE REQUIRED: unit '${unit_id}' cannot pass in ${hasApi ? "has_api phase" : "phase"} '${phase}': ${why}. ` +
+                  "Run live_smoke { phase, unit_id, plan_id } after the worker returns and the guard clears, or set data.user_override: true (recorded as cap_override.waived:'smoke')."
+                )
+              }
+              waived.push("smoke")
+              unit.cap_override = { ts: new Date().toISOString(), attempt: unit.attempt_seq ?? 0, failed, waived }
+            }
           }
         }
       }
@@ -852,7 +929,9 @@ async function applyOperation(
       const { phase, unit_id, data } = operation
       ensureUnit(ledger, phase, unit_id)
       // 0.6.20: the body lives in recordRejection, shared with set_unit_status data.rejection.
-      return recordRejection(ledger.phases[phase], unit_id, ledger.phases[phase].units[unit_id], data, data.ts, new Date().toISOString())
+      // 0.6.24: the stamp is server time unless the caller reports one; a reported time never orders anything.
+      const rejNow = new Date().toISOString()
+      return recordRejection(ledger.phases[phase], unit_id, ledger.phases[phase].units[unit_id], data, data.ts ?? rejNow, rejNow)
     }
     case "declare_phase_units": {
       const { phase, data } = operation
@@ -1134,6 +1213,23 @@ async function applyOperation(
             gatePhase.escape_override = { ts: now, escapes: openEscapes.length }
             gateOverrides.push("escape")
           }
+          // 0.6.24: a smoke that ran after the review carrying a unit changed the bytes the
+          // review refers to. Every unit with declared deliverables needs a seat that cites
+          // its newest passing receipt.
+          if (receipts?.specPath) {
+            const required = await requiredSmokeCitations(receipts.specPath, gatePhase, Object.keys(gatePhase.units))
+            const uncited = required.filter((r) => r.run_id === null || !seats.some((s) => (s.units === undefined || s.units.includes(r.unit_id)) && s.smoke_receipts?.includes(r.run_id!)))
+            if (uncited.length > 0) {
+              if (data.user_override !== true) {
+                throw new Error(
+                  `DELIVERABLES: phase '${phase}' has unit(s) with declared deliverables whose newest live_smoke receipt no seat review cites: ` +
+                  `${uncited.map((r) => `${r.unit_id} (${r.run_id === null ? `no passing live_smoke for attempt #${r.attempt}` : `run_id ${r.run_id}`})`).join(", ")}. ` +
+                  "Re-run the review with data.smoke_receipts naming the current receipts, or set data.user_override: true (recorded on the gate as override 'deliverables')."
+                )
+              }
+              gateOverrides.push("deliverables")
+            }
+          }
           // 0.6.20: a review-overridden pass with uncovered units stamps no seat and counts
           // only the fully-current records as present, exactly as before (an older carrying
           // record is not credited to a pass the owner waived). Otherwise every carrying seat
@@ -1256,6 +1352,31 @@ async function applyOperation(
       } else if (data.evidence !== undefined) {
         throw new Error("VERIFICATION EVIDENCE: data.evidence is accepted with stage:'verification' only.")
       }
+      // 0.6.24 (Codex deliberation): evidence identity for deliverables. A record that can
+      // carry the gate must cite the newest passing live_smoke receipt of every covered unit
+      // whose contract declares deliverables. The server resolves the ids; a caller never
+      // supplies a digest. This proves the review refers to the current artifact evidence —
+      // not that anyone read the bytes, which stays with the verifier's skill text.
+      let citedRuns: string[] | undefined
+      if (data.smoke_receipts !== undefined) {
+        if (data.stage === "cross_exam" || data.stage === "fan") throw new Error("SMOKE RECEIPTS: data.smoke_receipts is accepted on records that can carry the gate (independent, native, verification) only.")
+        citedRuns = [...new Set(data.smoke_receipts)]
+        const known = new Set(Object.values(p.units).flatMap((u) => (u.smokes ?? []).map((s) => s.run_id)))
+        const unknownRuns = citedRuns.filter((id) => !known.has(id))
+        if (unknownRuns.length) throw new Error(`SMOKE RECEIPTS: no live_smoke run in phase '${phase}' has id ${unknownRuns.join(", ")}; copy run_id from the live_smoke output.`)
+      }
+      if (receipts?.specPath && data.stage !== "cross_exam" && data.stage !== "fan") {
+        const covered = scope ?? (data.stage === "verification" ? data.evidence!.units.map((u) => u.unit_id) : Object.keys(p.units))
+        const required = await requiredSmokeCitations(receipts.specPath, p, covered)
+        const missing = required.filter((r) => r.run_id === null || !citedRuns?.includes(r.run_id))
+        if (missing.length) {
+          throw new Error(
+            `DELIVERABLES: this review covers unit(s) whose contract declares deliverables and must cite their current live_smoke receipts in data.smoke_receipts: ` +
+            `${missing.map((m) => `${m.unit_id} (${m.run_id === null ? `no passing live_smoke for attempt #${m.attempt} yet` : `run_id ${m.run_id}`})`).join(", ")}. ` +
+            "Read each receipt's deliverable digests and the bytes they name before recording; a review that never saw the deliverable cannot carry the gate for that unit."
+          )
+        }
+      }
       const reviewTs = new Date().toISOString()   // per-review timestamp, distinct from the file ts
       // 0.6.19 (slice 4): a seat receipt binds this record to one Foreman-launched advisor
       // run. Every check reads the receipts file Foreman wrote, never the record's text.
@@ -1329,6 +1450,7 @@ async function applyOperation(
               .map(([id, unit]) => [id, unit.attempt_seq ?? 0])) }
           : {}),
         ...(scope !== undefined ? { units: scope } : {}),
+        ...(citedRuns !== undefined ? { smoke_receipts: citedRuns } : {}),
       })
       // Round 6: bounded history that never evicts a record the gate is blocking on.
       p.reviews = trimReviews(p.reviews, p)
@@ -1642,6 +1764,24 @@ export async function recordProbe(filePath: string, phase: string, unitId: strin
 export type { ProbeRecord }
 
 /** Record a live_smoke run on a unit (0.6.22). Server-authored; newest last, ≤10. */
+/**
+ * 0.6.24: for each covered unit whose CURRENT contract declares deliverables, the run id of
+ * the newest passing live_smoke on its current attempt (null when there is none yet).
+ */
+async function requiredSmokeCitations(specPath: string, phaseObj: Phase, unitIds: string[]): Promise<Array<{ unit_id: string; attempt: number; run_id: string | null }>> {
+  const out: Array<{ unit_id: string; attempt: number; run_id: string | null }> = []
+  for (const id of unitIds) {
+    const unit = phaseObj.units[id]
+    if (!unit) continue
+    const { contract } = await unitContract(specPath, id)
+    if (!contract || contract.contract.deliverables.length === 0 || !contract.contract.smoke) continue
+    const attempt = unit.attempt_seq ?? 0
+    const newest = (unit.smokes ?? []).filter((s) => s.attempt === attempt && s.plan_id === contract.contract.smoke!.id).at(-1)
+    out.push({ unit_id: id, attempt, run_id: newest && newest.passed ? newest.run_id : null })
+  }
+  return out
+}
+
 export async function recordSmoke(filePath: string, phase: string, unitId: string, receipt: SmokeReceipt): Promise<void> {
   return withLedgerLock(filePath, async () => {
     const read = await readLedgerWithStatus(filePath)

@@ -69,11 +69,17 @@ function exitCodeOf(output: string): number | null {
 }
 
 /** Why a run cannot be read as a behavioural verdict: refused, never started, timed out, or aborted. */
+/** Runner output that says the code did not build: Go, tsc, Python import/syntax, Rust, .NET, generic. */
+const BUILD_FAILURE = /\[build failed\]|\bbuild failed\b|cannot find package|undefined: [A-Za-z_]|error TS\d{4}|\bSyntaxError\b|\bImportError\b|ModuleNotFoundError|IndentationError|error\[E\d{4}\]|\bCS\d{4}\b.*error|compilation failed|could not compile/i
+
 function inconclusive(output: string): string | null {
   if (output.startsWith("error:")) return output.split("\n")[0].slice(0, 200)
   if (/^timed_out:\s*true/m.test(output)) return "guard timed out; a timeout is not a kill"
   const code = exitCodeOf(output)
   if (code === null || code === -1) return "guard did not start or was aborted (exit -1); not a kill"
+  // 0.6.24 (Codex deliberation): a mutation that stops the code compiling makes every guard
+  // exit non-zero without observing anything; that is invalid, never a kill.
+  if (code !== 0 && BUILD_FAILURE.test(output)) return "guard did not build with the mutation applied (compile or import failure); not a kill"
   return null
 }
 

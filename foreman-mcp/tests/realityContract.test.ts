@@ -299,6 +299,8 @@ describe("credentials resolve through the home store (0.6.23)", () => {
 })
 
 describe("the repository window and baseline binding", () => {
+  // 0.6.24: a declared smoke plan is required in any phase; these tests are about the window.
+  beforeEach(async () => { await fs.writeFile(specPath, SPEC({ ...CONTRACT, smoke: null })) })
   const snapshot = (hash: string, root = dir): RepoSnapshot => ({ root, branch: "main", head: "h", stash_ref: "none", stash_count: 0, autocrlf: "false", eol: [], entries: [], truncated: false, allowed: ["src/a.ts"], hash })
   it("one window per root: a second unit cannot delegate or snapshot while the first holds it; a verdict releases it", async () => {
     await write(delegated("u1"))

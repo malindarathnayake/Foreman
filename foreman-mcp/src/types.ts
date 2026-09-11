@@ -136,8 +136,28 @@ export interface Delegation {
   /** 0.6.21: how this attempt ended. `rejected` is server-authored from a rejection or fail verdict; the rest are closed by close_attempt. Never affects attempt ids, counters or the cap. */
   outcome?: AttemptOutcome
   outcome_note?: string
-  /** 0.6.22: the spec contract digest frozen at delegation; the smoke gate compares against it. */
+  /** 0.6.22: the spec contract digest frozen at delegation; the verdict refuses when the current contract differs (0.6.24). */
   contract_sha256?: string
+  /** 0.6.24: digests of every values_in reference file at delegation; live_smoke and the verdict refuse when one moved. */
+  references?: Record<string, string>
+  /** 0.6.24: files and tests the brief orders into existence; the pass verdict checks each is declared. Carried across corrections. */
+  forward?: ForwardObligation[]
+}
+
+/** 0.6.24: a file the unit creates and the tests it declares there (preflight_check `creates`). */
+export interface ForwardObligation {
+  file: string
+  tests: string[]
+}
+
+/** 0.6.24: what one deliverable held after the smoke plan ran. */
+export interface DeliverableReceipt {
+  id: string
+  path: string
+  sha256: string | null
+  bytes: number
+  passed: boolean
+  failed?: string[]
 }
 
 export type AttemptOutcome = "delivered" | "blocked" | "rejected" | "validation_only"
@@ -203,7 +223,7 @@ export interface Unit {
   /** Direct fixes recorded as attempts, newest last, capped at 20. */
   direct_fixes?: DirectFix[]
   /** A pass verdict that waived ATTEMPT REQUIRED or the cap through data.user_override. */
-  cap_override?: { ts: string; attempt: number; failed: number; waived: Array<"cap" | "attempt" | "escape" | "smoke"> }
+  cap_override?: { ts: string; attempt: number; failed: number; waived: Array<"cap" | "attempt" | "escape" | "smoke" | "contract" | "forward"> }
   /** Owner grants for attempts past the cap, newest last, capped at 20. Enforcement reads the newest only. */
   cap_grants?: CapGrant[]
   /** 0.6.20: the latest verify_oracle run on this unit. Server-authored. */
@@ -253,6 +273,10 @@ export interface SmokeReceipt {
   observations: string[]
   passed: boolean
   failed?: string[]
+  /** 0.6.24: the deliverables the plan produced and what Foreman observed on their bytes. */
+  deliverables?: DeliverableReceipt[]
+  /** 0.6.24: reference digests the values_in assertions were evaluated against. */
+  references?: Record<string, string>
 }
 
 /** 0.6.22: the one repository window per root; absent means idle. */
@@ -307,6 +331,8 @@ export interface PhaseReview {
   provenance?: SeatProvenance
   /** Server scalar on a baseline: verification records recorded against it (survives review trimming). */
   delta_count?: number
+  /** 0.6.24: live_smoke run ids the review cited; the gate requires the newest receipt of every covered unit with deliverables. */
+  smoke_receipts?: string[]
 }
 
 // ─── Review outcomes (0.6.19): what kind of evidence carried a gate ───────────
@@ -359,7 +385,7 @@ export interface GateEvidence {
   regate: boolean
   flagged: boolean
   agent_class_declared?: "frontier" | "capable" | "compact"
-  overrides: Array<"seat_minimum" | "discipline" | "review" | "confirmed" | "incomplete" | "escape" | "independence">
+  overrides: Array<"seat_minimum" | "discipline" | "review" | "confirmed" | "incomplete" | "escape" | "independence" | "deliverables">
   rank: { weight: 0 | 1 | 2 | 3; declared: boolean }
   /** evidence.units of the carrying verification when basis is delta:*. */
   delta_units?: string[]
@@ -534,7 +560,8 @@ const AddRejectionInput = z.object({
   data: z.object({
     r: z.string().max(10000),
     msg: z.string().max(10000),
-    ts: z.string().max(10000),
+    // 0.6.24: optional; the ledger stamps server time when absent. A supplied value is kept as the reported time and carries no ordering authority.
+    ts: z.string().max(10000).optional(),
     // 0.6.19: classify the escape at the moment of rejection when the unit is gated.
     escape_class: EscapeClassSchema.optional(),
   }),
@@ -679,6 +706,10 @@ const RecordReviewInput = z.object({
     // (trimmed, no newline/comma) because they land in TOON lists and gate messages.
     // Renders as `units?: string (≥1 chars, ≤200 chars)[] (max 200)` (minItems is not rendered).
     units: z.array(DeclaredUnitId).min(1).max(200).optional(),
+    // 0.6.24: the live_smoke run ids this review read. A record that can carry the gate must
+    // cite the newest passing receipt of every covered unit with declared deliverables; the
+    // server resolves the ids, the caller never supplies a digest.
+    smoke_receipts: z.array(z.string().regex(/^[0-9a-f]{16}$/)).max(200).optional(),
   }),
 })
 

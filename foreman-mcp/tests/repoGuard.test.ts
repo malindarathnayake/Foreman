@@ -15,6 +15,8 @@ import { readLedger, writeLedger } from "../src/lib/ledger.js"
 import { compareSnapshots, invalidPathReason, normalizePath, parsePorcelainZ, takeSnapshot, ENTRY_CEILING, MAX_ENTRIES } from "../src/lib/repoGuard.js"
 import { handleRepoGuard } from "../src/tools/repoGuard.js"
 import { handleWriteProgress, FENCE_START, FENCE_END } from "../src/tools/writeProgress.js"
+import { preflightCheck } from "../src/tools/preflightCheck.js"
+import { preflightPathFor } from "../src/lib/preflight.js"
 import { fencedFingerprint, foremanFileScope, relativeScope } from "../src/lib/foremanFiles.js"
 import type { RepoSnapshot } from "../src/types.js"
 
@@ -581,6 +583,19 @@ describe("Foreman's own writes are excluded from one shared list", () => {
     await fs.mkdir(path.join(repoDir, "other"))
     await fs.writeFile(path.join(repoDir, "other", "ledger.json"), "{}")
     expect(await docsGuard("compare", {}, paths)).toMatch(/file changed outside the brief: other\/ledger\.json/)
+  })
+
+  it("0.6.24 (fifth field report): preparing the next brief with preflight_check while a worker window is open is not a violation", async () => {
+    await fs.writeFile(path.join(docsDir, "spec.md"), "#### u1 — a\n- Edit `a` in a.ts.\n\n#### u2 — b\n- Edit `b` in b.ts.\n")
+    git(["add", "."])
+    git(["commit", "-q", "-m", "spec"])
+    await docsBaseline()
+    // Foreman's own preflight record for the NEXT unit lands beside the ledger, inside the guarded tree.
+    const text = await preflightCheck({ phase: "p1", unit_id: "u2", brief: "Edit `b` in b.ts as the spec says, twenty chars.", symbols: ["b"], repo_root: repoDir, spec_path: "Docs/spec.md" }, preflightPathFor(docsLedger), docsLedger)
+    expect(text).toContain("status: pass")
+    await expect(fs.stat(path.join(docsDir, ".foreman-preflight.jsonl"))).resolves.toBeTruthy()
+    const compare = await docsGuard("compare")
+    expect(status(compare), compare).toBe("status: ok")
   })
 
   it("T11b: the snapshot reports how many Foreman paths the exclusion covers, and says so when none do", async () => {

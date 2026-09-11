@@ -18,7 +18,7 @@ import { createHash } from "crypto"
 import path from "path"
 import { z } from "zod"
 import { recordProbe, type ProbeRecord } from "../lib/ledger.js"
-import { ClaimAssertionsSchema, unitContract, type ClaimAssertions } from "../lib/specContract.js"
+import { ClaimAssertionsSchema, jsonPath, unitContract, type ClaimAssertions } from "../lib/specContract.js"
 import { resolveNamedCredentials } from "../lib/foremanEnv.js"
 import { toKeyValue } from "../lib/toon.js"
 
@@ -48,20 +48,6 @@ function envNamesIn(value: string): string[] {
 export interface ContractProbeOptions {
   /** Override for `~/.foreman-mcp/.env`. Test seam. */
   credentialsPath?: string
-}
-
-function jsonPath(body: string, dotPath: string): unknown {
-  let node: unknown
-  try {
-    node = JSON.parse(body)
-  } catch {
-    return undefined
-  }
-  for (const key of dotPath.split(".").filter(Boolean)) {
-    if (node === null || typeof node !== "object") return undefined
-    node = Array.isArray(node) && /^\d+$/.test(key) ? node[Number(key)] : (node as Record<string, unknown>)[key]
-  }
-  return node
 }
 
 /** Every failed assertion, in prose. An incomplete capture fails every body assertion by construction. */
