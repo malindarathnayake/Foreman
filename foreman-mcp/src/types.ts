@@ -142,6 +142,19 @@ export interface Delegation {
   references?: Record<string, string>
   /** 0.6.24: files and tests the brief orders into existence; the pass verdict checks each is declared. Carried across corrections. */
   forward?: ForwardObligation[]
+  /** 0.6.25: the unit's checkpoint (spec Files + Test lines) frozen at delegation; the verdict re-checks its reach over the guard's authorized set. */
+  checkpoint?: FrozenCheckpoint
+}
+
+/** 0.6.25: what the delegation froze of the unit's checkpoint. Server-authored. */
+export interface FrozenCheckpoint {
+  digest: string
+  commands: string[]
+  files: string[]
+  reach: "ok" | "omitted" | "unknown"
+  omitted?: string[]
+  /** The owner delegated past a package omission; the files it covered. */
+  reach_override?: { ts: string; files: string[] }
 }
 
 /** 0.6.24: a file the unit creates and the tests it declares there (preflight_check `creates`). */
@@ -223,7 +236,7 @@ export interface Unit {
   /** Direct fixes recorded as attempts, newest last, capped at 20. */
   direct_fixes?: DirectFix[]
   /** A pass verdict that waived ATTEMPT REQUIRED or the cap through data.user_override. */
-  cap_override?: { ts: string; attempt: number; failed: number; waived: Array<"cap" | "attempt" | "escape" | "smoke" | "contract" | "forward"> }
+  cap_override?: { ts: string; attempt: number; failed: number; waived: Array<"cap" | "attempt" | "escape" | "smoke" | "contract" | "forward" | "checkpoint" | "reach"> }
   /** Owner grants for attempts past the cap, newest last, capped at 20. Enforcement reads the newest only. */
   cap_grants?: CapGrant[]
   /** 0.6.20: the latest verify_oracle run on this unit. Server-authored. */

@@ -18,9 +18,11 @@ import fs from "fs/promises"
 import path from "path"
 import { z } from "zod"
 import {
-  appendPreflight, briefHash, checkCitations, consistencyFlags, directiveCoverage, missingSymbols, normalizeObligations, ownershipSweep,
+  appendPreflight, briefHash, checkCitations, consistencyFlags, directiveCoverage, extractDirective, missingSymbols, normalizeObligations, ownershipSweep,
   PREFLIGHT_POLICY_VERSION, type PreflightRecord,
 } from "../lib/preflight.js"
+import { checkpointReach, readCheckpoint, reachMessage } from "../lib/checkpoint.js"
+export { extractDirective }
 import { toKeyValue, toTable } from "../lib/toon.js"
 import { readLedgerWithStatus } from "../lib/ledger.js"
 import { unitContract } from "../lib/specContract.js"
@@ -52,41 +54,6 @@ export const PreflightCheckInputSchema = z.object({
   repo_root: z.string().max(4096).optional(),
 })
 export type PreflightCheckInput = z.infer<typeof PreflightCheckInputSchema>
-
-const UNIT_TOKEN = /\b[A-Za-z]{1,3}\d+(?:\.\d+)+\b/
-
-/** The block of the spec that belongs to one unit: from its heading to the next unit or higher heading. */
-export function extractDirective(spec: string, unitId: string): string | null {
-  const lines = spec.split(/\r?\n/)
-  const id = unitId.trim()
-  const idRe = new RegExp(`(?<![A-Za-z0-9_.])${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9_])`, "i")
-  const headingLevel = (l: string) => /^#+\s/.test(l) ? (/^#+/.exec(l)![0].length) : null
-  let start = -1
-  let level: number | null = null
-  for (let i = 0; i < lines.length; i++) {
-    const l = lines[i]
-    const isHeading = headingLevel(l) !== null
-    const isRowOrBold = /^\s*(?:\|\s*|\*\*|-\s+\*\*)/.test(l)
-    if ((isHeading || isRowOrBold) && idRe.test(l)) {
-      start = i
-      level = headingLevel(l)
-      break
-    }
-  }
-  if (start < 0) return null
-  const out: string[] = [lines[start]]
-  for (let i = start + 1; i < lines.length; i++) {
-    const l = lines[i]
-    const h = headingLevel(l)
-    if (h !== null && level !== null && h <= level) break
-    if (h !== null && level === null) break
-    if (level === null && i > start && /^\s*(?:\|\s*|\*\*|-\s+\*\*)/.test(l) && UNIT_TOKEN.test(l) && !idRe.test(l)) break
-    if (h === null && UNIT_TOKEN.test(l) && /^#+\s/.test(l)) break
-    out.push(l)
-    if (out.length > 400) break
-  }
-  return out.join("\n").trim()
-}
 
 export async function preflightCheck(raw: PreflightCheckInput, preflightFile: string, ledgerPath?: string, specPath?: string): Promise<string> {
   const input = PreflightCheckInputSchema.parse(raw)
@@ -125,6 +92,34 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
       }
     }
   }
+  // 0.6.25: checkpoint reach, read from the SERVER's spec (never this call's directive or
+  // spec_path): the unit's Files and Test lines, the caller's `files` unioned in as scope.
+  let reachStatus = "none (the unit's directive has no Test: line)"
+  let reachOmitted = false
+  let reachKind: "ok" | "omitted" | "unknown" | "none" = "none"
+  let checkpointSha: string | undefined
+  if (specPath) {
+    const def = await readCheckpoint(specPath, input.unit_id)
+    if (def) {
+      checkpointSha = def.digest
+      const scope = [...new Set([...def.files, ...input.files.map((f) => f.replace(/\\/g, "/").replace(/^\.\//, ""))])]
+      const reach = await checkpointReach(root, def, scope)
+      reachKind = reach.status
+      const notes = [
+        ...(reach.filters.length ? [`filters: ${reach.filters.join(" ")} (reported, not inferred against)`] : []),
+        ...(reach.unclassified.length ? [`not classified (no Go package, not under testdata): ${reach.unclassified.slice(0, 6).join(", ")}`] : []),
+      ]
+      if (reach.status === "omitted") {
+        reachOmitted = true
+        reachStatus = `REACH: ${reachMessage(reach, def)}`
+      } else if (reach.status === "unknown") {
+        reachStatus = `unknown: ${reach.opaque.length ? reach.opaque.join("; ") : "no go test clause"}; Foreman cannot claim the checkpoint omits or reaches a file`
+      } else {
+        reachStatus = `ok: every authorized Go package or testdata fixture is selected by ${def.commands.join(" && ")}`
+      }
+      if (notes.length) reachStatus += `; ${notes.join("; ")}`
+    }
+  }
   const specRel = input.spec_path ?? "Docs/spec.md"
   let spec = ""
   try {
@@ -150,7 +145,8 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
   const ownership = await ownershipSweep(root, input.type_names, input.introduces, input.files)
 
   const probeMissing = probeRequired && !contractMet
-  const status: "pass" | "fail" = missing.length === 0 && dead.length === 0 && !probeMissing ? "pass" : "fail"
+  const otherFailure = missing.length > 0 || dead.length > 0 || probeMissing
+  const status: "pass" | "fail" = !otherFailure && !reachOmitted ? "pass" : "fail"
   const hash = briefHash(input.brief)
   const record: PreflightRecord = {
     v: PREFLIGHT_POLICY_VERSION, ts: new Date().toISOString(), phase: input.phase, unit_id: input.unit_id, brief_hash: hash, status,
@@ -158,6 +154,9 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
     flags: flags.length, dead_citations: dead.length, ownership_outside: ownership.outside.length,
     ...(contractSha !== undefined ? { contract_sha256: contractSha } : {}),
     ...(forward.length ? { forward } : {}),
+    reach: reachKind,
+    ...(reachOmitted && !otherFailure ? { reach_only: true } : {}),
+    ...(checkpointSha !== undefined ? { checkpoint_sha256: checkpointSha } : {}),
   }
   await appendPreflight(preflightFile, record)
 
@@ -168,6 +167,7 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
     symbols_missing_from_spec: missing.join(",") || "none",
     dead_citations: dead.length,
     forward_citations: promised.length,
+    checkpoint_reach: reachStatus,
     contract: contractStatus,
     drifted_citations: drifted.length,
     directive_sentences: coverage.sentences,
@@ -178,7 +178,7 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
     ownership_scanned: `${ownership.scanned}${ownership.truncated ? " (truncated)" : ""}`,
     next: status === "pass"
       ? "Record the delegation with preflight: { receipt: brief_hash, symbols_grepped: <the array>, self_consistent: true } after reading the advisories below; the ledger checks the receipt against this record."
-      : "Fix the brief (missing symbols, dead citations" + (probeMissing ? "; register the unit's foreman-contract block and run contract_probe for each claim" : "") + ") and run preflight_check again; the ledger refuses a delegation without a passing record for the brief it carries.",
+      : "Fix the brief (missing symbols, dead citations" + (probeMissing ? "; register the unit's foreman-contract block and run contract_probe for each claim" : "") + (reachOmitted ? "; widen the spec's Test line or narrow its Files so the checkpoint selects every authorized package" : "") + ") and run preflight_check again; the ledger refuses a delegation without a passing record for the brief it carries" + (reachOmitted && !otherFailure ? " (reach is the only failure here: the owner may delegate with user_override, recorded as reach_override)" : "") + ".",
   })
   const sections: string[] = [head]
   if (missing.length) sections.push(`\nSYMBOLS NOT IN SPEC\n${missing.map((s) => `- ${s}`).join("\n")}`)

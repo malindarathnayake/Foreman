@@ -88,7 +88,7 @@ Break into phases and units. Rules:
 - Units are 1-3 files
 - Dependencies flow forward only
 - Start with types/models, build outward
-- Each unit has exactly one test command that confirms it works
+- Each unit has exactly one test command that confirms it works, and its `go test` selectors include the package of every file in the unit's Files line (a `testdata` fixture belongs to its parent package): Foreman freezes the Test line at delegation and refuses a checkpoint that omits an authorized package
 - Run ambiguity gate here too — flag anything that would require a guess during implementation
 
 **Phase checkpoint format:** After the last unit of each phase, specify a checkpoint command the implementor runs to confirm the entire phase is working before moving forward. The checkpoint must be runnable without future units present.

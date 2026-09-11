@@ -1,7 +1,7 @@
 import fs from "fs/promises"
 import path from "path"
 import { createHash } from "crypto"
-import type { CapGrant, Delegation, DelegationGuard, EscapeClass, ForwardObligation, GateEvidence, LedgerFile, Phase, PhaseReview, Unit, WriteLedgerInput } from "../types.js"
+import type { CapGrant, Delegation, DelegationGuard, EscapeClass, ForwardObligation, FrozenCheckpoint, GateEvidence, LedgerFile, Phase, PhaseReview, Unit, WriteLedgerInput } from "../types.js"
 import type { HostId } from "./hostProfiles.js"
 import { detectTestFiles } from "./detectTestFiles.js"
 import { atomicWriteFile } from "./atomicWrite.js"
@@ -18,7 +18,8 @@ import {
   applyEscape, classifyEscape, classifyGate, commitIndependence, coveringGate, independenceDecision, recordGatePass, unclassifiedEscapes,
 } from "./reviewBasis.js"
 import { appendConsumed, readReceipts, receiptsPathFor, type ReceiptsState } from "./seatReceipts.js"
-import { briefHash, findPreflight, forwardUnmet, mergeObligations, preflightPathFor } from "./preflight.js"
+import { briefHash, findPreflight, findPreflightAny, forwardUnmet, mergeObligations, preflightPathFor } from "./preflight.js"
+import { checkpointReach, readCheckpoint, reachMessage } from "./checkpoint.js"
 import type { ProbeRecord, SmokeReceipt } from "../types.js"
 import { unitContract, digestPaths, digestFile, digestReferences, referencePaths } from "./specContract.js"
 import { eventsPathFor } from "./foremanFiles.js"
@@ -485,7 +486,13 @@ async function applyOperation(
                 ". Run preflight_check { phase, unit_id, brief, symbols, files } and copy its brief_hash."
               )
             }
-            const record = await findPreflight(receipts.preflightFile, hash, unit_id, phase)
+            let record = await findPreflight(receipts.preflightFile, hash, unit_id, phase)
+            // 0.6.25: a record whose only failure was checkpoint reach is consumable with the
+            // owner's override; every other failure still refuses.
+            if (!record && data.user_override === true) {
+              const any = await findPreflightAny(receipts.preflightFile, hash, unit_id, phase)
+              if (any?.reach_only) record = any
+            }
             if (!record) {
               throw new Error(
                 `PREFLIGHT RECEIPT: no passing preflight record for brief ${hash} on unit '${unit_id}' (the newest record for this brief decides; a pass on another unit does not carry). Run preflight_check on this exact brief and unit and fix what it refuses ` +
@@ -520,6 +527,31 @@ async function applyOperation(
               const refs = await digestReferences(receipts.projectRoot, contract.contract)
               if (refs.missing.length) throw new Error(`CONTRACT REFERENCE: values_in reference file(s) for unit '${unit_id}' do not exist inside the project root: ${refs.missing.join(", ")}. The allowed set is frozen at delegation and must exist first.`)
               frozenReferences = refs.digests
+            }
+          }
+        }
+        // 0.6.25 (sixth field report): the checkpoint the spec declares for this unit (its Files
+        // and Test lines) is frozen here from the SERVER's spec, and a Go package selection that
+        // omits an authorized file's package refuses the delegation. Package selection is a
+        // floor: it never claims the tests observe the change.
+        let frozenCheckpoint: FrozenCheckpoint | undefined
+        if (receipts?.specPath) {
+          const def = await readCheckpoint(receipts.specPath, unit_id)
+          if (def) {
+            const reach = await checkpointReach(receipts.projectRoot ?? process.cwd(), def, def.files)
+            frozenCheckpoint = {
+              digest: def.digest, commands: def.commands, files: def.files,
+              reach: reach.status === "none" ? "unknown" : reach.status,
+              ...(reach.omitted.length ? { omitted: reach.omitted.map((o) => o.file) } : {}),
+            }
+            if (reach.status === "omitted") {
+              if (data.user_override !== true) {
+                throw new Error(
+                  `CHECKPOINT REACH: unit '${unit_id}': ${reachMessage(reach, def)} ` +
+                  "Widen the spec's Test line or narrow its Files and run preflight_check again, or set data.user_override: true (recorded on the delegation as reach_override)."
+                )
+              }
+              frozenCheckpoint.reach_override = { ts: new Date().toISOString(), files: reach.omitted.map((o) => o.file) }
             }
           }
         }
@@ -615,6 +647,7 @@ async function applyOperation(
           ...(frozenContract ? { contract_sha256: frozenContract } : {}),
           ...(frozenReferences ? { references: frozenReferences } : {}),
           ...(carriedForward.length ? { forward: carriedForward } : {}),
+          ...(frozenCheckpoint ? { checkpoint: frozenCheckpoint } : {}),
         })
         if (data.correction) unit.v = "pending"
         if (unit.delegations.length > 20) unit.delegations = unit.delegations.slice(-20)
@@ -718,7 +751,7 @@ async function applyOperation(
         // attempt needs an override anyway, so that is the message to send the model to.
         ensureAttemptState(unit)
         const failed = unit.epoch_failed ?? 0
-        const waived: Array<"cap" | "attempt" | "escape" | "smoke" | "contract" | "forward"> = []
+        const waived: Array<"cap" | "attempt" | "escape" | "smoke" | "contract" | "forward" | "checkpoint" | "reach"> = []
         if (failed >= ATTEMPT_CAP && unit.cap_override_attempt !== unit.attempt_seq) {
           if (data.user_override !== true) {
             throw new Error(
@@ -798,7 +831,10 @@ async function applyOperation(
           unit.cap_override = { ts: new Date().toISOString(), attempt: unit.attempt_seq ?? 0, failed, waived }
         }
         if (receipts?.specPath) {
-          const current = unit.delegations?.find((d) => d.attempt === unit.attempt_seq)
+          // 0.6.25: a direct fix allocates an attempt without a delegation; the obligations
+          // frozen on the newest delegation still bind it (Codex deliberation: the 0.6.24
+          // lookup by exact attempt let every frozen check vanish on a direct-fix attempt).
+          const current = unit.delegations?.find((d) => d.attempt === unit.attempt_seq) ?? unit.delegations?.at(-1)
           const { contract, error: contractError } = await unitContract(receipts.specPath, unit_id)
           // 0.6.24 (Codex deliberation): the contract the verdict reads is the contract the
           // attempt was delegated under, checked BEFORE any exemption is interpreted: a
@@ -830,6 +866,36 @@ async function applyOperation(
               }
               waived.push("forward")
               unit.cap_override = { ts: new Date().toISOString(), attempt: unit.attempt_seq ?? 0, failed, waived }
+            }
+          }
+          // 0.6.25: the frozen checkpoint must still be the spec's, and its package selection
+          // must cover the guard's frozen authorized set (or the spec's Files without a guard).
+          if (current?.checkpoint && receipts.projectRoot) {
+            const def = await readCheckpoint(receipts.specPath, unit_id)
+            if (!def || def.digest !== current.checkpoint.digest) {
+              if (data.user_override !== true) {
+                throw new Error(
+                  `CHECKPOINT CHANGED: unit '${unit_id}' attempt #${unit.attempt_seq} was delegated under checkpoint ${current.checkpoint.digest} (${current.checkpoint.commands.join(" && ")}) and the spec's Files or Test lines ${def ? `now digest ${def.digest}` : "are gone"}. ` +
+                  "A checkpoint amendment needs a new preflight_check and a new attempt; or set data.user_override: true (recorded as cap_override.waived:'checkpoint')."
+                )
+              }
+              waived.push("checkpoint")
+              unit.cap_override = { ts: new Date().toISOString(), attempt: unit.attempt_seq ?? 0, failed, waived }
+            } else {
+              const scope = current.guard?.snapshot.allowed?.length ? current.guard.snapshot.allowed : current.checkpoint.files
+              const reach = await checkpointReach(receipts.projectRoot, def, scope)
+              const covered = new Set(current.checkpoint.reach_override?.files ?? [])
+              const uncovered = reach.omitted.filter((o) => !covered.has(o.file))
+              if (reach.status === "omitted" && uncovered.length) {
+                if (data.user_override !== true) {
+                  throw new Error(
+                    `CHECKPOINT REACH: unit '${unit_id}': ${reachMessage({ ...reach, omitted: uncovered }, def)} ` +
+                    "The authorized set the guard froze is wider than the checkpoint selects. Fix the spec and re-delegate, or set data.user_override: true (recorded as cap_override.waived:'reach')."
+                  )
+                }
+                waived.push("reach")
+                unit.cap_override = { ts: new Date().toISOString(), attempt: unit.attempt_seq ?? 0, failed, waived }
+              }
             }
           }
           // 0.6.22 (architecture council): in a has_api phase the unit's own code path must

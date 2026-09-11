@@ -73,7 +73,8 @@ export async function liveSmoke(
   if (!unit) return toKeyValue({ status: "error", error: "unit_unknown", hint: `unit '${input.unit_id}' is not registered in phase '${input.phase}'; delegate first` })
   const attempt = unit.attempt_seq ?? 0
   if (attempt === 0) return toKeyValue({ status: "error", error: "no_attempt", hint: "a smoke binds to an attempt; record the delegation first" })
-  const delegation = unit.delegations?.find((d) => d.attempt === attempt)
+  // 0.6.25: a direct-fix attempt carries the newest delegation's frozen definitions.
+  const delegation = unit.delegations?.find((d) => d.attempt === attempt) ?? unit.delegations?.at(-1)
 
   const { contract, error } = await unitContract(specPath, input.unit_id)
   if (error) return toKeyValue({ status: "error", error: "contract_invalid", detail: error })

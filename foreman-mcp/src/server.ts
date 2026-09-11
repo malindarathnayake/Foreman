@@ -758,7 +758,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       title: "Preflight Check",
       description: [
         "Checks a worker brief against the spec BEFORE the attempt is spent, and records a passing receipt the ledger requires on set_unit_status s:'delegated'.",
-        "Refuses: a symbol in `symbols` the spec does not contain; a citation in the brief (path, file:line, named test, `-run` selector) that does not resolve in the repo. Files and tests the unit CREATES go in `creates: [{ file, tests }]`: their citations are forward, and the pass verdict refuses until each exists and each test is declared in its file.",
+        "Refuses: a symbol in `symbols` the spec does not contain; a citation in the brief (path, file:line, named test, `-run` selector) that does not resolve in the repo. Files and tests the unit CREATES go in `creates: [{ file, tests }]`: their citations are forward, and the pass verdict refuses until each exists and each test is declared in its file. Reports checkpoint reach: whether the spec's Test line's go test selectors include the package of every authorized file (a testdata fixture belongs to its parent package); an omission fails, and the delegation refuses it unless the owner overrides.",
         "Advises: directive sentences with no echo in the brief, contradiction markers, drifted file:line citations, files outside `files` that reference `type_names`/`introduces` (dispatch sites with a default arm first).",
         "Returns brief_hash; copy it into the delegation as preflight.receipt with symbols_grepped as the same array.",
       ].join(" "),

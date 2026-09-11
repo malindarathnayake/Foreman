@@ -223,6 +223,42 @@ export async function ownershipSweep(repoRoot: string, typeNames: string[], memb
   return { scanned: state.count, truncated: state.count >= MAX_FILES, outside }
 }
 
+// ─── The unit's directive block (moved from tools/preflightCheck in 0.6.25) ──────
+const UNIT_TOKEN = /\b[A-Za-z]{1,3}\d+(?:\.\d+)+\b/
+
+/** The block of the spec that belongs to one unit: from its heading to the next unit or higher heading. */
+export function extractDirective(spec: string, unitId: string): string | null {
+  const lines = spec.split(/\r?\n/)
+  const id = unitId.trim()
+  const idRe = new RegExp(`(?<![A-Za-z0-9_.])${id.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![A-Za-z0-9_])`, "i")
+  const headingLevel = (l: string) => /^#+\s/.test(l) ? (/^#+/.exec(l)![0].length) : null
+  let start = -1
+  let level: number | null = null
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i]
+    const isHeading = headingLevel(l) !== null
+    const isRowOrBold = /^\s*(?:\|\s*|\*\*|-\s+\*\*)/.test(l)
+    if ((isHeading || isRowOrBold) && idRe.test(l)) {
+      start = i
+      level = headingLevel(l)
+      break
+    }
+  }
+  if (start < 0) return null
+  const out: string[] = [lines[start]]
+  for (let i = start + 1; i < lines.length; i++) {
+    const l = lines[i]
+    const h = headingLevel(l)
+    if (h !== null && level !== null && h <= level) break
+    if (h !== null && level === null) break
+    if (level === null && i > start && /^\s*(?:\|\s*|\*\*|-\s+\*\*)/.test(l) && UNIT_TOKEN.test(l) && !idRe.test(l)) break
+    if (h === null && UNIT_TOKEN.test(l) && /^#+\s/.test(l)) break
+    out.push(l)
+    if (out.length > 400) break
+  }
+  return out.join("\n").trim()
+}
+
 // ─── Citations in a brief ────────────────────────────────────────────────────
 // verify_citations reads a spec's evidence tables; a brief is prose. The field report hit
 // three stale self-citations (a file:line that moved, a named test that does not exist), so
@@ -466,6 +502,11 @@ export interface PreflightRecord {
   contract_sha256?: string
   /** 0.6.24: files and tests the brief orders into existence; frozen onto the delegation, checked at the pass verdict. */
   forward?: ForwardObligation[]
+  /** 0.6.25: checkpoint reach over the unit's spec Files: ok | omitted | unknown | none. */
+  reach?: "ok" | "omitted" | "unknown" | "none"
+  /** 0.6.25: true when reach was the ONLY failure; a delegation may consume such a record with user_override. */
+  reach_only?: boolean
+  checkpoint_sha256?: string
 }
 
 export function preflightPathFor(ledgerPath: string): string {
@@ -483,6 +524,12 @@ export async function appendPreflight(filePath: string, record: PreflightRecord)
  * another unit, or before a stronger check, cannot be replayed (Codex review, 2026-09-10).
  */
 export async function findPreflight(filePath: string, briefHashValue: string, unitId?: string, phase?: string): Promise<PreflightRecord | null> {
+  const newest = await findPreflightAny(filePath, briefHashValue, unitId, phase)
+  return newest !== null && newest.status === "pass" ? newest : null
+}
+
+/** 0.6.25: the newest record whatever its status (the reach-only exception reads it). */
+export async function findPreflightAny(filePath: string, briefHashValue: string, unitId?: string, phase?: string): Promise<PreflightRecord | null> {
   let raw: string
   try {
     raw = await fs.readFile(filePath, "utf-8")
@@ -503,5 +550,5 @@ export async function findPreflight(filePath: string, briefHashValue: string, un
       continue
     }
   }
-  return newest !== null && newest.status === "pass" ? newest : null
+  return newest
 }
