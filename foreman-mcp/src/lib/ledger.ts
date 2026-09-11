@@ -19,7 +19,8 @@ import {
 } from "./reviewBasis.js"
 import { appendConsumed, readReceipts, receiptsPathFor, type ReceiptsState } from "./seatReceipts.js"
 import { briefHash, findPreflight, preflightPathFor } from "./preflight.js"
-import type { ProbeRecord } from "../types.js"
+import type { ProbeRecord, SmokeReceipt } from "../types.js"
+import { unitContract, digestPaths } from "./specContract.js"
 import { eventsPathFor } from "./foremanFiles.js"
 
 /** Receipts file access for one write: read on demand, consumption applied after the operation succeeds. */
@@ -28,6 +29,9 @@ export interface ReceiptsAccess {
   consumed: Array<{ id: string; phase: string; review_ts: string }>
   /** 0.6.20: the preflight record file beside the ledger; absent on write paths without one. */
   preflightFile?: string
+  /** 0.6.22: the server's spec path and project root; the contract and smoke gates read them. Absent on test paths without a contract. */
+  specPath?: string
+  projectRoot?: string
 }
 
 // Re-exported so existing importers of the gate predicates keep one entry point.
@@ -430,7 +434,17 @@ async function applyOperation(
       // 0.6.20: the whole delegated branch runs under one try so any refusal of a write that
       // carried data.rejection gains the not-recorded suffix (catch at the end of the branch).
       let preflightNote: string | undefined
+      let frozenContract: string | undefined
       if (data.s === "delegated") try {
+        // 0.6.22: one repository window per root. A delegation on another unit while a
+        // window is open is refused; a new attempt on the same unit supersedes its window.
+        if (ledger.window && (ledger.window.phase !== phase || ledger.window.unit_id !== unit_id)) {
+          throw new Error(
+            `WINDOW BUSY: unit '${ledger.window.unit_id}' in phase '${ledger.window.phase}' holds the repository window (attempt #${ledger.window.attempt}, ${ledger.window.stage}). ` +
+            "Record its verdict, or close its attempt with close_attempt, before delegating another unit. Editing workers run one at a time on a shared tree."
+          )
+        }
+        if (ledger.window && ledger.window.unit_id === unit_id) delete ledger.window
         if (!data.brief || data.brief.trim().length < 20) {
           throw new Error(
             "DELEGATION REQUIRED: set_unit_status with s:'delegated' requires a 'brief' field (min 20 chars) " +
@@ -469,12 +483,21 @@ async function applyOperation(
                 ". Run preflight_check { phase, unit_id, brief, symbols, files } and copy its brief_hash."
               )
             }
-            const record = await findPreflight(receipts.preflightFile, hash, unit_id)
+            const record = await findPreflight(receipts.preflightFile, hash, unit_id, phase)
             if (!record) {
               throw new Error(
                 `PREFLIGHT RECEIPT: no passing preflight record for brief ${hash} on unit '${unit_id}' (the newest record for this brief decides; a pass on another unit does not carry). Run preflight_check on this exact brief and unit and fix what it refuses ` +
                 "(symbols missing from the spec, dead citations) before delegating."
               )
+            }
+            // 0.6.22: the contract the preflight checked must be the contract now. A claim set
+            // edited after preflight cannot ride an earlier clearance.
+            if (receipts.specPath) {
+              const { contract } = await unitContract(receipts.specPath, unit_id)
+              if (contract && record.contract_sha256 !== contract.contract_sha256) {
+                throw new Error(`PREFLIGHT RECEIPT: the spec contract for unit '${unit_id}' changed since preflight (${record.contract_sha256 ?? "none"} -> ${contract.contract_sha256}); run preflight_check again.`)
+              }
+              frozenContract = contract?.contract_sha256
             }
           } else {
             preflightNote = "PREFLIGHT: attested only. Run preflight_check before delegating so the ledger can check the brief against the spec; once it has run in this project the receipt is required."
@@ -568,6 +591,7 @@ async function applyOperation(
           ...(data.worker_id ? { worker_id: data.worker_id } : {}),
           ...(modelRank.session_id ? { session_id: modelRank.session_id, model_rank: modelRank } : {}),
           ...(data.correction ? { correction: data.correction } : {}),
+          ...(frozenContract ? { contract_sha256: frozenContract } : {}),
         })
         if (data.correction) unit.v = "pending"
         if (unit.delegations.length > 20) unit.delegations = unit.delegations.slice(-20)
@@ -671,7 +695,7 @@ async function applyOperation(
         // attempt needs an override anyway, so that is the message to send the model to.
         ensureAttemptState(unit)
         const failed = unit.epoch_failed ?? 0
-        const waived: Array<"cap" | "attempt" | "escape"> = []
+        const waived: Array<"cap" | "attempt" | "escape" | "smoke"> = []
         if (failed >= ATTEMPT_CAP && unit.cap_override_attempt !== unit.attempt_seq) {
           if (data.user_override !== true) {
             throw new Error(
@@ -750,7 +774,42 @@ async function applyOperation(
           waived.push("escape")
           unit.cap_override = { ts: new Date().toISOString(), attempt: unit.attempt_seq ?? 0, failed, waived }
         }
+        // 0.6.22 (architecture council): in a has_api phase the unit's own code path must
+        // have run against the real system for THIS attempt, on THESE bytes. The plan comes
+        // from the spec contract; the receipt's harness and input digests are recomputed
+        // here, so a smoke that ran before a later edit is stale. Sequenced last.
+        if (receipts?.specPath && ledger.phases[phase].scope?.has_api === true) {
+          const { contract, error: contractError } = await unitContract(receipts.specPath, unit_id)
+          let why: string | null = null
+          if (contractError) why = `the spec contract for this unit is invalid (${contractError})`
+          else if (!contract) why = "phase scope has_api and no foreman-contract block names this unit (claims: [] and smoke: null is the reviewed opt-out)"
+          else if (contract.contract.smoke) {
+            const plan = contract.contract.smoke
+            const newest = (unit.smokes ?? []).filter((s) => s.attempt === unit.attempt_seq && s.plan_id === plan.id).at(-1)
+            if (!newest) why = `no live_smoke run for attempt #${unit.attempt_seq} (plan '${plan.id}')`
+            else if (!newest.passed) why = `the newest live_smoke for attempt #${unit.attempt_seq} failed (${(newest.failed ?? []).join("; ")})`
+            else if (newest.contract_sha256 !== contract.contract_sha256) why = "the spec contract changed since the smoke ran"
+            else if (receipts.projectRoot) {
+              const harness = await digestPaths(receipts.projectRoot, plan.harness_files)
+              const inputs = await digestPaths(receipts.projectRoot, plan.input_files)
+              if (harness.sha256 !== newest.harness_sha256) why = "harness files changed since the smoke ran"
+              else if (inputs.sha256 !== newest.input_sha256) why = "application inputs changed since the smoke ran"
+            }
+          }
+          if (why !== null) {
+            if (data.user_override !== true) {
+              throw new Error(
+                `SMOKE REQUIRED: unit '${unit_id}' cannot pass in has_api phase '${phase}': ${why}. ` +
+                "Run live_smoke { phase, unit_id, plan_id } after the worker returns and the guard clears, or set data.user_override: true (recorded as cap_override.waived:'smoke')."
+              )
+            }
+            waived.push("smoke")
+            unit.cap_override = { ts: new Date().toISOString(), attempt: unit.attempt_seq ?? 0, failed, waived }
+          }
+        }
       }
+      // 0.6.22: any verdict releases the unit's repository window.
+      if (ledger.window && ledger.window.phase === phase && ledger.window.unit_id === unit_id) delete ledger.window
       const unit = ledger.phases[phase].units[unit_id]
       // 0.6.19: any non-pass verdict on a unit its gate still covers is a contradiction of
       // that gate (fail, pending, inconclusive alike). Recorded before the verdict lands.
@@ -1322,6 +1381,7 @@ async function applyOperation(
       if (d.outcome !== undefined) return `attempt #${data.attempt} already closed as ${d.outcome}; nothing changed`
       d.outcome = data.outcome
       d.outcome_note = data.note
+      if (ledger.window && ledger.window.phase === phase && ledger.window.unit_id === unit_id && ledger.window.attempt === data.attempt) delete ledger.window
       unit.outcomes = { ...(unit.outcomes ?? {}), [data.outcome]: (unit.outcomes?.[data.outcome] ?? 0) + 1 }
       const counts = Object.entries(unit.outcomes).map(([k, v]) => `${k}:${v}`).join(" ")
       return `attempt #${data.attempt} closed as ${data.outcome} (lifetime ${counts}); attempt ids, the failure cap and needs_attempt are unchanged`
@@ -1405,7 +1465,9 @@ export async function writeLedger(
   host: HostId = "claude-code",
   modelRank: ModelRank = resolveModelRank(),
   /** 0.6.19: receipts file; derived from the ledger path when absent, disabled with null. */
-  receiptsPath?: string | null
+  receiptsPath?: string | null,
+  /** 0.6.22: the server's spec path and project root for the contract and smoke gates; absent on paths without a contract. */
+  context?: { specPath?: string; projectRoot?: string }
 ): Promise<LedgerWriteResult> {
   return withLedgerLock(filePath, async () => {
     const read = await readLedgerWithStatus(filePath)
@@ -1413,7 +1475,7 @@ export async function writeLedger(
     const receiptsFile = receiptsPath === undefined ? receiptsPathFor(filePath) : receiptsPath
     const receipts: ReceiptsAccess | undefined = receiptsFile === null
       ? undefined
-      : { read: () => readReceipts(receiptsFile), consumed: [], preflightFile: preflightPathFor(filePath) }
+      : { read: () => readReceipts(receiptsFile), consumed: [], preflightFile: preflightPathFor(filePath), ...(context ?? {}) }
 
     // Default-on enforcement: derive the sidecar reader from the ledger path when the
     // caller does not inject one (tests inject a fake). The sidecar lives alongside the
@@ -1458,7 +1520,7 @@ export async function recordRepoGuard(
   filePath: string,
   phase: string,
   unitId: string,
-  patch: DelegationGuard | { result: "ok" | "violation"; violations?: string[] }
+  patch: DelegationGuard | { result: "ok" | "violation"; violations?: string[]; baseline_hash?: string }
 ): Promise<{ attempt: number; reopened: boolean }> {
   return withLedgerLock(filePath, async () => {
     const read = await readLedgerWithStatus(filePath)
@@ -1494,6 +1556,14 @@ export async function recordRepoGuard(
           throw new Error("RANK CORRECTION: the new guard must preserve the previous repository root and frozen authorized file set.")
         }
       }
+      // 0.6.22: acquire the repository window. Another unit's open window refuses the baseline.
+      if (ledger.window && (ledger.window.phase !== phase || ledger.window.unit_id !== unitId || ledger.window.attempt !== latest.attempt)) {
+        throw new Error(
+          `WINDOW BUSY: unit '${ledger.window.unit_id}' in phase '${ledger.window.phase}' holds the repository window (attempt #${ledger.window.attempt}, ${ledger.window.stage}); ` +
+          "record its verdict or close its attempt before another editing worker starts."
+        )
+      }
+      ledger.window = { root: patch.snapshot.root, phase, unit_id: unitId, attempt: latest.attempt, stage: "editing", opened_ts: new Date().toISOString() }
       latest.guard = patch
     } else {
       if (!latest.guard) {
@@ -1502,7 +1572,19 @@ export async function recordRepoGuard(
           "Take repo_guard { operation: 'snapshot' } before the worker runs; a comparison with no baseline proves nothing."
         )
       }
-      latest.guard = { ...latest.guard, ...patch, checked_ts: new Date().toISOString() }
+      // 0.6.22: a comparison binds to the baseline it was taken against. A long comparison
+      // that lands after a newer attempt's baseline cannot migrate onto that attempt.
+      if (patch.baseline_hash !== undefined && patch.baseline_hash !== latest.guard.snapshot.hash) {
+        throw new Error(
+          `GUARD BLOCKED: this comparison was taken against baseline ${patch.baseline_hash} but unit '${unitId}' attempt #${latest.attempt} holds baseline ${latest.guard.snapshot.hash}; ` +
+          "the attempt advanced during the comparison. Compare again against the current baseline."
+        )
+      }
+      const { baseline_hash: _bound, ...guardPatch } = patch
+      latest.guard = { ...latest.guard, ...guardPatch, checked_ts: new Date().toISOString() }
+      if (patch.result === "ok" && ledger.window && ledger.window.phase === phase && ledger.window.unit_id === unitId && ledger.window.attempt === latest.attempt) {
+        ledger.window.stage = "validation"
+      }
       // A violation found after the unit already passed reopens it, the same way a
       // rejection does (v0.6.0). A standing pass must not outlive its own guard.
       if (patch.result === "violation" && unit.v === "pass") {
@@ -1558,3 +1640,17 @@ export async function recordProbe(filePath: string, phase: string, unitId: strin
   })
 }
 export type { ProbeRecord }
+
+/** Record a live_smoke run on a unit (0.6.22). Server-authored; newest last, ≤10. */
+export async function recordSmoke(filePath: string, phase: string, unitId: string, receipt: SmokeReceipt): Promise<void> {
+  return withLedgerLock(filePath, async () => {
+    const read = await readLedgerWithStatus(filePath)
+    const ledger = read.ledger
+    const unit = ledger.phases[phase]?.units[unitId]
+    if (!unit) throw new Error(`SMOKE BLOCKED: unit '${unitId}' is not registered in phase '${phase}'.`)
+    unit.smokes = [...(unit.smokes ?? []), receipt].slice(-10)
+    ledger.ts = new Date().toISOString()
+    await atomicWriteFile(filePath, JSON.stringify(ledger), { scrub })
+  })
+}
+export type { SmokeReceipt }

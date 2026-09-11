@@ -47,6 +47,7 @@ Where the shapes are. Hosts clip tool descriptions at about 2,000 characters, so
 | Tool | Spawns | Notes |
 |---|---|---|
 | `run_tests` | One runner from the allowlist: `npm`, `pytest`, `go`, `cargo`, `dotnet`, `make`, `gradle`, `gradlew`, `gofmt`, `golangci-lint`; extend with `FOREMAN_TEST_ALLOWLIST`; `npx` is never allowed | No shell. Windows `.cmd` shims and Gradle wrappers are resolved directly. `passed` is exit code 0; list-style checkers such as `gofmt -l` exit 0 and print the files needing work, so pass `fail_on_stdout: true` for those. Output is capped per stream (default 8000 characters, max 50000) and truncation keeps the tail. `strip_patterns` drops lines matching up to 10 regexes before the cap; `tail_lines` keeps the last N lines. Default timeout 60 s, max 600 s |
+| `live_smoke` | The smoke plan registered in the unit's `foreman-contract` block, through `run_tests` (same allowlist, no shell) in the plan's cwd | The call carries `plan_id` only; command, cwd, environment names, harness files and application inputs come from the spec. Refuses when a named environment variable is unset or a harness file is missing. Records a receipt bound to the attempt, the contract digest, a harness digest and an input digest; `set_verdict pass` in a `has_api` phase recomputes the digests and requires a current passing receipt |
 | `capability_check` | The advisor CLI's version and health commands | Returns `ok`, `not_found`, `not_trusted`, `auth_expired`, `probe_timeout`, `model_substituted`, or `error`, with a one-line hint. For gemini it also reports `model_requested` and `model_served` from the run stats |
 | `invoke_advisor` | `claude`, `codex`, or `gemini` CLI with the prompt on stdin | The CLI's own login and network. On success, stderr is dropped unless stdout was truncated; failures keep it. Exit 0 with empty stdout, or stdout equal to the prompt, is reported as `completion: failed` with the reason and the stderr tail. Gemini answers in JSON and Codex echoes its model in a header; the meta block names `model_requested` and `model_served` (plus `reasoning_effort` for Codex), and a served model other than the pinned one, `gemini-3.1-pro-preview` or `gpt-6-astra` at `xhigh`, is `completion: failed` with `model_substituted` |
 
@@ -57,7 +58,9 @@ Where the shapes are. Hosts clip tool descriptions at about 2,000 characters, so
 | `invoke_worker` | The brief and the listed files' contents | The OpenAI-compatible endpoint named in `.foremanenv` for the requested tier. Configured secret values are blocked from the payload |
 | `invoke_council` | One evidence packet plus one lens card per seat | The remote review seats configured in `.foremanenv` or `~/.foreman-mcp/.env`. Optional Langfuse tracing sends review metadata, and content only when `FOREMAN_LANGFUSE_CONTENT` allows it |
 
-Both refuse to run while `.foremanenv` is tracked or not ignored. `invoke_worker` is marked EXPERIMENTAL in its description; both carry `openWorldHint: true`.
+| `contract_probe` | One GET or HEAD, headers resolved from `${ENV:NAME}` tokens whose values are never printed or stored | In claim mode (`claim_id`) the URL and assertions come from the unit's `foreman-contract` block in the spec; in diagnostic mode (`url`) from the call, recorded `diagnostic` and never satisfying a claim. Follows no redirects. Streams the body under a 4 MB cap; an incomplete capture fails every body assertion. Records origin and path, status, bytes and body hash on the unit |
+
+`invoke_worker` and `invoke_council` refuse to run while `.foremanenv` is tracked or not ignored. `invoke_worker` is marked EXPERIMENTAL in its description; both carry `openWorldHint: true`.
 
 ## Open a listener
 

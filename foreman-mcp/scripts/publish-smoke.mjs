@@ -81,6 +81,7 @@ export const EXPECTED_TOOLS = [
   "phase_ownership",
   "contract_probe",
   "worker_status",
+  "live_smoke",
 ]
 
 const JSONRPC_TIMEOUT_MS = 60_000

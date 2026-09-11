@@ -22,14 +22,14 @@ afterEach(async () => {
   await server?.close()
 })
 
-describe("list tools — verify all 33 present, update_bundle absent", () => {
+describe("list tools — verify all 34 present, update_bundle absent", () => {
   beforeEach(async () => {
     await setupServer()
   })
 
-  it("lists exactly 33 tools", async () => {
+  it("lists exactly 34 tools", async () => {
     const result = await client.listTools()
-    expect(result.tools).toHaveLength(33)
+    expect(result.tools).toHaveLength(34)
   })
 
   it("includes all required tool names", async () => {
@@ -182,7 +182,7 @@ describe("Codex-only tool registration", () => {
   it("registers codex_agents_init only for the codex host", async () => {
     const result = await client.listTools()
     const tool = result.tools.find((entry) => entry.name === "codex_agents_init")
-    expect(result.tools).toHaveLength(33)
+    expect(result.tools).toHaveLength(34)
     expect(tool).toBeDefined()
     expect(tool?.annotations?.title).toBe("Init Codex Agent Roles")
     expect(tool?.annotations?.readOnlyHint).toBe(false)

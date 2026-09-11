@@ -136,6 +136,8 @@ export interface Delegation {
   /** 0.6.21: how this attempt ended. `rejected` is server-authored from a rejection or fail verdict; the rest are closed by close_attempt. Never affects attempt ids, counters or the cap. */
   outcome?: AttemptOutcome
   outcome_note?: string
+  /** 0.6.22: the spec contract digest frozen at delegation; the smoke gate compares against it. */
+  contract_sha256?: string
 }
 
 export type AttemptOutcome = "delivered" | "blocked" | "rejected" | "validation_only"
@@ -201,7 +203,7 @@ export interface Unit {
   /** Direct fixes recorded as attempts, newest last, capped at 20. */
   direct_fixes?: DirectFix[]
   /** A pass verdict that waived ATTEMPT REQUIRED or the cap through data.user_override. */
-  cap_override?: { ts: string; attempt: number; failed: number; waived: Array<"cap" | "attempt" | "escape"> }
+  cap_override?: { ts: string; attempt: number; failed: number; waived: Array<"cap" | "attempt" | "escape" | "smoke"> }
   /** Owner grants for attempts past the cap, newest last, capped at 20. Enforcement reads the newest only. */
   cap_grants?: CapGrant[]
   /** 0.6.20: the latest verify_oracle run on this unit. Server-authored. */
@@ -210,6 +212,8 @@ export interface Unit {
   outcomes?: Partial<Record<AttemptOutcome, number>>
   /** 0.6.21: server-executed contract probes, newest last, ≤10. */
   probes?: ProbeRecord[]
+  /** 0.6.22: live_smoke runs, newest last, ≤10. */
+  smokes?: SmokeReceipt[]
 }
 
 export interface ProbeRecord {
@@ -225,6 +229,40 @@ export interface ProbeRecord {
   failed?: string[]
   /** Environment variable NAMES the request used; never values. */
   credentials?: string[]
+  /** 0.6.22: false when the body exceeded the capture cap; no body assertion passes against a prefix. */
+  capture_complete?: boolean
+  /** 0.6.22: set in claim mode; the request and assertions came from this claim in the spec contract. */
+  claim_id?: string
+  contract_sha256?: string
+  /** 0.6.22: an exploratory probe; never satisfies a claim. */
+  diagnostic?: true
+}
+
+/** 0.6.22: one live_smoke run. Server-authored; the verdict gate reads the newest for the current attempt. */
+export interface SmokeReceipt {
+  run_id: string
+  ts: string
+  attempt: number
+  plan_id: string
+  contract_sha256: string
+  harness_sha256: string
+  input_sha256: string
+  exit_code: number | null
+  timed_out: boolean
+  stdout_sha256: string
+  observations: string[]
+  passed: boolean
+  failed?: string[]
+}
+
+/** 0.6.22: the one repository window per root; absent means idle. */
+export interface RepoWindow {
+  root: string
+  phase: string
+  unit_id: string
+  attempt: number
+  stage: "editing" | "validation"
+  opened_ts: string
 }
 
 /** A single classified review finding. Shared with normalize_review output. */
@@ -424,6 +462,8 @@ export interface LedgerFile {
   ccr_stats?: Record<string, { calls: number; tokens_before: number; tokens_after: number }>
   /** 0.6.19: consecutive weak-basis counted gate passes since the last receipted cross-vendor pass; phases ≤ STREAK_MAX + 1. */
   independence?: { streak: number; phases: string[] }
+  /** 0.6.22: the repository window; one per root, acquired at snapshot, validation after a clean compare, released at verdict. */
+  window?: RepoWindow
 }
 
 // ─── Zod Schemas for MCP Tool Input Validation ───────────────────────────────

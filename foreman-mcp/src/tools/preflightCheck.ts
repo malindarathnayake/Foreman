@@ -23,6 +23,7 @@ import {
 } from "../lib/preflight.js"
 import { toKeyValue, toTable } from "../lib/toon.js"
 import { readLedgerWithStatus } from "../lib/ledger.js"
+import { unitContract } from "../lib/specContract.js"
 
 export const PreflightCheckInputSchema = z.object({
   phase: z.string().max(10000),
@@ -78,19 +79,42 @@ export function extractDirective(spec: string, unitId: string): string | null {
   return out.join("\n").trim()
 }
 
-export async function preflightCheck(raw: PreflightCheckInput, preflightFile: string, ledgerPath?: string): Promise<string> {
+export async function preflightCheck(raw: PreflightCheckInput, preflightFile: string, ledgerPath?: string, specPath?: string): Promise<string> {
   const input = PreflightCheckInputSchema.parse(raw)
   const root = path.resolve(input.repo_root ?? process.cwd())
-  // 0.6.21: in a phase whose scope declares has_api (set once from the spec, never by the
-  // caller of this tool), a unit needs a passing server-executed contract_probe before its
-  // brief can pass preflight. Codex review 2026-09-10: a caller-chosen flag was bypassable.
+  // 0.6.22 (architecture council): in a phase whose scope declares has_api, every claim the
+  // unit registers in the spec's foreman-contract block needs a passing CLAIM-MODE probe
+  // whose contract digest is current; the newest run per claim decides. The contract comes
+  // from the server's spec path, never from this call's spec_path or directive.
   let probeRequired = false
-  let probePassed = false
+  let contractStatus = "not required (phase scope has_api is not set)"
+  let contractMet = true
+  let contractSha: string | undefined
   if (ledgerPath) {
     const { ledger } = await readLedgerWithStatus(ledgerPath, { readOnly: true })
     const phase = ledger.phases[input.phase]
     probeRequired = phase?.scope?.has_api === true
-    probePassed = (phase?.units[input.unit_id]?.probes ?? []).some((p) => p.passed)
+    if (probeRequired) {
+      const { contract, error } = specPath ? await unitContract(specPath, input.unit_id) : { contract: null, error: null }
+      if (error) {
+        contractMet = false
+        contractStatus = `REQUIRED: the foreman-contract block for this unit is invalid (${error})`
+      } else if (!contract) {
+        contractMet = false
+        contractStatus = "REQUIRED: phase scope has_api and no foreman-contract block names this unit (claims: [] and smoke: null is the reviewed opt-out)"
+      } else {
+        contractSha = contract.contract_sha256
+        const probes = phase?.units[input.unit_id]?.probes ?? []
+        const unmet = contract.contract.claims.filter((c) => {
+          const newest = probes.filter((p) => p.claim_id === c.id && p.contract_sha256 === contract.contract_sha256).at(-1)
+          return !newest || !newest.passed
+        }).map((c) => c.id)
+        contractMet = unmet.length === 0
+        contractStatus = contractMet
+          ? `satisfied (${contract.contract.claims.length} claim(s), smoke ${contract.contract.smoke ? `'${contract.contract.smoke.id}'` : "null"})`
+          : `REQUIRED: claims without a passing claim-mode probe under the current contract: ${unmet.join(", ")} (run contract_probe { claim_id })`
+      }
+    }
   }
   const specRel = input.spec_path ?? "Docs/spec.md"
   let spec = ""
@@ -114,13 +138,14 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
   const drifted = cites.filter((c) => c.status === "drifted")
   const ownership = await ownershipSweep(root, input.type_names, input.introduces, input.files)
 
-  const probeMissing = probeRequired && !probePassed
+  const probeMissing = probeRequired && !contractMet
   const status: "pass" | "fail" = missing.length === 0 && dead.length === 0 && !probeMissing ? "pass" : "fail"
   const hash = briefHash(input.brief)
   const record: PreflightRecord = {
     v: PREFLIGHT_POLICY_VERSION, ts: new Date().toISOString(), phase: input.phase, unit_id: input.unit_id, brief_hash: hash, status,
     symbols: input.symbols.length, coverage_ratio: Number(coverage.ratio.toFixed(2)), uncovered: coverage.uncovered.length,
     flags: flags.length, dead_citations: dead.length, ownership_outside: ownership.outside.length,
+    ...(contractSha !== undefined ? { contract_sha256: contractSha } : {}),
   }
   await appendPreflight(preflightFile, record)
 
@@ -130,7 +155,7 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
     brief_hash: hash,
     symbols_missing_from_spec: missing.join(",") || "none",
     dead_citations: dead.length,
-    contract_probe: probeRequired ? (probePassed ? "passed (unit.probes)" : "REQUIRED: phase scope has_api and no passing contract_probe on this unit") : "not required (phase scope has_api is not set)",
+    contract: contractStatus,
     drifted_citations: drifted.length,
     directive_sentences: coverage.sentences,
     uncovered_sentences: coverage.uncovered.length,
@@ -140,7 +165,7 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
     ownership_scanned: `${ownership.scanned}${ownership.truncated ? " (truncated)" : ""}`,
     next: status === "pass"
       ? "Record the delegation with preflight: { receipt: brief_hash, symbols_grepped: <the array>, self_consistent: true } after reading the advisories below; the ledger checks the receipt against this record."
-      : "Fix the brief (missing symbols, dead citations" + (probeMissing ? ", run contract_probe against the real endpoint first" : "") + ") and run preflight_check again; the ledger refuses a delegation without a passing record for the brief it carries.",
+      : "Fix the brief (missing symbols, dead citations" + (probeMissing ? "; register the unit's foreman-contract block and run contract_probe for each claim" : "") + ") and run preflight_check again; the ledger refuses a delegation without a passing record for the brief it carries.",
   })
   const sections: string[] = [head]
   if (missing.length) sections.push(`\nSYMBOLS NOT IN SPEC\n${missing.map((s) => `- ${s}`).join("\n")}`)

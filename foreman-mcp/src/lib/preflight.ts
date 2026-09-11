@@ -16,8 +16,9 @@
 import fs from "fs/promises"
 import path from "path"
 import { createHash } from "crypto"
+import { PREFLIGHT_FILE } from "./foremanFiles.js"
 
-export const PREFLIGHT_FILE = ".foreman-preflight.jsonl"
+export { PREFLIGHT_FILE }
 export const PREFLIGHT_POLICY_VERSION = 1 as const
 const SIGNIFICANT_MIN = 4
 const COVER_RATIO = 0.5
@@ -331,6 +332,8 @@ export interface PreflightRecord {
   flags: number
   dead_citations: number
   ownership_outside: number
+  /** 0.6.22: the unit's spec contract digest at preflight time; the delegation refuses when the contract moved. */
+  contract_sha256?: string
 }
 
 export function preflightPathFor(ledgerPath: string): string {
@@ -347,7 +350,7 @@ export async function appendPreflight(filePath: string, record: PreflightRecord)
  * pass), and when a unit is named only that unit's records count: a pass obtained on
  * another unit, or before a stronger check, cannot be replayed (Codex review, 2026-09-10).
  */
-export async function findPreflight(filePath: string, briefHashValue: string, unitId?: string): Promise<PreflightRecord | null> {
+export async function findPreflight(filePath: string, briefHashValue: string, unitId?: string, phase?: string): Promise<PreflightRecord | null> {
   let raw: string
   try {
     raw = await fs.readFile(filePath, "utf-8")
@@ -362,6 +365,7 @@ export async function findPreflight(filePath: string, briefHashValue: string, un
       const rec = JSON.parse(line) as PreflightRecord
       if (rec.brief_hash !== briefHashValue) continue
       if (unitId !== undefined && rec.unit_id !== unitId) continue
+      if (phase !== undefined && rec.phase !== phase) continue
       newest = rec
     } catch {
       continue

@@ -163,6 +163,7 @@ export async function handleRepoGuard(
   const { attempt, reopened } = await recordRepoGuard(paths.ledgerPath, phase, unit_id, {
     result,
     violations: violations.slice(0, 20).map((v) => v.slice(0, 400)),
+    baseline_hash: before.snapshot.hash,
   })
 
   const head = toKeyValue({

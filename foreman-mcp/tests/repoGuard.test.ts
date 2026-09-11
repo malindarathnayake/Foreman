@@ -585,7 +585,7 @@ describe("Foreman's own writes are excluded from one shared list", () => {
 
   it("T11b: the snapshot reports how many Foreman paths the exclusion covers, and says so when none do", async () => {
     const text = await docsBaseline()
-    expect(text).toContain("foreman_files: 7")
+    expect(text).toContain("foreman_files: 8")
     expect(text).toContain("changed_paths: 0")
     expect(text).not.toContain("note:")
 
@@ -621,7 +621,7 @@ describe("Foreman's own writes are excluded from one shared list", () => {
           journalPath: path.join(spelled, "Docs", ".foreman-journal.json"), docsDir: path.join(spelled, "Docs"),
         }
         const snap = await docsBaseline(paths)
-        expect(snap, spelled).toContain("foreman_files: 7")
+        expect(snap, spelled).toContain("foreman_files: 8")
         await foremanWritesProgress(paths)
         const text = await docsGuard("compare", {}, paths)
         expect(status(text), `${spelled}\n${text}`).toBe("status: ok")

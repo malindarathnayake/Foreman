@@ -16,7 +16,7 @@ first tool call.
 
 ## 1. Public tool surface (contract)
 
-Tool count: 33
+Tool count: 34
 
 - bundle_status — Returns the Foreman bundle version and override info.
 - host_status — Returns the active Foreman host and the model slugs used for worker/advisor invocation.
@@ -33,7 +33,8 @@ Tool count: 33
 - claude_workflows_init — Claude Code host only. Installs Foreman's saved Workflow scripts (checkpoint review fan, design panel, field-report triage) into the project's `.claude/workflows/`; a workflow review is same-model perspective recorded as `fan`, never a gate seat.
 - preflight_check — Checks a worker brief against the spec before the attempt is spent: symbols must appear in the spec, citations must resolve in the repo; directive omissions, contradiction markers and out-of-set references are reported. Returns the brief_hash the ledger requires on the delegation.
 - phase_ownership — Runs the ownership sweep once for every unit in a phase, each against its own Files column, and assigns every outside reference to an owning unit or UNASSIGNED. Advisory and lexical; re-run after each unit lands.
-- contract_probe — Sends a GET or HEAD to a real endpoint from Foreman's own HTTP client and records status, bytes, body hash and the assertions evaluated on the unit; a 200 with zero rows fails a json_nonempty_path assertion. Required by preflight_check in a phase whose scope declares has_api.
+- contract_probe — Sends a GET or HEAD from Foreman's own HTTP client. Claim mode takes a claim_id and loads the request and assertions from the unit's foreman-contract block in the spec; the record carries the claim id and the contract digest. Diagnostic mode takes a url and never satisfies a claim. Capture streams under a 4 MB cap; an incomplete capture fails every body assertion. In a has_api phase preflight_check requires a passing claim-mode probe for every registered claim under the current contract digest.
+- live_smoke — Runs the smoke plan registered in the unit's foreman-contract block (plan_id only: command, cwd, env names, harness files and application inputs come from the spec) through the project's runner and records a receipt bound to the attempt, the contract digest, a harness digest and an input digest. set_verdict pass in a has_api phase requires a passing smoke for the current attempt whose digests still match; a newer failed run supersedes a pass.
 - worker_status — Reads the worker heartbeat file and reports last heartbeat age and files touched, keyed on the unit's current attempt. Advisory; never clears, rejects or terminates an attempt.
 - verify_oracle — Mutation probe: applies each mutation, runs the guard test, restores by hash; reports killed, survived (the suite cannot observe that control) and invalid, recorded on the unit.
 - invoke_council — EXPERIMENTAL (egress: sends the review evidence packet to your configured HTTP endpoint). Convenes an adaptive review council of remote read-only seats across risk lenses, returns structured findings for the host to moderate and the user to arbitrate. Entirely optional: with no seats configured it returns `status: unavailable` and Foreman proceeds on its normal advisor flow.

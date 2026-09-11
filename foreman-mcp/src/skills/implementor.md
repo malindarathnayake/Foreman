@@ -103,6 +103,7 @@ Runs AFTER drafting the brief, BEFORE invoking the host's worker mechanism. Its 
 5. **If any contradiction or omission found: revise the brief before spawning.** Worker tests validate the brief, not the spec — they cannot catch spec/brief drift.
 6. **Brief self-consistency:** every test expectation in the brief (asserted status, value, error, log key) must be consistent with the brief's own implementation instruction, AFTER pattern, and the spec's error-handling row — a brief that tells the worker to return 400 and to assert 404 is a brief defect, not a worker defect.
 7. **Telemetry names (units that emit signals):** list every CUSTOM log/metric field the brief introduces and check it against the active stack profile's reserved-name rule (`ethos` telemetry section); core fields are exempt. If the stack profile resolved by fallback or the transport is unstated, log SPEC_AMB and ask — never lint against the reference backend by guess.
+8. **Contract claims (phase scope `has_api`):** the unit's `foreman-contract` block in `spec.md` registers its claims and smoke plan; run `mcp__foreman__contract_probe({ phase, unit_id, claim_id })` for every claim before `preflight_check`, which refuses until each has a passing claim-mode probe under the current block (a url-mode probe is diagnostic and never counts; no block is a refusal, `claims: [], smoke: null` is the reviewed opt-out). A failing claim is a spec or reality gap to settle by the Probe check, never a reason to edit the block into passing.
 
 Anti-pattern: *"I read Unit X's directive section carefully."* The spec is a graph, not a list. Every symbol has a cross-reference footprint across multiple sections (data model, error handling, phase directives, decisions table). Grep first.
 
@@ -144,7 +145,7 @@ After worker returns, pit-boss validates independently — do not trust worker's
 
 ### Step 7: Verdict
 
-**ACCEPT** — required ledger sequence per unit is `ip` → `delegated` (Step 5) → `pass`; the ledger rejects a pass verdict without prior delegation:
+**ACCEPT** — required ledger sequence per unit is `ip` → `delegated` (Step 5) → `pass`; the ledger rejects a pass verdict without prior delegation. In a `has_api` phase run `mcp__foreman__live_smoke({ phase, unit_id, plan_id })` after the guard compare and the suite, before the verdict: Foreman runs the plan registered in the unit's block through the real runner against the real system and records a receipt; `set_verdict pass` refuses (`SMOKE REQUIRED`) without a passing smoke for this attempt whose harness and input digests still match, so any edit after the smoke means another run. A green suite, killed mutations and a clean guard do not prove one real request completed; the smoke does.
 ```
 mcp__foreman__write_ledger({ operation: "set_unit_status", phase, unit_id, data: { s: "ip" } })   // when starting (Step 1)
 // s:'delegated' with brief was recorded in Step 5, before spawning the worker

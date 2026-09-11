@@ -13,7 +13,7 @@ import { softLimitWarning } from "../lib/softLimits.js"
  * Validates input with Zod schema, delegates to lib/ledger.ts,
  * returns TOON key/value confirmation.
  */
-export async function handleWriteLedger(filePath: string, rawInput: unknown, host: HostId = "claude-code", modelRank: ModelRank = resolveModelRank()): Promise<string> {
+export async function handleWriteLedger(filePath: string, rawInput: unknown, host: HostId = "claude-code", modelRank: ModelRank = resolveModelRank(), context?: { specPath?: string; projectRoot?: string }): Promise<string> {
   let parsed: WriteLedgerInput
   try {
     parsed = WriteLedgerInputSchema.parse(rawInput)
@@ -23,7 +23,7 @@ export async function handleWriteLedger(filePath: string, rawInput: unknown, hos
   }
   // 0.6.20: soft-limited fields the schema cut are reported, never refused.
   const truncated = softLimitWarning(rawInput, parsed, LedgerSoftLimits[parsed.operation] ?? [])
-  const { ledger, warning } = await writeLedger(filePath, parsed, foldCcrStats, undefined, host, modelRank)
+  const { ledger, warning } = await writeLedger(filePath, parsed, foldCcrStats, undefined, host, modelRank, undefined, context)
 
   // Return confirmation with key details
   const result: Record<string, string> = {

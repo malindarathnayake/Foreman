@@ -164,54 +164,65 @@ describe("phase ownership", () => {
 })
 
 describe("contract probe", () => {
-  const fakeFetch = (status: number, body: string) => (async () => ({ status, text: async () => body })) as unknown as typeof fetch
+  const fakeFetch = (status: number, body: string) => (async () => ({ status, text: async () => body, body: null })) as unknown as typeof fetch
   const input = (extra: Record<string, unknown> = {}) => ({ phase: "p1", unit_id: "u1", url: "https://api.example.test/v1/zones?token=SECRET&id=7", ...extra })
+  const BLOCK = "\n```foreman-contract\n" + JSON.stringify({ unit: "u1", claims: [{ id: "C-zones", text: "The zones endpoint lists the account's zones.", request: { url: "https://api.example.test/v1/zones", headers: { authorization: "Bearer ${ENV:FOREMAN_TEST_PROBE_TOKEN}" } }, assertions: { json_nonempty_path: "result" } }], smoke: null }) + "\n```\n"
 
   it("evaluate: 2xx by default, and a 200 with zero rows fails a json_nonempty_path assertion", () => {
-    const base = ContractProbeInputSchema.parse(input())
+    const base = ContractProbeInputSchema.parse(input()).expect
     expect(evaluate(base, 200, "{\"result\":[1]}")).toEqual([])
     expect(evaluate(base, 403, "")).toEqual(["status 403 (expected 2xx)"])
-    const rows = ContractProbeInputSchema.parse(input({ expect: { json_nonempty_path: "result", min_bytes: 5, contains: "result" } }))
+    const rows = ContractProbeInputSchema.parse(input({ expect: { json_nonempty_path: "result", min_bytes: 5, contains: "result" } })).expect
     expect(evaluate(rows, 200, "{\"result\":[]}")).toEqual([expect.stringContaining("json path result is empty")])
     expect(evaluate(rows, 200, "{\"result\":[{\"a\":1}]}")).toEqual([])
   })
-  it("executes the request itself, records origin+path only, never the credential, and preflight demands a pass in a has_api phase", async () => {
+  it("executes the request itself, records origin+path only, never the credential; only a claim-mode pass satisfies preflight in a has_api phase (0.6.22)", async () => {
     await write({ operation: "set_phase_scope", phase: "p1", data: { has_tests: true, has_api: true, has_build: true } })
     await write(delegated())
     process.env.FOREMAN_TEST_PROBE_TOKEN = "hunter2"
+    const specPath = path.join(dir, "Docs", "spec.md")
     try {
-      const failed = await contractProbe(input({ headers: { authorization: "Bearer ${ENV:FOREMAN_TEST_PROBE_TOKEN}" }, expect: { json_nonempty_path: "result" } }), ledgerPath, fakeFetch(200, "{\"result\":[]}"))
+      const failed = await contractProbe(input({ headers: { authorization: "Bearer ${ENV:FOREMAN_TEST_PROBE_TOKEN}" }, expect: { json_nonempty_path: "result" } }), ledgerPath, undefined, fakeFetch(200, "{\"result\":[]}"))
       expect(failed).toContain("status: fail")
+      expect(failed).toContain("mode: diagnostic")
       expect(failed).toContain("target: https://api.example.test/v1/zones")
       expect(failed).not.toContain("SECRET")
       expect(failed).not.toContain("hunter2")
       expect(failed).toContain("credentials_from_env: FOREMAN_TEST_PROBE_TOKEN")
       await fs.mkdir(path.join(dir, "Docs"), { recursive: true })
-      await fs.writeFile(path.join(dir, "Docs", "spec.md"), "#### u1 — zones\n- List zones with `result`.\n")
-      const pf = await preflightCheck({ phase: "p1", unit_id: "u1", brief: "Implement the zones list using `result` from the live endpoint.", symbols: ["result"], repo_root: dir, spec_path: "Docs/spec.md" }, preflightPathFor(ledgerPath), ledgerPath)
+      await fs.writeFile(specPath, "#### u1 — zones\n- List zones with `result`.\n")
+      const pfArgs = { phase: "p1", unit_id: "u1", brief: "Implement the zones list using `result` from the live endpoint.", symbols: ["result"], repo_root: dir, spec_path: "Docs/spec.md" }
+      const pf = await preflightCheck(pfArgs, preflightPathFor(ledgerPath), ledgerPath, specPath)
       expect(pf).toContain("status: fail")
-      expect(pf).toContain("contract_probe: REQUIRED")
-      const passed = await contractProbe(input({ expect: { json_nonempty_path: "result" } }), ledgerPath, fakeFetch(200, "{\"result\":[{\"id\":7}]}"))
+      expect(pf).toContain("contract: REQUIRED: phase scope has_api and no foreman-contract block")
+      // a passing DIAGNOSTIC probe of the right URL still does not satisfy: the claim is what preflight checks
+      await fs.appendFile(specPath, BLOCK)
+      const passedDiag = await contractProbe(input({ expect: { json_nonempty_path: "result" } }), ledgerPath, specPath, fakeFetch(200, "{\"result\":[{\"id\":7}]}"))
+      expect(passedDiag).toContain("status: pass")
+      expect(await preflightCheck(pfArgs, preflightPathFor(ledgerPath), ledgerPath, specPath)).toContain("contract: REQUIRED: claims without a passing claim-mode probe under the current contract: C-zones")
+      const passed = await contractProbe({ phase: "p1", unit_id: "u1", claim_id: "C-zones" }, ledgerPath, specPath, fakeFetch(200, "{\"result\":[{\"id\":7}]}"))
       expect(passed).toContain("status: pass")
+      expect(passed).toContain("mode: claim C-zones")
       const u = await unit()
-      expect(u.probes).toHaveLength(2)
-      expect(u.probes![1]).toMatchObject({ passed: true, status: 200, target: "https://api.example.test/v1/zones" })
+      expect(u.probes).toHaveLength(3)
+      expect(u.probes![2]).toMatchObject({ passed: true, status: 200, target: "https://api.example.test/v1/zones", claim_id: "C-zones", credentials: ["FOREMAN_TEST_PROBE_TOKEN"] })
       expect(JSON.stringify(u.probes)).not.toContain("SECRET")
-      const pf2 = await preflightCheck({ phase: "p1", unit_id: "u1", brief: "Implement the zones list using `result` from the live endpoint.", symbols: ["result"], repo_root: dir, spec_path: "Docs/spec.md" }, preflightPathFor(ledgerPath), ledgerPath)
+      expect(JSON.stringify(u.probes)).not.toContain("hunter2")
+      const pf2 = await preflightCheck(pfArgs, preflightPathFor(ledgerPath), ledgerPath, specPath)
       expect(pf2).toContain("status: pass")
-      expect(pf2).toContain("contract_probe: passed")
-      expect(await handleReadLedger(ledgerPath, { phase: "p1", unit_id: "u1" })).toContain("probes: 1 passed / 2")
+      expect(pf2).toContain("contract: satisfied (1 claim(s), smoke null)")
+      expect(await handleReadLedger(ledgerPath, { phase: "p1", unit_id: "u1" })).toContain("probes: 2 passed / 3")
     } finally {
       delete process.env.FOREMAN_TEST_PROBE_TOKEN
     }
-    expect(await contractProbe(input({ headers: { authorization: "${ENV:FOREMAN_TEST_MISSING}" } }), ledgerPath, fakeFetch(200, "{}"))).toContain("credential_missing")
-    expect(await contractProbe(input(), ledgerPath, (async () => { throw new Error("ECONNREFUSED") }) as unknown as typeof fetch)).toContain("failed: transport: ECONNREFUSED")
+    expect(await contractProbe(input({ headers: { authorization: "${ENV:FOREMAN_TEST_MISSING}" } }), ledgerPath, undefined, fakeFetch(200, "{}"))).toContain("credential_missing")
+    expect(await contractProbe(input(), ledgerPath, undefined, (async () => { throw new Error("ECONNREFUSED") }) as unknown as typeof fetch)).toContain("failed: transport: ECONNREFUSED")
   })
   it("a phase without has_api does not require a probe", async () => {
     await write(delegated())
     await fs.mkdir(path.join(dir, "Docs"), { recursive: true })
     await fs.writeFile(path.join(dir, "Docs", "spec.md"), "#### u1 — zones\n- List zones with `result`.\n")
     const pf = await preflightCheck({ phase: "p1", unit_id: "u1", brief: "Implement the zones list using `result` locally.", symbols: ["result"], repo_root: dir, spec_path: "Docs/spec.md" }, preflightPathFor(ledgerPath), ledgerPath)
-    expect(pf).toContain("contract_probe: not required")
+    expect(pf).toContain("contract: not required")
   })
 })

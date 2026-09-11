@@ -60,6 +60,7 @@ import { preflightPathFor } from "./lib/preflight.js"
 import { phaseOwnership, PhaseOwnershipInputSchema } from "./tools/phaseOwnership.js"
 import { contractProbe, ContractProbeInputSchema } from "./tools/contractProbe.js"
 import { workerStatus, WorkerStatusInputSchema } from "./tools/workerStatus.js"
+import { liveSmoke, LiveSmokeInputSchema } from "./tools/liveSmoke.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -407,7 +408,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
     },
     async (args, _extra) => {
-      const text = await handleWriteLedger(ledgerPath, args, host, activeModelRank)
+      const text = await handleWriteLedger(ledgerPath, args, host, activeModelRank, { specPath: path.join(docsDir, "spec.md"), projectRoot: process.cwd() })
       return textResult(text)
     }
   )
@@ -765,7 +766,20 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       outputSchema: TextOutputSchema,
       annotations: { title: "Preflight Check", readOnlyHint: false, destructiveHint: false },
     },
-    async (args, _extra) => textResult(await preflightCheck(args, preflightPathFor(ledgerPath), ledgerPath))
+    async (args, _extra) => textResult(await preflightCheck(args, preflightPathFor(ledgerPath), ledgerPath, path.join(docsDir, "spec.md")))
+  )
+
+  // 0.6.22 (architecture council): the unit's own code path against the real system, as a receipt.
+  server.registerTool(
+    "live_smoke",
+    {
+      title: "Live Smoke",
+      description: "Runs the smoke plan registered for the unit in the spec's ```foreman-contract block (runner, args, cwd, env names, harness_files, input_files, checks) through the project's real runner, and records a receipt on the unit bound to the current attempt, the contract digest and digests of the harness and application inputs. Takes only plan_id: the command cannot be supplied at call time. In a has_api phase, set_verdict pass requires a passing smoke for the current attempt whose digests still match.",
+      inputSchema: LiveSmokeInputSchema.strict(),
+      outputSchema: TextOutputSchema,
+      annotations: { title: "Live Smoke", readOnlyHint: false, destructiveHint: false },
+    },
+    async (args, _extra) => textResult(await liveSmoke(args, ledgerPath, path.join(docsDir, "spec.md")))
   )
 
   // 0.6.21 (field report): ownership is discovered at worker time; find it once at phase start.
@@ -786,12 +800,12 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     "contract_probe",
     {
       title: "Contract Probe",
-      description: "Sends a GET or HEAD to a real endpoint from Foreman's own HTTP client and records the result on the unit: status, bytes, body hash, and the assertions evaluated (2xx by default; optional exact status, min_bytes, contains, json_nonempty_path so a 200 with zero rows fails). Header values may be ${ENV:NAME}; the value is never printed or stored. In a phase whose scope declares has_api, preflight_check refuses a brief until the unit has a passing probe. Side-effect-free by construction.",
+      description: "Claim mode { phase, unit_id, claim_id }: loads the request and assertions from the claim registered in the spec's ```foreman-contract block, sends it from Foreman's own HTTP client (GET/HEAD only) and records the result on the unit; only claim-mode probes satisfy preflight in a has_api phase. Diagnostic mode { url, expect } explores and never satisfies a claim. Assertions: status, min_bytes, contains, json_nonempty_path, json_array_length {path, exact, min, max}. Capture is capped and an over-cap body fails every body assertion. Header values may be ${ENV:NAME}; never printed or stored.",
       inputSchema: ContractProbeInputSchema.strict(),
       outputSchema: TextOutputSchema,
       annotations: { title: "Contract Probe", readOnlyHint: false, destructiveHint: false },
     },
-    async (args, _extra) => textResult(await contractProbe(args, ledgerPath))
+    async (args, _extra) => textResult(await contractProbe(args, ledgerPath, path.join(docsDir, "spec.md")))
   )
 
   // 0.6.21 (field report): a heartbeat line turns a ten-minute blind spot into a progress line.
