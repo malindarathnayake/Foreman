@@ -24,6 +24,7 @@ import { runTests } from "./runTests.js"
 import { recordSmoke, type SmokeReceipt } from "../lib/ledger.js"
 import { digestPaths, unitContract } from "../lib/specContract.js"
 import { readLedgerWithStatus } from "../lib/ledger.js"
+import { resolveNamedCredentials } from "../lib/foremanEnv.js"
 import { toKeyValue } from "../lib/toon.js"
 
 export const LiveSmokeInputSchema = z.object({
@@ -33,7 +34,12 @@ export const LiveSmokeInputSchema = z.object({
 })
 export type LiveSmokeInput = z.infer<typeof LiveSmokeInputSchema>
 
-type Runner = (runner: string, args: string[], timeoutMs: number, cwd: string) => Promise<string>
+type Runner = (runner: string, args: string[], timeoutMs: number, cwd: string, env: Record<string, string>) => Promise<string>
+
+export interface LiveSmokeOptions {
+  /** Override for `~/.foreman-mcp/.env`. Test seam. */
+  credentialsPath?: string
+}
 
 function section(output: string, name: "STDOUT" | "STDERR"): string {
   const i = output.indexOf(`\n${name}\n`)
@@ -48,7 +54,8 @@ export async function liveSmoke(
   ledgerPath: string,
   specPath: string,
   projectRoot: string = process.cwd(),
-  runner: Runner = (r, a, t, c) => runTests(r, a, t, undefined, undefined, c)
+  runner: Runner = (r, a, t, c, e) => runTests(r, a, t, undefined, undefined, c, e),
+  opts: LiveSmokeOptions = {}
 ): Promise<string> {
   const input = LiveSmokeInputSchema.parse(raw)
   const { ledger } = await readLedgerWithStatus(ledgerPath, { readOnly: true })
@@ -64,8 +71,9 @@ export async function liveSmoke(
   if (!plan) return toKeyValue({ status: "error", error: "smoke_null", hint: `unit '${input.unit_id}' declares smoke: null (reviewed: no external contract); nothing to run` })
   if (plan.id !== input.plan_id) return toKeyValue({ status: "error", error: "plan_unknown", hint: `unit '${input.unit_id}' registers smoke plan '${plan.id}', not '${input.plan_id}'` })
 
-  const missingEnv = plan.env.filter((name) => !process.env[name])
-  if (missingEnv.length) return toKeyValue({ status: "error", error: "credential_missing", env: missingEnv.join(","), hint: "set these in the server environment; values are never read into the ledger" })
+  const creds = await resolveNamedCredentials(plan.env, { credentialsPath: opts.credentialsPath })
+  if (!creds.ok) return toKeyValue({ status: "error", error: "credential_store_invalid", detail: creds.message })
+  if (creds.missing.length) return toKeyValue({ status: "error", error: "credential_missing", env: creds.missing.join(","), hint: "set these in the server environment or in ~/.foreman-mcp/.env (process env wins); values are never read into the ledger" })
 
   const harnessBefore = await digestPaths(projectRoot, plan.harness_files)
   const inputsBefore = await digestPaths(projectRoot, plan.input_files)
@@ -74,7 +82,7 @@ export async function liveSmoke(
   const cwd = path.resolve(projectRoot, plan.cwd)
   if (path.relative(projectRoot, cwd).startsWith("..")) return toKeyValue({ status: "error", error: "cwd_outside_root" })
   const started = new Date().toISOString()
-  const output = await runner(plan.runner, plan.args, plan.timeout_ms, cwd)
+  const output = await runner(plan.runner, plan.args, plan.timeout_ms, cwd, creds.values)
   const finished = new Date().toISOString()
 
   const harnessAfter = await digestPaths(projectRoot, plan.harness_files)
@@ -128,6 +136,7 @@ export async function liveSmoke(
     plan_id: plan.id,
     command: `${plan.runner} ${plan.args.join(" ")}`.slice(0, 300),
     cwd: plan.cwd,
+    credentials: plan.env.map((n) => `${n} (${creds.sources[n]})`).join(", ") || "none",
     exit_code: exitCode ?? "n/a",
     timed_out: timedOut,
     harness_sha256: receipt.harness_sha256,

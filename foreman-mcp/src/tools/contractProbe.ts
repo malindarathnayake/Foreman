@@ -19,6 +19,7 @@ import path from "path"
 import { z } from "zod"
 import { recordProbe, type ProbeRecord } from "../lib/ledger.js"
 import { ClaimAssertionsSchema, unitContract, type ClaimAssertions } from "../lib/specContract.js"
+import { resolveNamedCredentials } from "../lib/foremanEnv.js"
 import { toKeyValue } from "../lib/toon.js"
 
 export const ContractProbeInputSchema = z.object({
@@ -37,17 +38,16 @@ export type ContractProbeInput = z.infer<typeof ContractProbeInputSchema>
 
 export const MAX_CAPTURE = 4 * 1024 * 1024
 
-/** Resolve every `${ENV:NAME}` token in a header value ("Bearer ${ENV:TOKEN}" included). */
-function resolveHeader(value: string): { value: string; fromEnv: string[]; missing: string | null } {
-  const fromEnv: string[] = []
-  let missing: string | null = null
-  const resolved = value.replace(/\$\{ENV:([A-Z0-9_]+)\}/g, (_m, name: string) => {
-    fromEnv.push(name)
-    const v = process.env[name]
-    if (v === undefined || v === "") { missing ??= name; return "" }
-    return v
-  })
-  return { value: resolved, fromEnv, missing }
+const ENV_TOKEN = /\$\{ENV:([A-Z0-9_]+)\}/g
+
+/** Every `${ENV:NAME}` name a header value references ("Bearer ${ENV:TOKEN}" included). */
+function envNamesIn(value: string): string[] {
+  return [...value.matchAll(ENV_TOKEN)].map((m) => m[1])
+}
+
+export interface ContractProbeOptions {
+  /** Override for `~/.foreman-mcp/.env`. Test seam. */
+  credentialsPath?: string
 }
 
 function jsonPath(body: string, dotPath: string): unknown {
@@ -115,7 +115,7 @@ async function captureBody(res: Response): Promise<{ body: string; complete: boo
   return { body: Buffer.concat(chunks).toString("utf-8"), complete: true }
 }
 
-export async function contractProbe(raw: ContractProbeInput, ledgerPath: string, specPath?: string, fetchImpl: typeof fetch = fetch): Promise<string> {
+export async function contractProbe(raw: ContractProbeInput, ledgerPath: string, specPath?: string, fetchImpl: typeof fetch = fetch, opts: ContractProbeOptions = {}): Promise<string> {
   const input = ContractProbeInputSchema.parse(raw)
   let method = input.method
   let urlText = input.url
@@ -146,14 +146,15 @@ export async function contractProbe(raw: ContractProbeInput, ledgerPath: string,
   }
   const url = new URL(urlText)
   const target = `${url.origin}${url.pathname}`   // the query may carry ids or tokens; the record keeps origin + path only
-  const headers: Record<string, string> = {}
-  const envNames: string[] = []
-  for (const [k, v] of Object.entries(headersIn)) {
-    const r = resolveHeader(v)
-    if (r.missing) return toKeyValue({ status: "error", error: "credential_missing", env: r.missing, hint: `set ${r.missing} in the server environment; the value is never printed or stored` })
-    envNames.push(...r.fromEnv)
-    headers[k] = r.value
+  const envNames = [...new Set(Object.values(headersIn).flatMap(envNamesIn))]
+  const creds = await resolveNamedCredentials(envNames, { credentialsPath: opts.credentialsPath })
+  if (!creds.ok) return toKeyValue({ status: "error", error: "credential_store_invalid", detail: creds.message })
+  if (creds.missing.length) {
+    return toKeyValue({ status: "error", error: "credential_missing", env: creds.missing.join(","), hint: `set ${creds.missing.join(", ")} in the server environment or in ~/.foreman-mcp/.env (process env wins); the value is never printed or stored` })
   }
+  const headers: Record<string, string> = {}
+  for (const [k, v] of Object.entries(headersIn)) headers[k] = v.replace(ENV_TOKEN, (_m, name: string) => creds.values[name])
+  const credentialSources = envNames.map((n) => `${n} (${creds.sources[n]})`)
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   let status = 0
@@ -203,7 +204,7 @@ export async function contractProbe(raw: ContractProbeInput, ledgerPath: string,
     body_sha256: record.sha256,
     asserted: record.asserted.join(",") || "2xx",
     failed: failed.join("; ") || "none",
-    credentials_from_env: envNames.join(",") || "none",
+    credentials_from_env: credentialSources.join(", ") || "none",
     recorded: ledgerNote ? `no (${ledgerNote})` : "yes (unit.probes)",
     note: "Executed by Foreman's HTTP client, GET/HEAD only. Proves this target answered this request now; it does not prove the application's own transport path (that is live_smoke). A failed or diagnostic probe never satisfies a claim.",
   })

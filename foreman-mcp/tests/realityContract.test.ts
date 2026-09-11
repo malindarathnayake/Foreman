@@ -14,6 +14,7 @@ import { contractProbe, evaluate, MAX_CAPTURE } from "../src/tools/contractProbe
 import { liveSmoke } from "../src/tools/liveSmoke.js"
 import { preflightCheck } from "../src/tools/preflightCheck.js"
 import { FOREMAN_STATE_NAMES, PREFLIGHT_FILE } from "../src/lib/foremanFiles.js"
+import { resolveNamedCredentials } from "../src/lib/foremanEnv.js"
 import type { RepoSnapshot, WriteLedgerInput } from "../src/types.js"
 
 let dir: string
@@ -242,6 +243,58 @@ describe("live_smoke and the verdict gate", () => {
     await write(delegated("u1"), false)
     await write({ operation: "set_verdict", phase: "p1", unit_id: "u1", data: { v: "pass" } }, false)
     expect((await unit()).v).toBe("pass")
+  })
+})
+
+describe("credentials resolve through the home store (0.6.23)", () => {
+  // Field report: the operator populated ~/.foreman-mcp/.env, the store that exists so a variable
+  // can be defined without exporting it into every shell, and contract_probe said credential_missing.
+  const store = () => path.join(dir, "home.env")
+  const absent = () => path.join(dir, "nowhere", ".env")
+  it("resolveNamedCredentials: process env wins, the store fills the gaps, a malformed store is an error", async () => {
+    await fs.writeFile(store(), "FOREMAN_TEST_CT=from-store\nFOREMAN_TEST_OTHER=\"quoted-store\"\n")
+    const r = await resolveNamedCredentials(["FOREMAN_TEST_CT", "FOREMAN_TEST_OTHER", "FOREMAN_TEST_NONE"], { credentialsPath: store(), env: { FOREMAN_TEST_CT: "from-process" } })
+    expect(r).toEqual({ ok: true, values: { FOREMAN_TEST_CT: "from-process", FOREMAN_TEST_OTHER: "quoted-store" }, sources: { FOREMAN_TEST_CT: "process", FOREMAN_TEST_OTHER: "store" }, missing: ["FOREMAN_TEST_NONE"] })
+    expect(await resolveNamedCredentials(["X"], { credentialsPath: absent(), env: {} })).toEqual({ ok: true, values: {}, sources: {}, missing: ["X"] })
+    await fs.writeFile(store(), "not a valid line\n")
+    expect((await resolveNamedCredentials(["X"], { credentialsPath: store(), env: {} })).ok).toBe(false)
+  })
+  it("contract_probe sends a header resolved from the store, names the source, and never prints the value", async () => {
+    delete process.env.FOREMAN_TEST_CT
+    await write(scope())
+    await write(delegated())
+    let sent: Record<string, string> | undefined
+    const capturing = (async (_u: unknown, init: RequestInit) => { sent = init.headers as Record<string, string>; return { status: 200, text: async () => "{\"result\":[1]}", body: null } }) as unknown as typeof fetch
+    const miss = await contractProbe({ phase: "p1", unit_id: "u1", claim_id: "C-zones" }, ledgerPath, specPath, capturing, { credentialsPath: absent() })
+    expect(miss).toContain("credential_missing")
+    expect(miss).toContain("~/.foreman-mcp/.env")
+    await fs.writeFile(store(), "FOREMAN_TEST_CT=store-secret-value\n")
+    const text = await contractProbe({ phase: "p1", unit_id: "u1", claim_id: "C-zones" }, ledgerPath, specPath, capturing, { credentialsPath: store() })
+    expect(text).toContain("status: pass")
+    expect(text).toContain("credentials_from_env: FOREMAN_TEST_CT (store)")
+    expect(text).not.toContain("store-secret-value")
+    expect(sent?.authorization).toBe("Bearer store-secret-value")
+    expect(JSON.stringify(await unit())).not.toContain("store-secret-value")
+    process.env.FOREMAN_TEST_CT = "process-wins"
+    await contractProbe({ phase: "p1", unit_id: "u1", claim_id: "C-zones" }, ledgerPath, specPath, capturing, { credentialsPath: store() })
+    expect(sent?.authorization).toBe("Bearer process-wins")
+    await fs.writeFile(store(), "garbage line\n")
+    expect(await contractProbe({ phase: "p1", unit_id: "u1", claim_id: "C-zones" }, ledgerPath, specPath, capturing, { credentialsPath: store() })).toContain("credential_store_invalid")
+  })
+  it("live_smoke hands the plan's variables from the store to the runner's child environment", async () => {
+    delete process.env.FOREMAN_TEST_CT
+    await write(scope())
+    await write(delegated())
+    let seen: Record<string, string> | undefined
+    const runner = async (_r: string, _a: string[], _t: number, _c: string, env: Record<string, string>) => { seen = env; return "exit_code: 0\npassed: true\ntimed_out: false\nSTDOUT\nok\n" }
+    expect(await liveSmoke({ phase: "p1", unit_id: "u1", plan_id: "fetch-live" }, ledgerPath, specPath, dir, runner, { credentialsPath: absent() })).toContain("credential_missing")
+    await fs.writeFile(store(), "FOREMAN_TEST_CT=store-secret-value\n")
+    const text = await liveSmoke({ phase: "p1", unit_id: "u1", plan_id: "fetch-live" }, ledgerPath, specPath, dir, runner, { credentialsPath: store() })
+    expect(text).toContain("status: pass")
+    expect(text).toContain("credentials: FOREMAN_TEST_CT (store)")
+    expect(text).not.toContain("store-secret-value")
+    expect(seen).toEqual({ FOREMAN_TEST_CT: "store-secret-value" })
+    expect(JSON.stringify(await unit())).not.toContain("store-secret-value")
   })
 })
 

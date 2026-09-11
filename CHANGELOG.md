@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.6.23 - 2026-09-10
+
+Field report on 0.6.22, same day: the operator put the API token in `~/.foreman-mcp/.env`, the store that exists so a variable can be defined without exporting it into every shell, and `contract_probe` answered `credential_missing`.
+
+- **Fixed.** `contract_probe` resolved `${ENV:NAME}` from `process.env` alone, and `live_smoke` checked its plan's env names against `process.env` alone and spawned the runner with the inherited environment, so the store reached neither. Both now resolve through one function with the precedence `loadForemanEnv` already applies: process env first, `~/.foreman-mcp/.env` second. Every store value is registered for redaction as it is for the worker path. The output names each variable's source (`FOREMAN_TOKEN (store)`), never its value; a malformed store is `credential_store_invalid` rather than a silent miss. `run_tests` gained an env overlay for the child, used by `live_smoke` only; the `run_tests` tool surface is unchanged.
+- **Not applied.** The worker path's endpoint guard (a repo `.foremanenv` cannot steer the store's key to a different API base) has no counterpart here on purpose: a probe's or smoke's destination comes from the spec's contract block, which is the reviewed authoring place, and every record names the target and the variable names used.
+
 ## 0.6.22 - 2026-09-10
 
 A fourth field report ("the three that make reality a source of truth") and an architecture council (Codex gpt-6-astra and Gemini 3.1 Pro, three rounds, converged). The report's unit had 94.6% coverage, six killed mutations, a green suite and a clean guard, and could not complete one HTTPS request. Five 0.6.21 defects were confirmed and fixed; the council's design ships as a spec contract block, claim-bound probes, a live smoke receipt the verdict reads, and a repository window in the ledger.

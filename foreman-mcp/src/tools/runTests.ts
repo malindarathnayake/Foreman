@@ -272,6 +272,8 @@ export async function runTests(
   filters?: OutputFilterOptions,
   /** 0.6.21: working directory for the child (verify_oracle runs in its repo_root); default the server cwd. */
   cwd?: string,
+  /** 0.6.23: variables laid over the server environment for the child (live_smoke plan env from the credential store). */
+  env?: Record<string, string>,
 ): Promise<string> {
   const allowedRunners = getAllowedRunners()
   const pinned = pinnedToolchain(runner, allowedRunners, cwd ?? process.cwd())
@@ -316,6 +318,7 @@ export async function runTests(
     const child = spawn(resolution.plan.command, [...resolution.plan.args, ...args], {
       stdio: ['pipe', 'pipe', 'pipe'],
       ...(cwd !== undefined ? { cwd } : {}),
+      ...(env !== undefined ? { env: { ...process.env, ...env } } : {}),
     })
 
     child.stdin.end()

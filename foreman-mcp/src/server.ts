@@ -774,7 +774,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     "live_smoke",
     {
       title: "Live Smoke",
-      description: "Runs the smoke plan registered for the unit in the spec's ```foreman-contract block (runner, args, cwd, env names, harness_files, input_files, checks) through the project's real runner, and records a receipt on the unit bound to the current attempt, the contract digest and digests of the harness and application inputs. Takes only plan_id: the command cannot be supplied at call time. In a has_api phase, set_verdict pass requires a passing smoke for the current attempt whose digests still match.",
+      description: "Runs the smoke plan registered for the unit in the spec's ```foreman-contract block (runner, args, cwd, env names, harness_files, input_files, checks) through the project's real runner, and records a receipt on the unit bound to the current attempt, the contract digest and digests of the harness and application inputs. Takes only plan_id: the command cannot be supplied at call time. The plan's env names resolve from the server environment first and ~/.foreman-mcp/.env second and reach the child only. In a has_api phase, set_verdict pass requires a passing smoke for the current attempt whose digests still match.",
       inputSchema: LiveSmokeInputSchema.strict(),
       outputSchema: TextOutputSchema,
       annotations: { title: "Live Smoke", readOnlyHint: false, destructiveHint: false },
@@ -800,7 +800,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     "contract_probe",
     {
       title: "Contract Probe",
-      description: "Claim mode { phase, unit_id, claim_id }: loads the request and assertions from the claim registered in the spec's ```foreman-contract block, sends it from Foreman's own HTTP client (GET/HEAD only) and records the result on the unit; only claim-mode probes satisfy preflight in a has_api phase. Diagnostic mode { url, expect } explores and never satisfies a claim. Assertions: status, min_bytes, contains, json_nonempty_path, json_array_length {path, exact, min, max}. Capture is capped and an over-cap body fails every body assertion. Header values may be ${ENV:NAME}; never printed or stored.",
+      description: "Claim mode { phase, unit_id, claim_id }: loads the request and assertions from the claim registered in the spec's ```foreman-contract block, sends it from Foreman's own HTTP client (GET/HEAD only) and records the result on the unit; only claim-mode probes satisfy preflight in a has_api phase. Diagnostic mode { url, expect } explores and never satisfies a claim. Assertions: status, min_bytes, contains, json_nonempty_path, json_array_length {path, exact, min, max}. Capture is capped and an over-cap body fails every body assertion. Header values may be ${ENV:NAME}, resolved from the server environment first and ~/.foreman-mcp/.env second; never printed or stored.",
       inputSchema: ContractProbeInputSchema.strict(),
       outputSchema: TextOutputSchema,
       annotations: { title: "Contract Probe", readOnlyHint: false, destructiveHint: false },
