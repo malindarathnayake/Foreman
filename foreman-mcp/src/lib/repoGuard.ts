@@ -196,9 +196,56 @@ export function snapshotHash(s: Omit<RepoSnapshot, "hash">): string {
   return createHash("sha256").update(JSON.stringify(s)).digest("hex").slice(0, 16)
 }
 
+/**
+ * NUL scan (0.6.26, field report 2026-09-11). The same crash that zeroed the ledger also
+ * left a 46 KB source file as 46 KB of NUL bytes, and NOTHING noticed: the file still
+ * exists, still has its size, still has its mtime, and `grep` on it reports a missing
+ * SYMBOL rather than a missing file — so the pit-boss reads it as a code problem. It
+ * surfaced hours later only because a mutation anchor that had matched stopped matching.
+ *
+ * A non-empty file that is entirely NUL is not a state any editor, compiler or formatter
+ * produces; it is the signature of a write that reached the directory entry but not the
+ * data blocks. The guard already knows the authorized set, so this costs one read of a
+ * few KB per file — the scan stops at the first non-zero byte, which for real source is
+ * byte 0.
+ */
+const ZERO_SCAN_CHUNK = 64 * 1024
+
+export async function isZeroFilled(absPath: string): Promise<boolean> {
+  let handle
+  try {
+    handle = await fs.open(absPath, "r")
+    const stat = await handle.stat()
+    // An empty file is not damage, and a directory is not a file.
+    if (!stat.isFile() || stat.size === 0) return false
+    const buf = Buffer.allocUnsafe(ZERO_SCAN_CHUNK)
+    let read = 0
+    while (read < stat.size && read < MAX_HASH_BYTES) {
+      const { bytesRead } = await handle.read(buf, 0, ZERO_SCAN_CHUNK, read)
+      if (bytesRead === 0) break
+      for (let i = 0; i < bytesRead; i++) if (buf[i] !== 0) return false
+      read += bytesRead
+    }
+    return read > 0
+  } catch {
+    return false   // unreadable or absent: not this check's business
+  } finally {
+    await handle?.close().catch(() => {})
+  }
+}
+
+/** Every path in `files` whose bytes are entirely NUL. Bounded by the authorized-set cap. */
+export async function zeroFilledFiles(dir: string, files: string[]): Promise<string[]> {
+  const out: string[] = []
+  for (const f of files.slice(0, MAX_FILE_ARGS)) {
+    if (await isZeroFilled(path.join(dir, f))) out.push(f)
+  }
+  return out
+}
+
 export type SnapshotOutcome =
   | { status: "n/a"; reason: string }
-  | { status: "ok"; snapshot: RepoSnapshot; scope: RelativeScope; foreman_files: number }
+  | { status: "ok"; snapshot: RepoSnapshot; scope: RelativeScope; foreman_files: number; damaged: string[] }
   | { status: "refused"; reason: string }
   | { status: "failed"; reason: string }
 
@@ -339,7 +386,13 @@ export async function takeSnapshot(
     fenced: [...rel.fenced].sort(),
     marks,
   }
-  return { status: "ok", snapshot: { ...base, hash: snapshotHash(base) }, scope: rel, foreman_files: rel.state.size + rel.fenced.size }
+  return {
+    status: "ok", snapshot: { ...base, hash: snapshotHash(base) }, scope: rel,
+    foreman_files: rel.state.size + rel.fenced.size,
+    // Kept OUT of the snapshot itself: the baseline hash identifies the tree state a
+    // comparison is frozen against, and damage is an observation about it, not part of it.
+    damaged: await zeroFilledFiles(dir, base.allowed),
+  }
 }
 
 /**

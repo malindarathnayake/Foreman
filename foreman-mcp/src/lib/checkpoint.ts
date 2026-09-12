@@ -152,23 +152,55 @@ export function checkpointDigest(files: string[], commands: string[]): string {
   return createHash("sha256").update(JSON.stringify({ files: [...files].sort(), commands: commands.map((c) => c.trim()) }), "utf-8").digest("hex").slice(0, 16)
 }
 
-/** The unit's checkpoint definition from the spec text, or null when the unit has no `Test:` line. */
-export function checkpointFromSpec(spec: string, unitId: string): CheckpointDefinition | null {
-  const directive = extractDirective(spec, unitId)
-  if (directive === null) return null
-  const { files, commands } = parseCheckpointLines(directive)
-  if (commands.length === 0) return null
-  return { files, commands, clauses: commands.flatMap(parseClauses), digest: checkpointDigest(files, commands) }
+/**
+ * Why there is no checkpoint definition (0.6.26, field report 2026-09-11). Three unrelated
+ * causes used to collapse into one `null`, and the advisory asserted the most specific of
+ * them — "the unit's directive has no Test: line" — on every call, including for a unit
+ * whose directive ends in exactly such a line. A permanently-wrong advisory is worse than
+ * no advisory: it never blocks anything, so it teaches the reader to skip advisories.
+ */
+export type CheckpointAbsence = "spec_unreadable" | "unit_not_found" | "no_test_line"
+
+export interface CheckpointLookup {
+  def: CheckpointDefinition | null
+  /** Present exactly when `def` is null. */
+  absence?: CheckpointAbsence
 }
 
-export async function readCheckpoint(specPath: string, unitId: string): Promise<CheckpointDefinition | null> {
+/** The unit's checkpoint definition from the spec text, with the reason when there is none. */
+export function checkpointFromSpec(spec: string, unitId: string): CheckpointLookup {
+  const directive = extractDirective(spec, unitId)
+  if (directive === null) return { def: null, absence: "unit_not_found" }
+  const { files, commands } = parseCheckpointLines(directive)
+  if (commands.length === 0) return { def: null, absence: "no_test_line" }
+  return { def: { files, commands, clauses: commands.flatMap(parseClauses), digest: checkpointDigest(files, commands) } }
+}
+
+export async function lookupCheckpoint(specPath: string, unitId: string): Promise<CheckpointLookup> {
   let spec: string
   try {
     spec = await fs.readFile(specPath, "utf-8")
   } catch {
-    return null
+    return { def: null, absence: "spec_unreadable" }
   }
   return checkpointFromSpec(spec, unitId)
+}
+
+/** Definition only, for the call sites that act on presence and never report the absence. */
+export async function readCheckpoint(specPath: string, unitId: string): Promise<CheckpointDefinition | null> {
+  return (await lookupCheckpoint(specPath, unitId)).def
+}
+
+/** What the reader should do about an absent definition, naming the spec Foreman actually read. */
+export function absenceMessage(absence: CheckpointAbsence, specPath: string, unitId: string): string {
+  switch (absence) {
+    case "spec_unreadable":
+      return `none: Foreman could not read the spec at '${specPath}', so no checkpoint could be resolved (this is the SERVER's spec path, not this call's spec_path)`
+    case "unit_not_found":
+      return `none: no heading, table row or bold line in '${specPath}' names unit '${unitId}', so its directive could not be located — check the unit id against the spec`
+    case "no_test_line":
+      return `none: the directive for '${unitId}' in '${specPath}' has no Test:/Checkpoint: line`
+  }
 }
 
 /** The conventional owning package of a file: its directory for a Go file, the parent of a `testdata` directory for a fixture, else null. */

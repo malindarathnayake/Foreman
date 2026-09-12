@@ -11,6 +11,10 @@
  * absent or ambiguous. Any restore failure aborts loudly: the file is named and the run
  * stops, because a tree left mutated is worse than a missing probe.
  *
+ * 0.6.26: a run in which NO TEST EXECUTED is invalid on both sides of the probe — as a red
+ * baseline before any mutation is written, and as an invalid result when the mutation itself
+ * removed what the guard selects. See testsObserved below.
+ *
  * The runner goes through run_tests' allowlist and output shaping; the report is what the
  * ledger records on the unit (recordOracle), and the repeated-block rule reads it.
  */
@@ -72,6 +76,51 @@ function exitCodeOf(output: string): number | null {
 /** Runner output that says the code did not build: Go, tsc, Python import/syntax, Rust, .NET, generic. */
 const BUILD_FAILURE = /\[build failed\]|\bbuild failed\b|cannot find package|undefined: [A-Za-z_]|error TS\d{4}|\bSyntaxError\b|\bImportError\b|ModuleNotFoundError|IndentationError|error\[E\d{4}\]|\bCS\d{4}\b.*error|compilation failed|could not compile/i
 
+/**
+ * Did the guard actually RUN a test? (0.6.26, field report 2026-09-11.)
+ *
+ * The report's sharpest finding: a mutation that renamed a test function came back
+ * `survived`, because `-run` then matched nothing, so `go test` printed a warning and
+ * exited 0 — a green suite that observed precisely nothing, read as a test gap. The
+ * `-run`-matches-nothing trap lived inside the oracle itself, which is the one place it
+ * must not: a probe whose job is to measure the suite cannot be fooled by the suite
+ * running zero tests.
+ *
+ * The rule is asymmetric on purpose. A false SURVIVOR costs a wasted investigation; a
+ * false KILL certifies a control the suite cannot actually see, which is worse. So zero
+ * tests is `invalid` — a refusal to conclude — never a kill, and evidence that a test ran
+ * always wins over a zero-test marker (`./...` over a tree where one package has no test
+ * files prints `[no test files]` for that package while others run normally).
+ */
+const RAN_A_TEST = [
+  /^\s*---\s+(PASS|FAIL|SKIP):/m,                            // go -v, and Go subtests
+  /^(ok|FAIL)\s+\S+\s+[0-9.]+m?s\s*$/m,                      // go summary with no bracketed suffix
+  /^(ok|FAIL)\s+\S+\s+\(cached\)/m,                          // go, cached result of a real run
+  /Tests:\s+[0-9]+/,                                         // jest / vitest summary
+  /\b[1-9][0-9]* (passed|failed|skipped)/i,                  // vitest, pytest, mocha
+  /test result: (ok|FAILED)\. [0-9]+ passed/,                // cargo
+  /Passed!?\s*[-—]?\s*Failed:\s*[0-9]+,\s*Passed:\s*[1-9]/i, // dotnet
+  /^={2,}.*[1-9][0-9]* (passed|failed|error)/im,             // pytest summary line
+]
+const RAN_NO_TESTS = [
+  /testing: warning: no tests to run/,
+  /\[no tests to run\]/,
+  /\[no test files\]/,
+  /No test files found/i,
+  /No tests found/i,
+  /no tests ran/i,
+  /collected 0 items/i,
+  /running 0 tests/,
+  /No test is available/i,
+  /Failed:\s*0,\s*Passed:\s*0/i,
+]
+
+export function testsObserved(output: string): "yes" | "none" | "unknown" {
+  if (RAN_A_TEST.some((re) => re.test(output))) return "yes"
+  if (RAN_NO_TESTS.some((re) => re.test(output))) return "none"
+  return "unknown"
+}
+
 function inconclusive(output: string): string | null {
   if (output.startsWith("error:")) return output.split("\n")[0].slice(0, 200)
   if (/^timed_out:\s*true/m.test(output)) return "guard timed out; a timeout is not a kill"
@@ -112,7 +161,16 @@ export async function runOracle(input: VerifyOracleInput, runner: Runner = (r, a
       const out = await runner(m.runner, m.args, input.timeout_ms, root)
       const bad = inconclusive(out)
       const code = exitCodeOf(out)
-      baselines.set(key, bad !== null ? `baseline red: ${bad}` : code !== 0 ? `baseline red: guard exits ${code} unmutated; fix the guard before probing` : null)
+      // 0.6.26: a guard that runs zero tests unmutated is green for the wrong reason and can
+      // only ever report survivors. Caught here, before a single mutation is written.
+      const observed = testsObserved(out)
+      baselines.set(
+        key,
+        bad !== null ? `baseline red: ${bad}`
+          : code !== 0 ? `baseline red: guard exits ${code} unmutated; fix the guard before probing`
+          : observed === "none" ? "baseline ran NO TESTS unmutated (exit 0 with nothing executed); check the -run selector, the build tags and the package selection — every mutation under this guard would 'survive' vacuously"
+          : null
+      )
     }
     return baselines.get(key)!
   }
@@ -171,10 +229,23 @@ export async function runOracle(input: VerifyOracleInput, runner: Runner = (r, a
     const code = exitCodeOf(output)
     const bad = inconclusive(output)
     const hint = relevanceHint(m.file, m.args)
+    // 0.6.26: the baseline ran tests, this run did not — the mutation itself removed what the
+    // guard selects (the renamed-test case from the field report). Never a kill, never a survivor.
+    const observed = testsObserved(output)
+    // A mutation whose replacement still contains the original text adds rather than removes.
+    // That is legal (an inserted early return disables plenty), but a survivor from an additive
+    // mutation is as likely to be a semantic no-op as a test gap, and the report cannot tell
+    // the two apart — so it says so rather than letting "survived" read as a test gap.
+    const additive = m.new.includes(m.old) ? " NOTE: this mutation only ADDS text (the original is still present), so a survivor may be a no-op rather than a gap" : ""
     if (bad !== null) {
       results.push({ label: m.label, file: m.file, outcome: "invalid", exit_code: code, detail: bad + hint })
+    } else if (observed === "none") {
+      results.push({
+        label: m.label, file: m.file, outcome: "invalid", exit_code: code,
+        detail: "guard ran NO TESTS with the mutation applied; the mutation removed or renamed what the guard selects, so this exit code observed nothing" + hint,
+      })
     } else if (code === 0) {
-      results.push({ label: m.label, file: m.file, outcome: "survived", exit_code: code, detail: "guard test stayed green with the control removed" + hint })
+      results.push({ label: m.label, file: m.file, outcome: "survived", exit_code: code, detail: "guard test stayed green with the control removed" + hint + additive })
     } else {
       results.push({ label: m.label, file: m.file, outcome: "killed", exit_code: code, detail: "guard test failed with the control removed" + hint })
     }
@@ -199,7 +270,7 @@ export function renderOracle(report: OracleReport): string {
     invalid: report.invalid.join(",") || "none",
     verdict: report.invalid.length > 0 ? "incomplete" : report.survivors.length === 0 ? "oracle_holds" : "oracle_blind",
     note: report.survivors.length > 0
-      ? "A survivor is a control the focused suite cannot observe: add or fix the guard test before another reading-only review."
+      ? "A survivor is a control the focused suite cannot observe, OR a mutation that changed no behaviour: read the detail column before concluding a test gap, then add or fix the guard test."
       : "Every mutation was caught by its guard test. This is test evidence, not a review.",
   })
   return `${head}\n${toTable(["label", "file", "outcome", "exit", "detail"], report.results.map((r) => [r.label, r.file, r.outcome, r.exit_code === null ? "-" : String(r.exit_code), r.detail]))}`

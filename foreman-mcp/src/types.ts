@@ -101,6 +101,8 @@ export interface DelegationGuard {
   snapshot_ts: string
   result?: "ok" | "violation"
   violations?: string[]
+  /** 0.6.26: authorized files found entirely NUL at compare time — destroyed, not merely changed. */
+  damaged?: string[]
   checked_ts?: string
   /** A pass verdict taken past an uncleared guard by explicit user approval. */
   override?: { ts: string }
@@ -746,7 +748,8 @@ const RecordFactInput = z.object({
   phase: z.string().max(10000),
   data: z.object({
     key: z.string().trim().min(1).max(80),
-    text: z.string().trim().min(1).max(2000),
+    /** 0.6.26: raised from 2000 — the cap bit hardest on an incident record, the fact most worth keeping. The phase-wide budget (PHASE_FACTS_BUDGET) bounds growth instead. */
+    text: z.string().trim().min(1).max(8000),
     source: z.string().trim().min(1).max(400).optional(),
   }),
 })
@@ -784,7 +787,7 @@ export type WriteLedgerInput = z.infer<typeof WriteLedgerInputSchema>
 export const ReadLedgerInputSchema = z.object({
   unit_id: z.string().max(10000).optional(),
   phase: z.string().max(10000).optional(),
-  query: z.enum(["verdicts", "rejections", "phase_gates", "reviews", "full", "delegation_metrics", "review_outcomes", "facts"]).optional(),
+  query: z.enum(["verdicts", "rejections", "phase_gates", "reviews", "full", "delegation_metrics", "review_outcomes", "facts", "reconstruct"]).optional(),
   verdict: z.enum(["pass", "fail", "pending", "inconclusive"]).optional(),
   include_notes: z.boolean().optional(),
   cursor: z.number().int().min(0).max(1000000).optional(),

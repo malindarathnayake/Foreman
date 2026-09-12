@@ -21,9 +21,13 @@ describe("declared model workflow rank", () => {
     expect(resolveModelRank(model).weight).toBeGreaterThan(0)
   })
 
-  it.each(["Opus", "claude-opus-5", "Terra", "gpt-5.6-terra"])("only enables mechanical reuse and compact followups for %s", model => {
+  // 0.6.26: middle rank gained bounded reuse. Forcing a fresh worker for a behavioural
+  // correction discarded the previous attempt's context for no safety gain — every other
+  // reuse predicate (same session, same worker id, cleared guard, frozen file scope,
+  // non-hot-path, failure cap) still applies. focused_validation and delta_review stay top-only.
+  it.each(["Opus", "claude-opus-5", "Terra", "gpt-5.6-terra"])("enables both reuse kinds and compact followups, but not focused validation or delta review, for %s", model => {
     expect(resolveModelRank(model).permissions).toEqual({
-      reuse_worker_mechanical: true, reuse_worker_bounded: false, compact_followup: true,
+      reuse_worker_mechanical: true, reuse_worker_bounded: true, compact_followup: true,
       focused_validation: false, delta_review: false,
     })
   })

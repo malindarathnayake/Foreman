@@ -46,8 +46,11 @@ describe("preflight receipt on the delegation", () => {
     const hash = briefHash(BRIEF)
     const base = { v: 1 as const, ts: "t", phase: "p1", unit_id: "u1", brief_hash: hash, symbols: 1, coverage_ratio: 1, uncovered: 0, flags: 0, dead_citations: 0, ownership_outside: 0 }
     await appendPreflight(file, { ...base, status: "fail" })
-    await expect(write(delegated("u1"))).rejects.toThrow(/PREFLIGHT RECEIPT: data.preflight.receipt must be the brief_hash .* none was given/)
-    await expect(write(delegated("u1", { symbols_grepped: ["x"], self_consistent: true, receipt: "0000000000000000" }))).rejects.toThrow(/got 0000000000000000/)
+    // 0.6.26: the refusal names the CAUSE (the brief text differs from the hashed one), not
+    // just the two hashes — a mismatch has exactly one cause and it used to be left to guess.
+    await expect(write(delegated("u1"))).rejects.toThrow(/PREFLIGHT RECEIPT: no receipt was given\./)
+    await expect(write(delegated("u1", { symbols_grepped: ["x"], self_consistent: true, receipt: "0000000000000000" })))
+      .rejects.toThrow(/the brief text in this call differs from the one preflight_check hashed .* the receipt names 0000000000000000/)
     await expect(write(delegated("u1", { symbols_grepped: ["x"], self_consistent: true, receipt: hash }))).rejects.toThrow(/no passing preflight record/)
     await appendPreflight(file, { ...base, status: "pass" })
     const { warning } = await write(delegated("u1", { symbols_grepped: ["x"], self_consistent: true, receipt: hash }))

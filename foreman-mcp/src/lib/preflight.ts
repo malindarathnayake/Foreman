@@ -17,6 +17,7 @@ import fs from "fs/promises"
 import path from "path"
 import { createHash } from "crypto"
 import { PREFLIGHT_FILE } from "./foremanFiles.js"
+import { appendFileDurable } from "./atomicWrite.js"
 import type { ForwardObligation } from "../types.js"
 
 export { PREFLIGHT_FILE }
@@ -432,7 +433,7 @@ export async function checkCitations(repoRoot: string, brief: string, creates: F
       const promised = [...forwardTests.keys()].filter((t) => re.test(t))
       results.push(promised.length
         ? { raw: c.raw, kind: c.kind, status: "forward", detail: `no declared Go test matches yet; ${promised.join(", ")} promised in ${[...new Set(promised.map((t) => forwardTests.get(t)))].join(", ")}` }
-        : { raw: c.raw, kind: c.kind, status: "dead", detail: "no func Test… declaration under the root matches this selector; declare it under creates if the unit adds it" })
+        : { raw: c.raw, kind: c.kind, status: "dead", detail: "no func Test… declaration under the root matches this selector; if the unit adds the test, name it in the preflight_check CREATES PARAMETER — creates: [{ file: \"<the test file>\", tests: [\"<the Test function name the selector matches>\"] }] — a parameter of the call, not a section of the brief" })
       continue
     }
     if (c.kind === "test_name") {
@@ -445,8 +446,8 @@ export async function checkCitations(repoRoot: string, brief: string, creates: F
         results.push({ raw: c.raw, kind: c.kind, status: "forward", detail: `promised in ${forwardTests.get(c.name!)}; the pass verdict requires it declared there` })
       } else {
         results.push({ raw: c.raw, kind: c.kind, status: "dead", detail: forwardTestFiles.length
-          ? `no source file under the root names this test; if the unit adds it, list it under creates: [{ file: "${forwardTestFiles[0]}", tests: ["${c.name}"] }]`
-          : "no source file under the root names this test" })
+          ? `no source file under the root names this test; if the unit adds it, pass it in the preflight_check CREATES PARAMETER: creates: [{ file: "${forwardTestFiles[0]}", tests: ["${c.name}"] }] — a parameter of the call, not a section of the brief`
+          : `no source file under the root names this test; if the unit adds it, pass it in the preflight_check CREATES PARAMETER: creates: [{ file: "<the test file>", tests: ["${c.name}"] }] — a parameter of the call, not a section of the brief` })
       }
       continue
     }
@@ -461,7 +462,7 @@ export async function checkCitations(repoRoot: string, brief: string, creates: F
     } catch {
       results.push(forwardFiles.has(c.file!.replace(/\\/g, "/"))
         ? { raw: c.raw, kind: c.kind, status: "forward", detail: c.kind === "file_line" ? "promised under creates; a line number on a file that does not exist yet is not checked" : "promised under creates; the pass verdict requires it to exist" }
-        : { raw: c.raw, kind: c.kind, status: "dead", detail: "file not found (list it under creates if the unit creates it)" })
+        : { raw: c.raw, kind: c.kind, status: "dead", detail: `file not found; if the unit creates it, pass it in the preflight_check CREATES PARAMETER: creates: [{ file: "${c.raw.split(":")[0].slice(0, 120)}", tests: [] }] — a parameter of the call, not a section of the brief` })
       continue
     }
     if (c.kind === "file") {
@@ -515,7 +516,7 @@ export function preflightPathFor(ledgerPath: string): string {
 
 /** Append-only; the ledger only ever asks "does a passing record exist for this brief hash". */
 export async function appendPreflight(filePath: string, record: PreflightRecord): Promise<void> {
-  await fs.appendFile(filePath, JSON.stringify(record) + "\n", "utf-8")
+  await appendFileDurable(filePath, JSON.stringify(record) + "\n")
 }
 
 /**

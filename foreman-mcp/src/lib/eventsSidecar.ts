@@ -20,6 +20,7 @@
 import fs from "fs/promises"
 import { createHash, randomBytes } from "crypto"
 import { scrub } from "./redaction.js"
+import { appendFileDurable } from "./atomicWrite.js"
 
 // ─── Closed enums ─────────────────────────────────────────────────────────────
 export type EventType =
@@ -509,7 +510,7 @@ export async function appendEvent(filePath: string, event: SidecarEventInput): P
       )
     }
 
-    await fs.appendFile(filePath, line + "\n", "utf-8")
+    await appendFileDurable(filePath, line + "\n")
     return full
   })
 }

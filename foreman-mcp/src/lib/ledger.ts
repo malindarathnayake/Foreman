@@ -27,7 +27,7 @@ import { eventsPathFor } from "./foremanFiles.js"
 /** Receipts file access for one write: read on demand, consumption applied after the operation succeeds. */
 export interface ReceiptsAccess {
   read: () => Promise<ReceiptsState>
-  consumed: Array<{ id: string; phase: string; review_ts: string }>
+  consumed: Array<{ id: string; phase: string; review_ts: string; reclaimed?: { from_review_ts: string } }>
   /** 0.6.20: the preflight record file beside the ledger; absent on write paths without one. */
   preflightFile?: string
   /** 0.6.22: the server's spec path and project root; the contract and smoke gates read them. Absent on test paths without a contract. */
@@ -145,6 +145,13 @@ function ensurePhase(ledger: LedgerFile, phase: string): void {
 // A pass closes the series (epoch_failed back to 0), so a unit reopened at three
 // separate checkpoints over weeks is not treated as one non-converging attempt series.
 export const ATTEMPT_CAP = 3
+
+/**
+ * Total characters of fact text a single phase retains (0.6.26). The ledger is rewritten
+ * whole on every write, so unbounded facts are a real cost; a budget across the store lets
+ * one 8000-character incident record in without letting fifty of them in.
+ */
+export const PHASE_FACTS_BUDGET = 24_000
 
 /** Derives the scalars once for a unit written before v0.6.4. Never mutates rej[] or delegations[]. */
 function ensureAttemptState(unit: Unit): void {
@@ -481,9 +488,15 @@ async function applyOperation(
           if (data.preflight.receipt !== undefined || adopted) {
             if (data.preflight.receipt !== hash) {
               throw new Error(
-                `PREFLIGHT RECEIPT: data.preflight.receipt must be the brief_hash preflight_check returned for THIS brief (${hash}); ` +
-                (data.preflight.receipt === undefined ? "none was given" : `got ${data.preflight.receipt}`) +
-                ". Run preflight_check { phase, unit_id, brief, symbols, files } and copy its brief_hash."
+                data.preflight.receipt === undefined
+                  ? `PREFLIGHT RECEIPT: no receipt was given. Run preflight_check { phase, unit_id, brief, symbols, files } on this exact brief and copy its brief_hash (this brief hashes to ${hash}).`
+                  // 0.6.26 (field report 2026-09-11): printing two hashes states the symptom and
+                  // leaves the cause to be guessed. There is only one cause: the brief text in
+                  // THIS call is not byte-identical to the brief preflight_check hashed — an
+                  // edit, a re-wrap, a trimmed line, a smart quote.
+                  : `PREFLIGHT RECEIPT: the brief text in this call differs from the one preflight_check hashed — it hashes to ${hash}, the receipt names ${data.preflight.receipt}. ` +
+                    "Even one changed character (a re-wrap, a trimmed line, a substituted quote) produces a different hash. " +
+                    "Send the brief exactly as preflight_check saw it, or run preflight_check again on the brief you are actually delegating and use the brief_hash it returns."
               )
             }
             let record = await findPreflight(receipts.preflightFile, hash, unit_id, phase)
@@ -1448,6 +1461,7 @@ async function applyOperation(
       // run. Every check reads the receipts file Foreman wrote, never the record's text.
       let provenance: PhaseReview["provenance"]
       let warning: string | undefined
+      let reclaimed: { from_review_ts: string } | undefined
       if (data.seat_receipt !== undefined) {
         if (data.stage !== undefined && data.stage !== "independent") {
           throw new Error("SEAT RECEIPT: data.seat_receipt is accepted with stage undefined or 'independent' only.")
@@ -1467,8 +1481,24 @@ async function applyOperation(
         if (receipt.exit_code !== 0 || receipt.failure_reason !== null) {
           throw new Error(`SEAT RECEIPT: '${receipt.id}' is a failed seat (${receipt.failure_reason ?? `exit ${receipt.exit_code}`}); record it completion:'failed' without a receipt.`)
         }
-        if (state.consumed.has(receipt.id)) {
-          throw new Error(`SEAT RECEIPT: '${receipt.id}' was already bound to a review record; one receipt covers one record.`)
+        // 0.6.26 (field report 2026-09-11): the receipts file is append-only and survived a
+        // ledger loss intact, so both seats stayed bound while the records citing them were
+        // gone — and a completed gate review with nine confirmed findings became permanently
+        // unrecordable, refused for spending a receipt on a record that no longer exists.
+        // "One receipt covers one record" is a rule about DOUBLE COUNTING; with the record
+        // absent there is nothing to double-count. The receipt is reclaimable exactly when
+        // the ledger can prove the consuming record is not there, and the reclaim is written
+        // into the chain so it is never mistaken for a second spend.
+        const spent = state.consumed.get(receipt.id)
+        if (spent) {
+          const consumingPhase = ledger.phases[spent.phase]
+          const stillThere = (consumingPhase?.reviews ?? []).some((r) => r.ts === spent.review_ts)
+          if (stillThere) {
+            throw new Error(
+              `SEAT RECEIPT: '${receipt.id}' is already bound to the review recorded at ${spent.review_ts} in phase '${spent.phase}'; one receipt covers one record.`
+            )
+          }
+          reclaimed = { from_review_ts: spent.review_ts }
         }
         const attemptTs = Object.values(p.units).flatMap((u) => [
           ...(u.delegations ?? []).map((d) => d.ts), ...(u.direct_fixes ?? []).map((d) => d.ts),
@@ -1483,7 +1513,12 @@ async function applyOperation(
           bytes_in: receipt.bytes_in, bytes_out: receipt.bytes_out,
           ...(receipt.tokens_used !== undefined ? { tokens_used: receipt.tokens_used } : {}),
         }
-        receipts.consumed.push({ id: receipt.id, phase, review_ts: reviewTs })
+        receipts.consumed.push({ id: receipt.id, phase, review_ts: reviewTs, ...(reclaimed ? { reclaimed } : {}) })
+        if (reclaimed) {
+          warning =
+            `SEAT RECEIPT: '${receipt.id}' was reclaimed — it was bound to a review recorded at ${reclaimed.from_review_ts}, ` +
+            "which is no longer in the ledger (a restore or a lost write). The rebind is recorded in the receipts chain."
+        }
       } else if (host === "codex" && (data.stage === undefined || data.stage === "independent")) {
         warning =
           "SEAT RECEIPT: this independent record carries no receipt. On Codex an external seat run through invoke_advisor " +
@@ -1582,7 +1617,19 @@ async function applyOperation(
       p.facts = (p.facts ?? []).filter((f) => f.key !== data.key)
       p.facts.push({ ts: new Date().toISOString(), key: data.key, text: data.text, ...(data.source ? { source: data.source } : {}) })
       if (p.facts.length > 50) p.facts = p.facts.slice(-50)
-      return `fact '${data.key}' recorded on phase '${phase}' (${p.facts.length}/50); read_ledger { query: "facts", phase } lists them`
+      // 0.6.26 (field report 2026-09-11): the per-fact cap used to bite hardest on the fact
+      // most worth keeping — an incident record. The cap is now on the store, not the entry:
+      // one long fact is allowed, and it is paid for by evicting the oldest facts rather than
+      // by truncating the text. Newest wins, which is what an incident needs.
+      let evicted = 0
+      const bytesOf = (f: { text: string; key: string; source?: string }) => f.text.length + f.key.length + (f.source?.length ?? 0)
+      while (p.facts.length > 1 && p.facts.reduce((n, f) => n + bytesOf(f), 0) > PHASE_FACTS_BUDGET) {
+        p.facts.shift()
+        evicted++
+      }
+      return `fact '${data.key}' recorded on phase '${phase}' (${p.facts.length}/50)` +
+        (evicted > 0 ? `; ${evicted} older fact(s) evicted to stay inside the ${PHASE_FACTS_BUDGET}-character phase budget` : "") +
+        '; read_ledger { query: "facts", phase } lists them'
     }
     case "authorize_attempts": {
       const { phase, unit_id, data } = operation
@@ -1675,7 +1722,7 @@ export async function writeLedger(
     let warning = await applyOperation(ledger, operation, reader, host, modelRank, receipts)
     // 0.6.19: a bound receipt is spent in the receipts file BEFORE the ledger is written:
     // a torn state loses a receipt, never double-spends one. [CWE-345]
-    for (const c of receipts?.consumed ?? []) await appendConsumed(receiptsFile!, c.id, c.phase, c.review_ts)
+    for (const c of receipts?.consumed ?? []) await appendConsumed(receiptsFile!, c.id, c.phase, c.review_ts, c.reclaimed)
     if (read.corrupt) {
       const corruptNote =
         `previous ledger was corrupt JSON and was backed up to '${read.backupPath}'; ` +
@@ -1708,7 +1755,7 @@ export async function recordRepoGuard(
   filePath: string,
   phase: string,
   unitId: string,
-  patch: DelegationGuard | { result: "ok" | "violation"; violations?: string[]; baseline_hash?: string }
+  patch: DelegationGuard | { result: "ok" | "violation"; violations?: string[]; damaged?: string[]; baseline_hash?: string }
 ): Promise<{ attempt: number; reopened: boolean }> {
   return withLedgerLock(filePath, async () => {
     const read = await readLedgerWithStatus(filePath)

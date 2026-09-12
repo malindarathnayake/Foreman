@@ -61,6 +61,11 @@ const GOOD = JSON.stringify({ rows: [{ country: "US", n: 1 }, { country: "CA", n
 const smoke = (runner: () => Promise<string>, unit_id = "u1") => liveSmoke({ phase: "p1", unit_id, plan_id: "emit" }, ledgerPath, specPath, dir, runner)
 const runId = async () => (await unit()).smokes!.at(-1)!.run_id
 
+const DEAD_SELECTOR_HINT =
+  "no func Test… declaration under the root matches this selector; if the unit adds the test, name it in the " +
+  "preflight_check CREATES PARAMETER — creates: [{ file: \"<the test file>\", tests: [\"<the Test function name the selector matches>\"] }] " +
+  "— a parameter of the call, not a section of the brief"
+
 describe("the contract block is strict and semantically checked", () => {
   it("refuses an unknown field instead of stripping it (a field the server does not enforce would digest the same)", () => {
     const r = parseContracts(SPEC({ ...CONTRACT, extra_rule: "ignored before 0.6.24" }))
@@ -250,7 +255,9 @@ describe("forward declarations and -run selectors", () => {
     const dead = await preflightCheck(args, preflightPathFor(ledgerPath), ledgerPath, specPath)
     expect(dead).toContain("status: fail")
     expect(dead).toContain("DEAD CITATIONS")
-    expect(dead).toContain("list it under creates")
+    // 0.6.26: the hint names the CREATES PARAMETER and its shape — it used to read like brief prose.
+    expect(dead).toContain("preflight_check CREATES PARAMETER")
+    expect(dead).toContain("a parameter of the call, not a section of the brief")
     const creates = [{ file: "internal/map_test.go", tests: ["TestMapNormalises", "TestMapRejectsUnknown"] }]
     const fwd = await preflightCheck({ ...args, creates }, preflightPathFor(ledgerPath), ledgerPath, specPath)
     expect(fwd).toContain("status: pass")
@@ -293,8 +300,8 @@ describe("forward declarations and -run selectors", () => {
     const checked = await checkCitations(dir, "go test -run TestMapNormalises ./internal/... and -run '^TestMapNormalises$' and -run TestOther and -run '(' plus TestMapNormalisesRegion")
     expect(checked.map((c) => [c.raw, c.status, c.detail])).toEqual([
       ["-run TestMapNormalises", "ok", "matches TestMapNormalisesCountry, TestMapNormalisesRegion"],
-      ["-run '^TestMapNormalises$'", "dead", "no func Test… declaration under the root matches this selector; declare it under creates if the unit adds it"],
-      ["-run TestOther", "dead", "no func Test… declaration under the root matches this selector; declare it under creates if the unit adds it"],
+      ["-run '^TestMapNormalises$'", "dead", DEAD_SELECTOR_HINT],
+      ["-run TestOther", "dead", DEAD_SELECTOR_HINT],
       ["-run '('", "dead", "'(' is not a valid regular expression"],
       ["TestMapNormalisesRegion", "ok", "defined or referenced in internal/map_test.go"],
     ])

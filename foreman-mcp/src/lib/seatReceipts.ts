@@ -22,6 +22,7 @@ import fs from "fs/promises"
 import { createHash, randomBytes } from "crypto"
 import type { Provider } from "../types.js"
 import { canonicalStringify } from "./eventsSidecar.js"
+import { appendFileDurable } from "./atomicWrite.js"
 
 // The file name and its path rule live in lib/foremanFiles.ts (v0.6.20), the single list the
 // repository guard excludes; re-exported here for existing importers.
@@ -70,13 +71,26 @@ export interface ConsumedLine {
   ts: string
   phase: string
   review_ts: string
+  /**
+   * 0.6.26: this binding replaced an earlier one whose review record no longer exists in the
+   * ledger. Set only by the ledger's reclaim path, which proves the absence before writing.
+   */
+  reclaimed?: { from_review_ts: string }
 }
 type Chained<T> = T & { prev_hash?: string; line_hash: string }
 export type ReceiptInput = Omit<SeatReceipt, "v" | "kind" | "id" | "ts">
 
 export interface ReceiptsState {
   receipts: Map<string, SeatReceipt>
-  consumed: Set<string>
+  /**
+   * 0.6.26: the binding per spent receipt, not just its id. The review record a receipt was
+   * spent on lives in the LEDGER while the receipt lives here, so a restored ledger leaves
+   * receipts bound to records that no longer exist — and record_review then refuses both the
+   * receipt (already consumed) and the record (no receipt), making a completed review
+   * permanently unrecordable. Keeping phase and review_ts lets the ledger check whether the
+   * consuming record is still there before it refuses.
+   */
+  consumed: Map<string, ConsumedLine>
 }
 
 export function sha256Hex(text: string): string {
@@ -102,13 +116,13 @@ export async function readReceipts(filePath: string): Promise<ReceiptsState> {
   try {
     raw = await fs.readFile(filePath, "utf-8")
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { receipts: new Map(), consumed: new Set() }
+    if ((err as NodeJS.ErrnoException).code === "ENOENT") return { receipts: new Map(), consumed: new Map() }
     throw err
   }
   const lines = raw.split("\n")
   // A torn final line (no trailing LF) is an interrupted append: skipped here, refused by append.
   if (raw.length > 0 && !raw.endsWith("\n")) lines.pop()
-  const state: ReceiptsState = { receipts: new Map(), consumed: new Set() }
+  const state: ReceiptsState = { receipts: new Map(), consumed: new Map() }
   let prev: string | undefined
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i]
@@ -124,7 +138,7 @@ export async function readReceipts(filePath: string): Promise<ReceiptsState> {
     }
     prev = parsed.line_hash
     if (parsed.kind === "receipt") state.receipts.set(parsed.id, parsed)
-    else if (parsed.kind === "consumed") state.consumed.add(parsed.id)
+    else if (parsed.kind === "consumed") state.consumed.set(parsed.id, parsed)
   }
   return state
 }
@@ -148,7 +162,7 @@ async function appendChained(filePath: string, body: Record<string, unknown>): P
   }
   const line = prev !== undefined ? { ...body, prev_hash: prev } : { ...body }
   const chained = { ...line, line_hash: hashLine(line) }
-  await fs.appendFile(filePath, JSON.stringify(chained) + "\n", "utf-8")
+  await appendFileDurable(filePath, JSON.stringify(chained) + "\n")
 }
 
 /** Write a receipt for one advisor run, successful or not. Returns it with its id. */
@@ -160,9 +174,18 @@ export async function appendReceipt(filePath: string, input: ReceiptInput): Prom
   return receipt
 }
 
-/** Mark a receipt spent by one review record. */
-export async function appendConsumed(filePath: string, id: string, phase: string, reviewTs: string): Promise<void> {
-  const line: ConsumedLine = { v: 1, kind: "consumed", id, ts: new Date().toISOString(), phase, review_ts: reviewTs }
+/**
+ * Mark a receipt spent by one review record. `reclaimed` names the earlier binding this one
+ * replaces; the file keeps both lines, so a rebind is visible rather than indistinguishable
+ * from a double spend.
+ */
+export async function appendConsumed(
+  filePath: string, id: string, phase: string, reviewTs: string, reclaimed?: { from_review_ts: string }
+): Promise<void> {
+  const line: ConsumedLine = {
+    v: 1, kind: "consumed", id, ts: new Date().toISOString(), phase, review_ts: reviewTs,
+    ...(reclaimed ? { reclaimed } : {}),
+  }
   await withReceiptsLock(filePath, () => appendChained(filePath, line as unknown as Record<string, unknown>))
 }
 

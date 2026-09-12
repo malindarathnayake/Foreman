@@ -76,7 +76,10 @@ describe("the receipts file is a hash chain Foreman alone writes", () => {
     const state = await readReceipts(receiptsPath)
     expect([...state.receipts.keys()]).toEqual([a.id, b.id])
     expect(state.receipts.get(b.id)).toMatchObject({ provider: "openai", reasoning_effort: "xhigh" })
-    expect(state.consumed).toEqual(new Set([a.id]))
+    // 0.6.26: consumption keeps the binding (phase + review_ts), not just the id, so the
+    // ledger can tell "spent on a record that still exists" from "spent on a record that is gone".
+    expect([...state.consumed.keys()]).toEqual([a.id])
+    expect(state.consumed.get(a.id)).toMatchObject({ kind: "consumed", id: a.id, phase: "p1" })
     expect(a.id).toMatch(/^[0-9a-f]{16}$/)
     const lines = (await fs.readFile(receiptsPath, "utf-8")).trim().split("\n").map((l) => JSON.parse(l))
     expect(lines[0].prev_hash).toBeUndefined()
@@ -84,7 +87,7 @@ describe("the receipts file is a hash chain Foreman alone writes", () => {
     expect(lines[2].prev_hash).toBe(lines[1].line_hash)
   })
   it("an absent file is an empty state", async () => {
-    expect(await readReceipts(receiptsPath)).toEqual({ receipts: new Map(), consumed: new Set() })
+    expect(await readReceipts(receiptsPath)).toEqual({ receipts: new Map(), consumed: new Map() })
   })
   it("an edited line breaks the chain loudly [CWE-345]", async () => {
     const a = await receipt()
@@ -171,8 +174,30 @@ describe("record_review binds one receipt to one independent record", () => {
       receipt: r.id, cli: "gemini", provider: "google", model_served: "gemini-3.1-pro-preview",
       bytes_in: OK_INPUT.bytes_in, bytes_out: 900, tokens_used: 4100,
     })
-    expect((await readReceipts(receiptsPath)).consumed).toEqual(new Set([r.id]))
-    await expect(record({ seat_receipt: r.id, packet_hash: r.prompt_sha256 })).rejects.toThrow(/already bound to a review record/)
+    expect([...(await readReceipts(receiptsPath)).consumed.keys()]).toEqual([r.id])
+    await expect(record({ seat_receipt: r.id, packet_hash: r.prompt_sha256 })).rejects.toThrow(/already bound to the review recorded at/)
+  })
+  // 0.6.26 (field report 2026-09-11): the receipts file is append-only and survives a ledger
+  // loss; the review records citing it do not. Both seats stayed bound while their records
+  // were gone, and a completed gate review became permanently unrecordable. A receipt is
+  // reclaimable exactly when the ledger can prove the consuming record is absent.
+  it("reclaims a receipt whose review record the ledger no longer holds, and records the rebind", async () => {
+    await passingUnit()
+    const r = await receipt()
+    await record({ seat_receipt: r.id, packet_hash: r.prompt_sha256 })
+    const spentTs = (await readLedger(ledgerPath)).phases.p1.reviews![0].ts
+
+    // Simulate the loss: the ledger comes back from git without the review record.
+    const restored = await readLedger(ledgerPath)
+    restored.phases.p1.reviews = []
+    await fs.writeFile(ledgerPath, JSON.stringify(restored))
+
+    const result = await record({ seat_receipt: r.id, packet_hash: r.prompt_sha256 })
+    expect(JSON.stringify(result)).toContain("was reclaimed")
+    expect((await readLedger(ledgerPath)).phases.p1.reviews![0].provenance).toMatchObject({ receipt: r.id })
+    // Both bindings stay in the chain, the second naming the record it replaced.
+    const consumed = (await readReceipts(receiptsPath)).consumed.get(r.id)
+    expect(consumed!.reclaimed).toEqual({ from_review_ts: spentTs })
   })
   it("refuses an unknown receipt, a missing or mismatched packet hash, a failed seat, and a non-independent stage", async () => {
     await passingUnit()

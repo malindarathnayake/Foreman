@@ -68,11 +68,13 @@ describe("parsing the checkpoint", () => {
     expect(owningPackage("internal/web/handlers/render.go")).toBe("internal/web/handlers")
     expect(owningPackage("Docs/spec.md")).toBeNull()
     expect(owningPackage("config/app.yaml")).toBeNull()
-    expect(checkpointFromSpec(SPEC(), "p11.8")!.digest).toMatch(/^[0-9a-f]{16}$/)
-    expect(checkpointFromSpec("#### u9 — no test line\n- Files: a.go\n", "u9")).toBeNull()
+    expect(checkpointFromSpec(SPEC(), "p11.8").def!.digest).toMatch(/^[0-9a-f]{16}$/)
+    // 0.6.26: the three causes of an absent definition are distinguished, not collapsed to null.
+    expect(checkpointFromSpec("#### u9 — no test line\n- Files: a.go\n", "u9")).toEqual({ def: null, absence: "no_test_line" })
+    expect(checkpointFromSpec("#### u9 — no test line\n- Files: a.go\n", "u404")).toEqual({ def: null, absence: "unit_not_found" })
   })
   it("reach: the p11.8 omission; exact vs recursive; nested modules; -C; opaque blocks; unclassified reported", async () => {
-    const def = (test: string) => checkpointFromSpec(SPEC(test), "p11.8")!
+    const def = (test: string) => checkpointFromSpec(SPEC(test), "p11.8").def!
     const files = FILES.split(", ")
     const omitted = await checkpointReach(dir, def("go test ./internal/ops/ && go test ./internal/cfsource/graphql/"), files)
     expect(omitted.status).toBe("omitted")

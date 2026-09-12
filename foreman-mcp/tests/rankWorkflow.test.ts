@@ -108,9 +108,18 @@ describe("rank-directed bounded worker corrections", () => {
     await guard()
     await verdict("pass", MIDDLE)
   })
-  it("does not let Middle take bounded corrections", async () => {
+  // 0.6.26 (field report 2026-09-11): middle rank now takes bounded corrections. Forcing a
+  // fresh worker for a behavioural fix threw away the previous attempt's context and was
+  // strictly riskier than reuse; every other reuse predicate still gates the write. Standard
+  // and unknown rank remain on the fresh-worker path for both kinds.
+  it("lets Middle take bounded corrections, and still refuses Standard/unknown", async () => {
     await initial(MIDDLE)
-    await expect(correction(MIDDLE)).rejects.toThrow(/does not allow bounded/)
+    await correction(MIDDLE)
+    expect((await unit()).attempt_seq).toBe(2)
+  })
+  it("keeps unknown rank off both reuse kinds", async () => {
+    await initial(UNKNOWN)
+    await expect(correction(UNKNOWN)).rejects.toThrow(/does not allow bounded/)
   })
   it("TopRank supports bounded test corrections but requires a new cleared verdict", async () => {
     await initial()

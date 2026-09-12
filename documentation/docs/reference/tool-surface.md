@@ -22,14 +22,14 @@ Where the shapes are. Hosts clip tool descriptions at about 2,000 characters, so
 |---|---|---|
 | `design_partner`, `spec_generator`, `pitboss_implementor`, `lighttask`, `spec_man`, `doc_man` | `context` string | The procedure for that protocol, rendered for the active host |
 | `session_orient` | none | The resume state. See [Resuming a session](../how-it-works/resuming.md) |
-| `read_ledger` | `query`: `verdicts`, `rejections`, `phase_gates`, `reviews`, `delegation_metrics`, `full`; `phase`, `unit_id`, `verdict`, `include_notes`, `cursor`, `limit` up to 100 | A paged table, or one unit, or the full JSON. `full` on a large ledger returns guidance instead of flooding the context |
+| `read_ledger` | `query`: `verdicts`, `rejections`, `phase_gates`, `reviews`, `delegation_metrics`, `review_outcomes`, `facts`, `reconstruct`, `full`; `phase`, `unit_id`, `verdict`, `include_notes`, `cursor`, `limit` up to 100 | A paged table, or one unit, or the full JSON. `full` on a large ledger returns guidance instead of flooding the context. `reconstruct` builds a read-only recovery worksheet from the append-only sidecars after a ledger loss |
 | `read_progress` | `last_n_completed` | Ledger progress and resume state shared with `session_orient`, followed by descriptive checklist notes |
 | `read_journal` | `last_n`, `rollup_only` | Sessions, or the rollup |
 | `bundle_status` | none | `running_version` versus `runtime_disk_version`; `restart_recommended` as `true` with what changed, `false`, or `n/a` with why, from comparing `dist/`, `package.json`, and the stack profile override against a snapshot taken at process start; and which skills are shadowed by a project or user override. Compiled code cannot be reloaded; protocol Markdown is re-read on every activation |
 | `host_status` | none | Active host profile and the model slugs it renders |
 | `changelog` | `since` | Bundled changelog entries |
 | `ethos` | `section` | The engineering document rendered with the active stack profile |
-| `normalize_review` | `reviewer`, `raw_text` | Findings parsed from reviewer text, a `findings_json:` line ready for `record_review`, and `unparsed_lines` |
+| `normalize_review` | `reviewer`, `raw_text` | Findings parsed from reviewer text, a `findings_json:` line ready for `record_review`, and `unparsed_lines`. Zero findings from non-empty text prints the grammar it requires — an explicit `CRITICAL`/`HIGH`/`MEDIUM`/`LOW` or `P0`–`P3` token |
 | `verify_citations` | spec text plus citations | Each `file:line` citation checked against the repo |
 | `retrieve_original` | a `<<ccr:HASH>>` marker | The uncompressed output that marker replaced, for 30 minutes by default |
 
@@ -39,7 +39,7 @@ Where the shapes are. Hosts clip tool descriptions at about 2,000 characters, so
 |---|---|---|
 | `write_ledger` | `set_unit_status`, `set_verdict`, `add_rejection`, `authorize_attempts`, `declare_phase_units`, `update_phase_gate`, `set_phase_scope`, `record_review` | The full list on [What Foreman enforces](../enforcement/what-foreman-enforces.md). The tool description carries every operation's exact `data` shape |
 | `write_progress` | `start_phase`, `update_status`, `complete_unit`, `log_error` | Also rewrites the fenced block in `PROGRESS.md` from the ledger. `complete_unit` reports `legacy_checkbox_candidates` for hand-written `- [ ] <unit id>` lines outside the fence and leaves them as they are |
-| `repo_guard` | `snapshot`, `compare` | Records the shared-tree ownership check on the unit's newest delegation. Files Foreman itself writes (`.foreman-*` state files and their `.corrupt`/`.tmp` side files, and the fenced checklist block in `Docs/PROGRESS.md`) are never charged to the worker; `PROGRESS.md` content outside the fence still is, and the fence interior is not verified (the ledger is authoritative) |
+| `repo_guard` | `snapshot`, `compare` | Records the shared-tree ownership check on the unit's newest delegation. `allowed_files` is the allow-list `compare` measures against; `files` only scopes the line-ending probe. An accidentally empty allow-list is refused, and both operations refuse or flag an authorized file that is entirely NUL bytes. Files Foreman itself writes (`.foreman-*` state files and their `.corrupt`/`.tmp` side files, and the fenced checklist block in `Docs/PROGRESS.md`) are never charged to the worker; `PROGRESS.md` content outside the fence still is, and the fence interior is not verified (the ledger is authoritative) |
 | `write_journal` | `init_session`, `declare_model`, `log_event`, `end_session` | Declared model/effort workflow rank; 15 anomaly-only event codes; 200 events per session; `log_event msg` over 400 chars is cut with a marker and a warning |
 
 ## Spawn a local process

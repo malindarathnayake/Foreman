@@ -21,7 +21,7 @@ import {
   appendPreflight, briefHash, checkCitations, consistencyFlags, directiveCoverage, extractDirective, missingSymbols, normalizeObligations, ownershipSweep,
   PREFLIGHT_POLICY_VERSION, type PreflightRecord,
 } from "../lib/preflight.js"
-import { checkpointReach, readCheckpoint, reachMessage } from "../lib/checkpoint.js"
+import { absenceMessage, checkpointReach, lookupCheckpoint, reachMessage } from "../lib/checkpoint.js"
 export { extractDirective }
 import { toKeyValue, toTable } from "../lib/toon.js"
 import { readLedgerWithStatus } from "../lib/ledger.js"
@@ -94,12 +94,16 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
   }
   // 0.6.25: checkpoint reach, read from the SERVER's spec (never this call's directive or
   // spec_path): the unit's Files and Test lines, the caller's `files` unioned in as scope.
-  let reachStatus = "none (the unit's directive has no Test: line)"
+  // 0.6.26 (field report 2026-09-11): every absent definition used to report "the unit's
+  // directive has no Test: line", including for a unit whose directive ends in one — the
+  // real cause (an unreadable spec, or a unit id the spec does not name) was invisible.
+  let reachStatus = "none: the server has no spec path configured, so no checkpoint could be resolved"
   let reachOmitted = false
   let reachKind: "ok" | "omitted" | "unknown" | "none" = "none"
   let checkpointSha: string | undefined
   if (specPath) {
-    const def = await readCheckpoint(specPath, input.unit_id)
+    const { def, absence } = await lookupCheckpoint(specPath, input.unit_id)
+    if (absence) reachStatus = absenceMessage(absence, specPath, input.unit_id)
     if (def) {
       checkpointSha = def.digest
       const scope = [...new Set([...def.files, ...input.files.map((f) => f.replace(/\\/g, "/").replace(/^\.\//, ""))])]

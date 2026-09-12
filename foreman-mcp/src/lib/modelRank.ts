@@ -45,7 +45,17 @@ export function resolveModelRank(model?: string | null, effort?: string | null):
     policy_version: 1,
     permissions: {
       reuse_worker_mechanical: weight >= 2,
-      reuse_worker_bounded: weight === 3,
+      // 0.6.26 (field report 2026-09-11): middle rank was mechanical-only, so a BEHAVIOURAL
+      // correction forced a fresh worker carrying none of the previous attempt's context —
+      // strictly more risk than reusing the worker that had just done the work. The policy
+      // was choosing the riskier option in the name of caution. Reuse is not the loose path
+      // here: the ledger already requires the same declared session, the same recorded
+      // worker id, a cleared ownership guard on the previous attempt, a non-hot-path and
+      // non-security-boundary phase, and correction.files inside that attempt's frozen
+      // authorized set — and it is still an outer attempt against the failure cap. Top rank
+      // keeps the wider allowance (focused_validation, delta_review) that is genuinely
+      // rank-sensitive.
+      reuse_worker_bounded: weight >= 2,
       compact_followup: weight >= 2,
       focused_validation: weight === 3,
       delta_review: weight === 3,

@@ -327,10 +327,15 @@ describe("repo_guard snapshot on a correction attempt", () => {
     expect((await unit()).delegations!.at(-1)!.guard).toBeUndefined()
     const out = await snap({ allowed_files: ["a.ts"] })
     expect(line(out, "status")).toBe("status: recorded")
-    expect(line(out, "authorized_from")).toBeUndefined()
+    // 0.6.26: the provenance of the allow-list is always reported; an explicit set reads "given".
+    expect(line(out, "authorized_from")).toBe("authorized_from: given")
   })
 
-  it("inherits nothing on an ordinary attempt", async () => {
+  // 0.6.26 (field report 2026-09-11): this used to record a baseline authorizing NOTHING, so
+  // every edit the worker made was "outside the brief" — a hard stop clearable only by
+  // user_override. An ordinary attempt still inherits nothing; it now says so instead of
+  // freezing an allow-list that could only ever refuse.
+  it("inherits nothing on an ordinary attempt, and refuses rather than authorizing nothing", async () => {
     await write(delegated())
     await snap({ files: ["a.ts"], allowed_files: ["a.ts"] })
     await compare()
@@ -338,8 +343,24 @@ describe("repo_guard snapshot on a correction attempt", () => {
     await write(reject())
     await write(delegated())
     const out = await snap()
+    expect(line(out, "status")).toBe("status: refused")
+    expect(out).toContain("the authorized file set is empty")
+    expect(out).toContain("allowed_files")
+  })
+
+  it("falls back to `files` when only that is given, and names the fallback", async () => {
+    await write(delegated())
+    const out = await snap({ files: ["a.ts"] })
     expect(line(out, "status")).toBe("status: recorded")
-    expect(line(out, "authorized_from")).toBeUndefined()
+    expect(line(out, "authorized_from")).toBe("authorized_from: files (allowed_files was not given)")
+    expect(line(out, "authorized_files")).toBe("authorized_files: 1")
+  })
+
+  it("takes an explicit empty allow-list as a declared read-only guard", async () => {
+    await write(delegated())
+    const out = await snap({ files: ["a.ts"], allowed_files: [] })
+    expect(line(out, "status")).toBe("status: recorded")
+    expect(line(out, "authorized_from")).toBe("authorized_from: declared empty (the worker edits nothing)")
     expect(line(out, "authorized_files")).toBe("authorized_files: 0")
   })
 })
