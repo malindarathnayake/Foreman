@@ -6,7 +6,14 @@
 // The "reproduced in review" cases mirror an adversarial pass over the 0.6.10 commit that
 // broke it in nine ways. The headline one: comparing path sets meant a worker overwriting
 // the user's uncommitted work in a file outside the brief returned ok.
-import { describe, it, expect, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
+
+// Every test in this file shells out to real git repeatedly (init, add, commit, status,
+// ls-files, stash) and several run a full snapshot/compare cycle. On Windows, under the
+// parallel load of the whole suite, that is routinely past vitest's 5s default — which
+// surfaced as a DIFFERENT test timing out on each run while every one passed in isolation.
+// The budget is the problem, not the tests, so it is set once for the file.
+vi.setConfig({ testTimeout: 30000, hookTimeout: 30000 })
 import fs from "fs/promises"
 import os from "os"
 import path from "path"

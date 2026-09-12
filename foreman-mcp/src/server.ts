@@ -54,6 +54,7 @@ import { maybeCompress, compressionEnabled, getRetrieveOriginalTool, toolNameFor
 import { ADVISOR_CLIS } from "./lib/advisorCli.js"
 import { codexAgentsInit, CODEX_AGENT_ROLES } from "./tools/codexAgentsInit.js"
 import { claudeWorkflowsInit, FOREMAN_WORKFLOWS } from "./tools/claudeWorkflowsInit.js"
+import { claudeAgentsInit, ClaudeAgentsInitInputSchema } from "./tools/claudeAgentsInit.js"
 import { preflightCheck, PreflightCheckInputSchema } from "./tools/preflightCheck.js"
 import { renderOracle, runOracle, VerifyOracleInputSchema } from "./tools/verifyOracle.js"
 import { recordOracle } from "./lib/ledger.js"
@@ -872,6 +873,31 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         annotations: { title: "Init Claude Workflows", readOnlyHint: false, destructiveHint: false },
       },
       async (args, _extra) => textResult(await claudeWorkflowsInit(args))
+    )
+  }
+
+  // Claude Code only: write .claude/agents seat definitions with a pinned model per tier.
+  if (host === "claude-code") {
+    server.registerTool(
+      "claude_agents_init",
+      {
+        title: "Init Claude Agents",
+        description: [
+          "Claude Code host only. Writes Foreman's three implementation seats to .claude/agents/ as agent",
+          "definitions with a MODEL PINNED IN FRONTMATTER: foreman-worker-light (cheap, haiku),",
+          "foreman-worker (standard, sonnet), foreman-worker-heavy (premium, opus). Override per role with",
+          "`models`. Foreman already records the tier and route_reason of every delegation as audit evidence;",
+          "this makes the tier resolve to a model the way it already does on Codex, instead of a rule the",
+          "operator restates each session. Spawn with subagent_type: '<role>' and NO model argument.",
+          "It is a binding DEFAULT, not a lock: the Agent tool's model argument still overrides the",
+          "frontmatter, and the delegation's tier/route_reason remain the record of what actually ran.",
+          "Existing definitions are left alone unless overwrite: true.",
+        ].join(" "),
+        inputSchema: ClaudeAgentsInitInputSchema,
+        outputSchema: TextOutputSchema,
+        annotations: { title: "Init Claude Agents", readOnlyHint: false, destructiveHint: false },
+      },
+      async (args, _extra) => textResult(await claudeAgentsInit(args))
     )
   }
 

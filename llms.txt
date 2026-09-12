@@ -8,7 +8,7 @@ or routing policy. It orchestrates protocols, records state, and refuses invalid
 transitions (a unit cannot pass without a recorded delegation; a phase cannot
 pass while any unit is not `pass`).
 
-Package: `@malindarathnayake/foreman-mcp` · Version: `0.6.27` · Runtime: Node.js `>=22`
+Package: `@malindarathnayake/foreman-mcp` · Version: `0.6.28` · Runtime: Node.js `>=22`
 
 This file is written for an AI agent that just connected to the server. It is
 an operating packet, not a feature list — read the whole thing before your
@@ -16,7 +16,7 @@ first tool call.
 
 ## 1. Public tool surface (contract)
 
-Tool count: 35
+Tool count: 36
 
 - bundle_status — Returns the Foreman bundle version and override info.
 - host_status — Returns the active Foreman host and the model slugs used for worker/advisor invocation.
@@ -30,6 +30,7 @@ Tool count: 35
 - write_ledger — Writes an operation to the Foreman ledger (unit status, verdicts, rejections, phase gates, scope, durable reviews).
 - invoke_worker — EXPERIMENTAL (egress: sends briefs + file excerpts to your configured HTTP endpoint). Delegates a single patch task to the remote OpenAI-compatible endpoint configured in `.foremanenv`; returns a shape-checked, verbatim patch for the host to apply.
 - repo_guard — Runs the shared-tree ownership check around an editing worker: `snapshot` records branch, HEAD, stash, index, dirty paths, `core.autocrlf`, and line-ending attributes on the delegation; `compare` re-reads them and names every mutation outside the brief. `allowed_files` IS the allow-list `compare` measures against; `files` only scopes the line-ending probe, and an accidentally empty allow-list is refused rather than frozen. Both refuse or flag an authorized file that is non-empty and entirely NUL bytes — destroyed, not edited. Foreman writes both, so a pass verdict can be refused until the guard clears. Reports `n/a` outside a git work tree.
+- claude_agents_init — Claude Code host only. Writes Foreman's three implementation seats to `.claude/agents/` as agent definitions with the model PINNED IN FRONTMATTER: foreman-worker-light (cheap/haiku), foreman-worker (standard/sonnet), foreman-worker-heavy (premium/opus), overridable per role. Foreman already records each delegation's tier and route_reason; this makes the tier resolve to a model the way it already does on Codex instead of a rule the operator restates each session. A binding default, not a lock: the Agent tool's model argument still overrides the frontmatter.
 - claude_workflows_init — Claude Code host only. Installs Foreman's saved Workflow scripts (checkpoint review fan, design panel, field-report triage) into the project's `.claude/workflows/`; a workflow review is same-model perspective recorded as `fan`, never a gate seat.
 - preflight_check — Checks a worker brief against the spec before the attempt is spent: symbols must appear in the spec, citations must resolve in the repo (a `-run` operand resolves as a Go regex against test declarations); files the unit creates go in creates: [{ file, tests }], whose citations are forward and are checked at the pass verdict; checkpoint reach reports whether the spec's Test line selects the Go package of every authorized file (a testdata fixture belongs to its parent package), and the delegation refuses an omission unless the owner overrides. Directive omissions, contradiction markers and out-of-set references are reported. Returns the brief_hash the ledger requires on the delegation.
 - phase_ownership — Runs the ownership sweep once for every unit in a phase, each against its own Files column, and assigns every outside reference to an owning unit or UNASSIGNED. Advisory and lexical; re-run after each unit lands.

@@ -22,14 +22,14 @@ afterEach(async () => {
   await server?.close()
 })
 
-describe("list tools — verify all 35 present, update_bundle absent", () => {
+describe("list tools — verify all 36 present, update_bundle absent", () => {
   beforeEach(async () => {
     await setupServer()
   })
 
-  it("lists exactly 35 tools", async () => {
+  it("lists exactly 36 tools", async () => {
     const result = await client.listTools()
-    expect(result.tools).toHaveLength(35)
+    expect(result.tools).toHaveLength(36)
   })
 
   it("includes all required tool names", async () => {
@@ -182,7 +182,11 @@ describe("Codex-only tool registration", () => {
   it("registers codex_agents_init only for the codex host", async () => {
     const result = await client.listTools()
     const tool = result.tools.find((entry) => entry.name === "codex_agents_init")
+    // Host-gated registration makes the totals differ: claude-code gets claude_workflows_init and
+    // claude_agents_init and not codex_agents_init; codex gets the reverse. 0.6.28 added one
+    // claude-code-only tool, so claude-code is 36 and codex stays at 35.
     expect(result.tools).toHaveLength(35)
+    expect(result.tools.map((t) => t.name)).not.toContain("claude_agents_init")
     expect(tool).toBeDefined()
     expect(tool?.annotations?.title).toBe("Init Codex Agent Roles")
     expect(tool?.annotations?.readOnlyHint).toBe(false)

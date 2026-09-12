@@ -82,5 +82,12 @@ export function modelRankSummary(modelRank: ModelRank): Record<string, string | 
       ? `rehydrated from session ${modelRank.rehydrated.session_id} (declared ${modelRank.rehydrated.session_ts}) — orientation only, NO workflow permissions until write_journal declare_model confirms the current model`
       : "declared",
     workflow_permissions: Object.entries(modelRank.permissions).filter(([, allowed]) => allowed).map(([name]) => name).join(",") || "none",
+    // 0.6.28: a top-rank orchestrator is the expensive seat in the room, and the cost of it
+    // spawning its own class for ordinary implementation compounds over a phase. The rank already
+    // decides workflow permissions; it should also say what the WORKER seat defaults to. Rank-keyed,
+    // not model-keyed, so Astra at xhigh gets the same reminder Fable does.
+    seat_guidance: modelRank.weight === 3
+      ? "you are a frontier orchestrator — do not spawn frontier workers by default: implementation goes to foreman-worker (standard), foreman-worker-light for a fully specified edit, and foreman-worker-heavy only for concurrency, migrations, error-handling semantics, public contracts or security paths, or a unit a lower seat already failed"
+      : "seat per unit: foreman-worker-light (cheap) / foreman-worker (standard) / foreman-worker-heavy (premium); escalate only on evidence cited in route_reason",
   }
 }
