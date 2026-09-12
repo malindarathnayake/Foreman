@@ -333,6 +333,25 @@ export function normalizeReview(
       ) +
       "\n\nfindings_json: " +
       JSON.stringify(findings)
+  } else if (rawText.trim().length > 0) {
+    // 0.6.26 (field report 2026-09-11): a structured review came back as `findings: 0` and
+    // four bare numbers, so the reader could not tell "the reviewer found nothing" from
+    // "this grammar does not read that shape" and recorded nine findings by hand. Zero
+    // findings out of non-empty text always says what the parser looks for.
+    text +=
+      "\nNOT RECOGNISED\n" +
+      "  Every finding needs an EXPLICIT severity token — CRITICAL, HIGH, MEDIUM, LOW, or P0-P3.\n" +
+      "  Unmarked prose is never turned into a finding, however much it reads like one.\n" +
+      "  Accepted shapes (severity leading, trailing, or as its own field):\n" +
+      "    - HIGH: src/a.ts:42 — the retry loop never resets the backoff\n" +
+      "    - **[MEDIUM]** `src/b.go:17` missing nil check\n" +
+      "    - Finding 3\n" +
+      "      Severity: LOW\n" +
+      "      File: src/c.py:8\n" +
+      "      The log line names the wrong field.\n" +
+      "  Other vocabularies (blocker / major / minor / nit) are NOT severity tokens here.\n" +
+      "  If the reviewer genuinely found nothing, record the review with findings: [] directly —\n" +
+      "  normalize_review is a parser for prose, not a gate."
   }
 
   return { data, text }

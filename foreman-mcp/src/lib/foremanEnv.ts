@@ -627,6 +627,49 @@ export function registerHomeSecrets(values: Record<string, string>): void {
   }
 }
 
+/**
+ * Resolves environment variable NAMES for the tools that carry a credential by reference
+ * (`contract_probe` headers, `live_smoke` plan env): process env first, `~/.foreman-mcp/.env`
+ * second, exactly the precedence loadForemanEnv applies. 0.6.23: both tools read process.env
+ * alone before this, so a credential the operator had put in the store, which exists so a
+ * variable can be defined without exporting it into every shell, was reported missing.
+ *
+ * The [CWE-522] endpoint guard in loadForemanEnv does not apply here: that guard stops a repo
+ * `.foremanenv` from steering the store's worker key to a different API base named in the same
+ * file. A probe's or smoke's destination comes from the spec's foreman-contract block, which is
+ * the reviewed authoring place, and every record names the target and the variable NAMES used.
+ * Values are registered for redaction and never returned to the ledger or the output.
+ */
+export async function resolveNamedCredentials(
+  names: readonly string[],
+  opts?: { credentialsPath?: string; env?: Record<string, string | undefined> }
+): Promise<
+  | { ok: true; values: Record<string, string>; sources: Record<string, "process" | "store">; missing: string[] }
+  | { ok: false; message: string }
+> {
+  const credentialsPath = opts?.credentialsPath ?? homeCredentialsPath()
+  const home = await readHomeCredentials(credentialsPath)
+  if (!home.ok) return { ok: false, message: home.message.trim() }
+  registerHomeSecrets(home.values)
+  const processEnv = opts?.env ?? process.env
+  const values: Record<string, string> = {}
+  const sources: Record<string, "process" | "store"> = {}
+  const missing: string[] = []
+  for (const name of new Set(names)) {
+    const fromProcess = processEnv[name]
+    if (fromProcess !== undefined && fromProcess !== "") {
+      values[name] = fromProcess
+      sources[name] = "process"
+    } else if (home.values[name] !== undefined && home.values[name] !== "") {
+      values[name] = home.values[name]
+      sources[name] = "store"
+    } else {
+      missing.push(name)
+    }
+  }
+  return { ok: true, values, sources, missing }
+}
+
 // ─── Public entry point ──────────────────────────────────────────────────────────
 
 export async function loadForemanEnv(opts?: {

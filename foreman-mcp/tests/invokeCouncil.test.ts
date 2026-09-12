@@ -213,14 +213,23 @@ describe("invoke_council — configured seat over a loopback endpoint", () => {
         "utf-8"
       )
 
+      const receiptsPath = path.join(ws.dir, ".foreman-seats.jsonl")
       const text = await handleInvokeCouncil(baseInput({ lenses: ["contract"] }), {
         journalPath: ws.journalPath,
         envDir: ws.dir,
         credentialsPath,
+        receiptsPath,
       })
 
       expect(text).toContain("status: ok")
       expect(text).toContain("seats_ok: 1/1")
+      // 0.6.19: one receipt per seat, vendor from the prefix allowlist (unknown here), bound to the packet hash
+      const receiptId = /seat_receipts: A=([0-9a-f]{16})/.exec(text)?.[1]
+      expect(receiptId).toBeDefined()
+      const packetHash = /packet_hash: ([0-9a-f]{64})/.exec(text)![1]
+      const { readReceipts } = await import("../src/lib/seatReceipts.js")
+      const receipt = (await readReceipts(receiptsPath)).receipts.get(receiptId!)
+      expect(receipt).toMatchObject({ cli: "council", provider: "unknown", model_served: "loopback/mock-model", exit_code: 0, failure_reason: null, prompt_sha256: packetHash })
       expect(text).toContain("record_review")
       expect(text).toContain("const a is assigned and never read")
       expect(seen.path).toBe("/v1/chat/completions")

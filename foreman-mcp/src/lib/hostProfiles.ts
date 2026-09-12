@@ -15,6 +15,8 @@
  *   3. Default: "claude-code"
  */
 
+import { CODEX_NATIVE_REVIEW, CODEX_PROTOCOL_SECTIONS, CODEX_REVIEW_MODE } from "./codexProtocol.js"
+
 export type HostId = "claude-code" | "cursor" | "codex" | "generic"
 
 export const KNOWN_HOSTS: ReadonlyArray<HostId> = ["claude-code", "cursor", "codex", "generic"]
@@ -24,10 +26,11 @@ export interface HostProfile {
   displayName: string
   /** Map of placeholder name -> replacement text. Names exclude the surrounding {{...}}. */
   placeholders: Record<string, string>
+  protocolSections?: Record<string, string>
 }
 
 const SHARED_TREE_SAFETY =
-  " Repository state is user-owned: the worker may use read-only Git inspection only and must never run git stash, reset, checkout, switch, clean, add, commit, merge, rebase, cherry-pick, worktree, or any command that changes the index, stash, refs, branch, HEAD, or files outside the brief. If repository state blocks the task, stop and report it unchanged."
+  " Repository state is user-owned: the worker may use read-only Git inspection only and must never run git stash, reset, checkout, switch, clean, add, commit, merge, rebase, cherry-pick, worktree, or any command that changes the index, stash, refs, branch, HEAD, or files outside the brief. If repository state blocks the task, stop and report it unchanged. Heartbeat: every few tool calls append one JSON line {\"ts\",\"phase\",\"unit\",\"attempt\",\"files\":[touched so far],\"note\"} to Docs/.foreman-heartbeat.jsonl (Foreman-owned, excluded from the guard); the attempt number is in the delegation result. Docs/ and the harness are the pit-boss's: never write there."
 
 const CLAUDE_CODE_PROFILE: HostProfile = {
   id: "claude-code",
@@ -78,20 +81,30 @@ const CURSOR_PROFILE: HostProfile = {
 const CODEX_PROFILE: HostProfile = {
   id: "codex",
   displayName: "Codex",
+  protocolSections: CODEX_PROTOCOL_SECTIONS,
   placeholders: {
     host_name: "Codex",
+    review_mode: CODEX_REVIEW_MODE,
+    session_advisor_setup: "Native Codex mode: confirm native collaboration is available. At major checkpoints, probe optional Claude/Gemini advisors and record version/auth_status; leave unprobed entries null. Missing CLIs do not block native review.",
+    cli_unavailable: "Continue native Codex review; record optional advisor unavailability in limitations. No missing-CLI waiver is needed.",
     worker_invoke:
-      'Use Codex `spawn_agent` to create a disposable implementation subagent. Pass only the bounded worker brief — no spec, ledger, or progress file. Prefer the host-configured `gpt-5.6-luna` worker seat when Codex exposes subagent model selection; the current spawn contract may choose the model itself, so record the actual model and never attest Luna unless the host confirms it.' + SHARED_TREE_SAFETY,
+      'Use Codex `spawn_agent` to create a disposable implementation subagent in a fresh context. Pass only the bounded worker brief — no inherited conversation, spec, ledger, or progress file. Report the returned agent ID beside the unit ID, wait using native host tools, and preserve the completion report before releasing the agent. ' +
+      'PICK THE SEAT FROM THE UNIT, and record the same word as the ledger `tier`: ' +
+      '`worker_light` (tier cheap) when the brief names the exact edit — a literal substitution, rename, constant, test name, import path, or a mechanical repeat of a stated pattern; ' +
+      '`worker` (tier standard) for ordinary implementation where the brief states the behaviour and the seat chooses the code — this is the default, and an unclassifiable unit belongs here; ' +
+      '`worker_heavy` (tier premium) for concurrency, migrations, error-handling semantics, public contracts or schemas, security/authz paths, and any unit a lower seat already failed. ' +
+      'Escalate on evidence, never on a hunch: a fix worker moves up a tier only when `route_reason` cites the rejection, a refined brief, or an advisor diagnosis. Never start at premium to save a round. ' +
+      'Model pins live in `.codex/agents/<role>.toml` (written by `codex_agents_init`), so the seat is host configuration rather than a claim in this text; record the model Codex reports and never attest one the host did not confirm. ' +
+      'Reasoning effort is host-owned in this build: pass it at spawn time if your Codex exposes it — high for light and standard, xhigh for heavy — and do not assert an effort the host did not apply.' + SHARED_TREE_SAFETY,
     worker_fanout:
-      "When Step 2 batches to N workers: Codex `spawn_agent` workers share the repository and editing `worker` roles MUST run sequentially unless each has a proven isolated worktree/sandbox. Record `write_ledger` `s:'delegated'` before each spawn; validate its repository-state guard and verdict before the next editing worker. Read-only `explorer` roles may use `agents.max_threads` in parallel. Patch-only workers may run in parallel only for disjoint editable sets with a content-addressed apply check. Keep `agents.max_depth=1`; workers must not spawn further agents. Prefer `gpt-5.6-luna` only when host-confirmed, and call `codex_agents_init` if roles are missing.",
+      "When Step 2 batches to N workers: Codex `spawn_agent` workers share the repository and editing `worker` roles MUST run sequentially unless each has a proven isolated worktree/sandbox. Record `write_ledger` `s:'delegated'` before each spawn; validate its repository-state guard and verdict before the next editing worker. Read-only `explorer` roles may use `agents.max_threads` in parallel. Patch-only workers may run in parallel only for disjoint editable sets with a content-addressed apply check. Keep `agents.max_depth=1`; workers must not spawn further agents. Every editing seat in a batch is picked per unit (`worker_light` / `worker` / `worker_heavy`), not once for the batch. Call `codex_agents_init` if roles are missing.",
     advisor_checks:
-      '`mcp__foreman__capability_check({ cli: "claude" })` and `mcp__foreman__capability_check({ cli: "gemini" })`',
+      'At major checkpoints or on request, probe optional advisors: `mcp__foreman__capability_check({ cli: "claude" })` and `mcp__foreman__capability_check({ cli: "gemini" })`. Missing providers do not block native review.',
     advisor_a:
-      '**Advisor A (Claude Fable 5, max; headless):** `mcp__foreman__invoke_advisor({ cli: "claude", prompt: "<PROMPT>" })` (configured `model: "claude-fable-5"`, effort `max`, tools disabled).',
+      '**Optional external Advisor A (Claude Fable 5, max; headless):** `mcp__foreman__invoke_advisor({ cli: "claude", prompt: "<PROMPT>" })` (configured `model: "claude-fable-5"`, effort `max`, tools disabled).',
     advisor_b:
-      '**Advisor B (Gemini):** `mcp__foreman__invoke_advisor({ cli: "gemini", prompt: "<PROMPT>" })`',
-    advisor_fallback:
-      "**Non-independent fallback (last rung):** With no council seats AND no CLI advisor, run TWO adversarial self-review passes in the Codex pitboss seat with DIFFERENT critic framings (e.g. one contract/correctness, one security/data-integrity), and record that independent review was unavailable.",
+      '**Optional external Advisor B (Gemini):** `mcp__foreman__invoke_advisor({ cli: "gemini", prompt: "<PROMPT>" })`',
+    advisor_fallback: CODEX_NATIVE_REVIEW,
     autonomy:
       "Codex continuation is host-controlled: declare budgets and scope up front, stop at every phase gate, and re-enter after context reset through `session_orient`. Do not claim unattended continuation unless the active Codex host exposes and confirms it.",
   },
@@ -117,6 +130,26 @@ const GENERIC_PROFILE: HostProfile = {
     autonomy:
       "Autonomy is a declared capability — see HOST-CONTRACT.md: the host declares budgets and scopes up front; absence of a declaration fails closed (no autonomous continuation); suspend across compaction and re-enter via `session_orient`; Foreman ships the continuation directive, the host supplies the trigger.",
   },
+}
+
+// Common setup remains external-first on the other hosts.
+for (const profile of [CLAUDE_CODE_PROFILE, CURSOR_PROFILE, GENERIC_PROFILE]) {
+  profile.placeholders.review_mode = "Use the configured external advisor/council review path for this host."
+  profile.placeholders.cli_unavailable = "Ask user for explicit waiver"
+  profile.placeholders.session_advisor_setup = 'For sessions with phase checkpoints, run the host advisor probes and record each as "<version>/<auth_status>" instead of null; null means not probed.'
+}
+
+// 0.6.20: saved Workflow scripts exist on Claude Code only. The Workflow tool runs many
+// agents on the host's own model; the hook opts the host in through the skill text, the
+// user confirms before a run, and the result is perspective (stage:'fan'), never a seat.
+CLAUDE_CODE_PROFILE.placeholders.workflows =
+  "The Workflow tool (multi-agent orchestration, paid and user-approved) is available on this host. Install Foreman's saved scripts once per project with `mcp__foreman__claude_workflows_init` (writes .claude/workflows/foreman-checkpoint-review.js, foreman-design-panel.js, foreman-triage.js). " +
+  "Use them at these points only: `foreman-design-panel` for an open design question in design_partner or spec work; `foreman-checkpoint-review` as the review fan at a phase checkpoint (args { phase, files, spec_excerpt }); `foreman-triage` for a batch of field reports. " +
+  "Before every run, confirm with the user by AskUserQuestion naming the workflow, its phases and the agent count, unless the user already opted in this session (the `ultracode` keyword or a standing instruction). " +
+  "Record a checkpoint-review result with write_ledger record_review stage:'fan', the run id in limitations; every agent runs on the host's own model, so it is perspective and never a gate seat — invoke_advisor seats on another vendor still satisfy the gate and the independence bound. " +
+  "Never implement inside a workflow: units go through the unit protocol with their ledger record, guard cycle and verdict; editing workers run sequentially on the shared tree."
+for (const profile of [CURSOR_PROFILE, GENERIC_PROFILE, CODEX_PROFILE]) {
+  profile.placeholders.workflows = "No saved-workflow surface on this host; use the review and deliberation paths above."
 }
 
 const PROFILES: Record<HostId, HostProfile> = {
@@ -167,6 +200,10 @@ export function hostRuntimePreamble(host: HostId): string {
     "## Active Host Runtime (authoritative)",
     "The mappings below supersede provider, model, advisor, and host-tool instructions in this override body. Protocol workflow and project-specific rules below still apply.",
     "",
+    "**Two actors, one tree:** while a worker window is open the pit-boss does not write Docs/ or the harness; discoveries go to write_ledger record_fact (Foreman-owned, guard-excluded) and spec amendments wait for the verdict. A validation-only re-check after a guard trip is closed with close_attempt outcome:'validation_only', which charges nothing. **Declared workflow rank:** At init_session report env.model and env.effort (unknown is valid); on a model/effort change call write_journal declare_model with both fields. Trust the self-declaration; no host authentication is required for the pitboss rank. Follow the returned workflow_permissions: Middle permits mechanical same-session worker reuse and compact follow-ups; Top additionally permits bounded fixes/test changes, focused intermediate validation and independently verified worker_delta review. Standard/unknown use normal protocol. New implementation, fixes and test edits always require workers; existing scope/ownership guards, recorded attempts, required checks and checkpoint gates remain. These rank rules supersede contrary direct-fix or unconditional fresh-worker/full-review instructions below. Rank does not change agent_class, worker/reviewer capability or cost tier, never authenticates their served model, and never enters review sufficiency: gate passes are stamped with the basis that carried them, and declared ids (verifier, worker, native agents) are compared for distinctness, not verified.",
+    `**Review mode:** ${ph.review_mode}`,
+    `**Workflows:** ${ph.workflows}`,
+    `**Session advisor setup:** ${ph.session_advisor_setup}`,
     `**Worker:** ${ph.worker_invoke}`,
     `**Worker fan-out:** ${ph.worker_fanout}`,
     `**Advisor detection:** ${ph.advisor_checks}`,

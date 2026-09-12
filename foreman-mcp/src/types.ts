@@ -1,4 +1,7 @@
 import { z } from "zod"
+import type { ModelRank } from "./lib/modelRank.js"
+import type { HostId } from "./lib/hostProfiles.js"
+import { softText, softCut, type SoftLimit } from "./lib/softLimits.js"
 
 // ─── Ledger Types ─────────────────────────────────────────────────────────────
 
@@ -19,10 +22,12 @@ export type Tier = "cheap" | "standard" | "premium"
  * contradicts itself is not delegated, it is rewritten.
  */
 export interface DelegationPreflight {
-  /** Number of brief symbols grepped across spec.md (Step 4.5 steps 1–4). ≥1. */
-  symbols_grepped: number
+  /** Brief symbols grepped across spec.md (Step 4.5 steps 1–4): the array since 0.6.20 (checked by preflight_check), a count on older records. */
+  symbols_grepped: number | string[]
   /** Every test expectation in the brief agrees with its implementation instruction (step 6). */
   self_consistent: true
+  /** 0.6.20: the brief_hash preflight_check returned; required once the project has run the tool. */
+  receipt?: string
   /** Custom telemetry names checked against the stack profile (step 7), or n/a when the unit emits no signals. */
   telemetry?: "checked" | "n/a"
 }
@@ -39,6 +44,14 @@ export interface RepoEntry {
   wt: string
   /** Index blob id for the path, or "none". */
   idx: string
+  /**
+   * Set when the path is a Foreman-fenced file (Docs/PROGRESS.md) read by a fence-aware
+   * snapshot (v0.6.20). `wt` stays the full-content fingerprint; `fwt` is the fingerprint
+   * with Foreman's fenced block removed, present only when the file was hashed. Absent on
+   * legacy entries.
+   */
+  fenced?: true
+  fwt?: string
 }
 
 /**
@@ -47,6 +60,8 @@ export interface RepoEntry {
  * v0.6.11). Entry lists are capped in lib/repoGuard.ts.
  */
 export interface RepoSnapshot {
+  /** 0.6.20: content marks of Foreman state files (progress state) so a fenced-block change can be tied to a Foreman write. */
+  marks?: Record<string, string>
   /** Repository root, so a comparison cannot be run against a different checkout. */
   root: string
   /** Branch name, or "detached". */
@@ -67,6 +82,11 @@ export interface RepoSnapshot {
   entry_limit?: number
   /** The authorized file set, frozen before the worker ran. */
   allowed: string[]
+  /**
+   * Repo-relative paths of the Foreman-fenced files this snapshot was taken with (v0.6.20).
+   * Present (possibly empty) on every fence-aware snapshot; absent on a legacy baseline.
+   */
+  fenced?: string[]
   /** Short sha256 over the fields above. */
   hash: string
 }
@@ -81,6 +101,8 @@ export interface DelegationGuard {
   snapshot_ts: string
   result?: "ok" | "violation"
   violations?: string[]
+  /** 0.6.26: authorized files found entirely NUL at compare time — destroyed, not merely changed. */
+  damaged?: string[]
   checked_ts?: string
   /** A pass verdict taken past an uncleared guard by explicit user approval. */
   override?: { ts: string }
@@ -101,7 +123,59 @@ export interface Delegation {
   cap_grant_id?: number
   /** Foreman-authored repository-state guard (v0.6.10). Never written by the model. */
   guard?: DelegationGuard
+  /** Native worker identity and originating journal session, used only for bounded reuse. */
+  worker_id?: string
+  /**
+   * 0.6.20: set only when the id was bound by a later correction write (the attempt carried
+   * no id when the correction arrived). Absent when bound at delegation or at set_verdict.
+   * `by_attempt` is the correction attempt that supplied it. Server-authored; never model input.
+   */
+  worker_id_bound?: { at: "correction"; ts: string; by_attempt: number }
+  session_id?: string
+  /** Server-resolved orchestration policy when this attempt was recorded. */
+  model_rank?: ModelRank
+  correction?: { kind: "mechanical" | "bounded"; from_attempt: number; files: string[] }
+  /** 0.6.21: how this attempt ended. `rejected` is server-authored from a rejection or fail verdict; the rest are closed by close_attempt. Never affects attempt ids, counters or the cap. */
+  outcome?: AttemptOutcome
+  outcome_note?: string
+  /** 0.6.22: the spec contract digest frozen at delegation; the verdict refuses when the current contract differs (0.6.24). */
+  contract_sha256?: string
+  /** 0.6.24: digests of every values_in reference file at delegation; live_smoke and the verdict refuse when one moved. */
+  references?: Record<string, string>
+  /** 0.6.24: files and tests the brief orders into existence; the pass verdict checks each is declared. Carried across corrections. */
+  forward?: ForwardObligation[]
+  /** 0.6.25: the unit's checkpoint (spec Files + Test lines) frozen at delegation; the verdict re-checks its reach over the guard's authorized set. */
+  checkpoint?: FrozenCheckpoint
 }
+
+/** 0.6.25: what the delegation froze of the unit's checkpoint. Server-authored. */
+export interface FrozenCheckpoint {
+  digest: string
+  commands: string[]
+  files: string[]
+  reach: "ok" | "omitted" | "unknown"
+  omitted?: string[]
+  /** The owner delegated past a package omission; the files it covered. */
+  reach_override?: { ts: string; files: string[] }
+}
+
+/** 0.6.24: a file the unit creates and the tests it declares there (preflight_check `creates`). */
+export interface ForwardObligation {
+  file: string
+  tests: string[]
+}
+
+/** 0.6.24: what one deliverable held after the smoke plan ran. */
+export interface DeliverableReceipt {
+  id: string
+  path: string
+  sha256: string | null
+  bytes: number
+  passed: boolean
+  failed?: string[]
+}
+
+export type AttemptOutcome = "delivered" | "blocked" | "rejected" | "validation_only"
 
 /**
  * Owner authorization for attempts past the cap (v0.6.5, field feedback round 5). One
@@ -164,9 +238,70 @@ export interface Unit {
   /** Direct fixes recorded as attempts, newest last, capped at 20. */
   direct_fixes?: DirectFix[]
   /** A pass verdict that waived ATTEMPT REQUIRED or the cap through data.user_override. */
-  cap_override?: { ts: string; attempt: number; failed: number; waived: Array<"cap" | "attempt"> }
+  cap_override?: { ts: string; attempt: number; failed: number; waived: Array<"cap" | "attempt" | "escape" | "smoke" | "contract" | "forward" | "checkpoint" | "reach"> }
   /** Owner grants for attempts past the cap, newest last, capped at 20. Enforcement reads the newest only. */
   cap_grants?: CapGrant[]
+  /** 0.6.20: the latest verify_oracle run on this unit. Server-authored. */
+  oracle?: { ts: string; mutations: number; killed: number; survivors: string[]; invalid: string[] }
+  /** 0.6.21: lifetime attempt outcomes; durable scalars because delegations[] is trimmed at 20. */
+  outcomes?: Partial<Record<AttemptOutcome, number>>
+  /** 0.6.21: server-executed contract probes, newest last, ≤10. */
+  probes?: ProbeRecord[]
+  /** 0.6.22: live_smoke runs, newest last, ≤10. */
+  smokes?: SmokeReceipt[]
+}
+
+export interface ProbeRecord {
+  ts: string
+  method: "GET" | "HEAD"
+  /** origin + path; the query is never stored. */
+  target: string
+  status: number | null
+  bytes: number
+  sha256: string
+  asserted: string[]
+  passed: boolean
+  failed?: string[]
+  /** Environment variable NAMES the request used; never values. */
+  credentials?: string[]
+  /** 0.6.22: false when the body exceeded the capture cap; no body assertion passes against a prefix. */
+  capture_complete?: boolean
+  /** 0.6.22: set in claim mode; the request and assertions came from this claim in the spec contract. */
+  claim_id?: string
+  contract_sha256?: string
+  /** 0.6.22: an exploratory probe; never satisfies a claim. */
+  diagnostic?: true
+}
+
+/** 0.6.22: one live_smoke run. Server-authored; the verdict gate reads the newest for the current attempt. */
+export interface SmokeReceipt {
+  run_id: string
+  ts: string
+  attempt: number
+  plan_id: string
+  contract_sha256: string
+  harness_sha256: string
+  input_sha256: string
+  exit_code: number | null
+  timed_out: boolean
+  stdout_sha256: string
+  observations: string[]
+  passed: boolean
+  failed?: string[]
+  /** 0.6.24: the deliverables the plan produced and what Foreman observed on their bytes. */
+  deliverables?: DeliverableReceipt[]
+  /** 0.6.24: reference digests the values_in assertions were evaluated against. */
+  references?: Record<string, string>
+}
+
+/** 0.6.22: the one repository window per root; absent means idle. */
+export interface RepoWindow {
+  root: string
+  phase: string
+  unit_id: string
+  attempt: number
+  stage: "editing" | "validation"
+  opened_ts: string
 }
 
 /** A single classified review finding. Shared with normalize_review output. */
@@ -191,10 +326,127 @@ export interface PhaseReview {
   checked?: string[]
   /** Seat-reported limitations (timeouts, unread files, refused categories). */
   limitations?: string
-  /** 'independent' = first, blind pass (counts toward seat independence); 'cross_exam' = re-prompt informed by another seat's claims (never a second independent vote); 'verification' = pit-boss re-verification of direct fixes with evidence (v0.6.5; counts for the gate only under verificationIneligibility in lib/ledger.ts). */
-  stage?: "independent" | "cross_exam" | "verification"
+  /** 'independent' = external blind pass; 'cross_exam' = informed follow-up; 'verification' = evidence-linked direct-fix check; legacy 'fan' never qualifies alone; 'native' = complete Codex subagent review with provenance, eligible only on the Codex host. */
+  stage?: "independent" | "cross_exam" | "verification" | "fan" | "native"
+  /** Host-reported provenance for the native Codex review path, not cross-vendor independence. */
+  native?: NativeReviewEvidence
   /** Present on stage:'verification' only. */
   evidence?: VerificationEvidence
+  /** Server-resolved authorization for a worker-delta verification; survives host switches. */
+  model_rank?: ModelRank
+  /** Server snapshot of attempts covered by this independent/native baseline. */
+  unit_attempts?: Record<string, number>
+  /** Declared scope of a scoped seat (0.6.20): the registered unit ids the seat examined, sorted. unit_attempts is restricted to these. Absent = whole-phase snapshot. Narrowing only: it never adds coverage. */
+  units?: string[]
+  /** Stamped on every record written since 0.6.19; absent = legacy record (neutral to the independence bound). */
+  basis_version?: 2
+  /** Host that wrote the record (server-authored). */
+  host?: HostId
+  /** Server-authored from a seat receipt; present only when record_review bound one (0.6.19 slice 4). */
+  provenance?: SeatProvenance
+  /** Server scalar on a baseline: verification records recorded against it (survives review trimming). */
+  delta_count?: number
+  /** 0.6.24: live_smoke run ids the review cited; the gate requires the newest receipt of every covered unit with deliverables. */
+  smoke_receipts?: string[]
+}
+
+// ─── Review outcomes (0.6.19): what kind of evidence carried a gate ───────────
+// Closed enums only: every value below is a metric key. Ids, hashes and timestamps
+// stay on records. The seat predicate is unchanged; these classify what satisfied it.
+
+/** Basis class of one seat or of a whole gate pass. */
+export type BasisClass =
+  | "receipted_external"   // Foreman-launched CLI seat, provider differs from the host provider, bound to the packet
+  | "receipted"            // Foreman-launched CLI seat whose vendor relation to the pit-boss is unknowable, or below the bytes floor
+  | "declared_external"    // stage undefined/'independent' with no receipt (every record before 0.6.19)
+  | "same_provider"        // complete stage:'native' on the Codex host, or a receipted seat on the host's own vendor
+  | "delta:receipted_external" | "delta:declared_external" | "delta:same_provider"   // eligible verification, by its baseline's class
+  | "override"             // review_override: no seat at all
+
+export type Provider = "anthropic" | "openai" | "google" | "unknown"
+
+/** Server-authored provenance copied from a seat receipt at record_review (slice 4). */
+export interface SeatProvenance {
+  receipt: string
+  cli: "claude" | "codex" | "gemini" | "council"
+  provider: Provider
+  model_served: string
+  reasoning_effort?: string
+  bytes_in: number
+  bytes_out: number
+  tokens_used?: number
+}
+
+/** One counted gate pass. Server-authored; copies advisor/ts/stage so evicted reviews stay attributable. */
+export interface GateEvidence {
+  seq: number
+  ts: string
+  host: HostId
+  basis: BasisClass
+  /** ≤10 seats. native_ids ≤6. */
+  seats: Array<{
+    advisor: string; ts: string; stage: string; basis: BasisClass
+    kind?: "worker_delta" | "direct_fix"; baseline_ts?: string; receipt?: string; verifier_id?: string; native_ids?: string[]
+    /** Units this seat covers at the stamp (0.6.20). Present only when the seat covers fewer than every unit; absent on a whole-phase seat and on stamps written before 0.6.20. */
+    units?: number
+  }>
+  /** Current records by stage, seats or not. */
+  present: Partial<Record<"independent" | "native" | "verification" | "fan" | "cross_exam", number>>
+  /** Same shape as PhaseReview.unit_attempts: the coverage key for escapes. */
+  unit_attempts: Record<string, number>
+  units: number
+  /** Native reviewers + verifier, 1 per independent record, 1 per verification. Cost proxy. */
+  seat_agents: number
+  regate: boolean
+  flagged: boolean
+  agent_class_declared?: "frontier" | "capable" | "compact"
+  overrides: Array<"seat_minimum" | "discipline" | "review" | "confirmed" | "incomplete" | "escape" | "independence" | "deliverables">
+  rank: { weight: 0 | 1 | 2 | 3; declared: boolean }
+  /** evidence.units of the carrying verification when basis is delta:*. */
+  delta_units?: string[]
+  tokens: { receipted: number; declared: number; unreported: number }
+  /** 1 = phase basis is the strongest seat (0.6.19); 2 = the weakest per-unit class (0.6.20). */
+  policy_version: 1 | 2
+}
+
+// ─── Escapes (0.6.19 slice 3): a gated unit contradicted after its gate ─────────
+// Existence is server-authored from the writes the pit-boss must make anyway (a
+// rejection, a non-pass verdict, a new attempt); only the class is declared, from a
+// closed enum, and the ledger demands it before the next pass.
+export type EscapeClass = "original_defect" | "remediation_defect" | "test_gap" | "process" | "new_scope" | "unclassified"
+export type EscapeSource = "rejection" | "reopen" | "post_gate_attempt" | "later"
+export type EscapeFinder = "external_seat" | "native_review" | "worker_delta" | "tests" | "user" | "production" | "other"
+export interface Escape {
+  ts: string
+  unit_id: string
+  attempt: number
+  /** 0 / gate_units_hash.ts for a phase gated before 0.6.19. */
+  gate_seq: number
+  gate_ts: string
+  basis: BasisClass | "legacy"
+  host?: HostId
+  /** Deduped; the first entry is the detector. */
+  sources: EscapeSource[]
+  in_delta_scope?: boolean
+  class: EscapeClass
+  classified_ts?: string
+  found_by?: EscapeFinder
+  note?: string
+}
+export interface EscapeTotals {
+  total: number
+  by_basis: Partial<Record<BasisClass | "legacy", number>>
+  by_class: Partial<Record<EscapeClass, number>>
+}
+
+export interface GateTotals {
+  gates: number
+  regates: number
+  units: number
+  seat_agents: number
+  tokens_receipted: number
+  tokens_declared: number
+  tokens_unreported: number
 }
 
 export interface Phase {
@@ -218,6 +470,20 @@ export interface Phase {
   confirmed_override?: { ts: string; findings: number }
   /** Gate passed via data.user_override while `reviews` current reviews were partial, failed, or silent without an examined list (durable, auditable). */
   incomplete_override?: { ts: string; reviews: number }
+  /** Counted gate passes, newest last, ≤ GATE_HISTORY (0.6.19). An idempotent re-pass stamps nothing. */
+  gate_history?: GateEvidence[]
+  /** Scalar totals per basis class; survive gate_history and review trimming. */
+  gate_totals?: Partial<Record<BasisClass, GateTotals>>
+  /** Post-gate contradictions of gated units, newest last, ≤ ESCAPE_RETENTION. */
+  escapes?: Escape[]
+  /** Scalar totals; survive escapes[] trimming. */
+  escape_totals?: EscapeTotals
+  /** Gate passed via data.user_override while `escapes` unclassified escapes stood (durable, auditable). */
+  escape_override?: { ts: string; escapes: number }
+  /** Gate passed via data.user_override at the independence bound; `streak` is the count it would have exceeded. */
+  independence_override?: { ts: string; streak: number }
+  /** 0.6.20: facts gathered during preflight that later units in the phase can reuse; newest last, ≤50. */
+  facts?: Array<{ ts: string; key: string; text: string; source?: string }>
 }
 
 export interface PhaseScope {
@@ -235,9 +501,16 @@ export interface LedgerFile {
   phases: Record<string, Phase>
   /** CCR compression aggregate keyed by tool name (bounded: names come from the compression allowlist). Consumed by 5b. */
   ccr_stats?: Record<string, { calls: number; tokens_before: number; tokens_after: number }>
+  /** 0.6.19: consecutive weak-basis counted gate passes since the last receipted cross-vendor pass; phases ≤ STREAK_MAX + 1. */
+  independence?: { streak: number; phases: string[] }
+  /** 0.6.22: the repository window; one per root, acquired at snapshot, validation after a clean compare, released at verdict. */
+  window?: RepoWindow
 }
 
 // ─── Zod Schemas for MCP Tool Input Validation ───────────────────────────────
+
+// 0.6.20: hoisted above SetUnitStatusInput — the inline rejection and the verdict carry it too.
+const EscapeClassSchema = z.enum(["original_defect", "remediation_defect", "test_gap", "process", "new_scope"])
 
 const SetUnitStatusInput = z.object({
   operation: z.literal("set_unit_status"),
@@ -248,16 +521,34 @@ const SetUnitStatusInput = z.object({
     brief: z.string().max(50000).optional(),
     tier: z.enum(["cheap", "standard", "premium"]).optional(),
     route_reason: z.string().max(2000).optional(),
+    worker_id: z.string().trim().min(1).max(400).optional(),
+    correction: z.object({
+      kind: z.enum(["mechanical", "bounded"]),
+      from_attempt: z.number().int().min(1),
+      files: z.array(z.string().trim().min(1).max(4096)).min(1).max(50),
+    }).optional(),
     user_override: z.boolean().optional(),
     // Optional at the schema so non-delegating statuses need nothing; the ledger
     // refuses s:'delegated' without it (see PREFLIGHT REQUIRED in lib/ledger.ts).
     preflight: z.object({
-      symbols_grepped: z.number().int().min(1),
+      // 0.6.20: an array of symbols (checked by preflight_check against the spec); the
+      // legacy count is still accepted so ledgers written by older sessions replay.
+      symbols_grepped: z.union([z.number().int().min(1), z.array(z.string().trim().min(1).max(200)).min(1).max(100)]),
       self_consistent: z.literal(true),
       telemetry: z.enum(["checked", "n/a"]).optional(),
+      // 0.6.20: the brief hash preflight_check returned; the ledger checks it against the
+      // preflight record file, so the attestation is something the pit-boss cannot type.
+      receipt: z.string().regex(/^[0-9a-f]{16}$/).optional(),
     }).optional(),
     // With s:'ip' only: records a pit-boss literal substitution as an attempt (Direct Fix rule).
     direct_fix: z.string().min(10).max(2000).optional(),
+    // 0.6.20: the finding this delegation answers, recorded in the same write as the
+    // attempt (same semantics as add_rejection; ts is server-authored). s:'delegated' only.
+    rejection: z.object({
+      r: z.string().max(10000),
+      msg: z.string().max(10000),
+      escape_class: EscapeClassSchema.optional(),
+    }).optional(),
   }),
 })
 
@@ -268,9 +559,12 @@ const SetVerdictInput = z.object({
   data: z.object({
     v: z.enum(["pass", "fail", "pending", "inconclusive"]),
     via: z.enum(["worker", "pitboss-direct", "n/a"]).optional(),
+    worker_id: z.string().trim().min(1).max(400).optional(),
     note: z.string().max(10000).optional(),
     // Waives ATTEMPT REQUIRED and the delegation cap on a pass; recorded as cap_override.
     user_override: z.boolean().optional(),
+    // 0.6.20: classifies the unit's newest unclassified escape in the verdict write.
+    escape_class: EscapeClassSchema.optional(),
   }),
 })
 
@@ -281,7 +575,25 @@ const AddRejectionInput = z.object({
   data: z.object({
     r: z.string().max(10000),
     msg: z.string().max(10000),
-    ts: z.string().max(10000),
+    // 0.6.24: optional; the ledger stamps server time when absent. A supplied value is kept as the reported time and carries no ordering authority.
+    ts: z.string().max(10000).optional(),
+    // 0.6.19: classify the escape at the moment of rejection when the unit is gated.
+    escape_class: EscapeClassSchema.optional(),
+  }),
+})
+
+// 0.6.19 (slice 3): classify a post-gate defect, or record one found out of band.
+// The unit must be registered; a typo never creates a phantom unit that blocks the gate.
+const RecordEscapeInput = z.object({
+  operation: z.literal("record_escape"),
+  unit_id: z.string().max(10000),
+  phase: z.string().max(10000),
+  data: z.object({
+    class: EscapeClassSchema,
+    // 'later' = a defect in this unit's gated code found in a later phase, in production, or by the user.
+    source: z.literal("later").optional(),
+    found_by: z.enum(["external_seat", "native_review", "worker_delta", "tests", "user", "production", "other"]).optional(),
+    note: z.string().max(500).optional(),
   }),
 })
 
@@ -358,6 +670,8 @@ const ProbeEvidence = z.discriminatedUnion("outcome", [
   z.object({ outcome: z.literal("n/a"), reason: z.string().min(10).max(2000) }),
 ])
 const VerificationEvidenceSchema = z.object({
+  kind: z.literal("worker_delta").optional(),
+  verifier_id: z.string().trim().min(1).max(400).optional(),
   baseline_review_ts: z.string().max(100),
   units: z.array(z.object({ unit_id: z.string().max(200), attempt: z.number().int().min(1) })).min(1).max(50),
   files: z.array(z.string().max(4096)).min(1).max(50),
@@ -365,6 +679,21 @@ const VerificationEvidenceSchema = z.object({
   probe: ProbeEvidence,
 })
 export type VerificationEvidence = z.infer<typeof VerificationEvidenceSchema>
+
+// 0.6.20: identity and coverage text split. Ids are refused when over the limit (the
+// distinct-id rule reads them); coverage entries are scrubbed and cut with a marker.
+const NativeId = z.string().trim().min(1).max(400)
+const NativeChecked = z.string().trim().overwrite((v) => softCut(v, 400)).min(1).max(400)
+export const NativeReviewEvidenceSchema = z.object({
+  reviewers: z.array(z.object({
+    agent_id: NativeId,
+    lens: z.enum(["contract", "architecture", "state", "security", "data", "tests", "operability"]),
+    completion: z.enum(["complete", "partial", "failed"]),
+    checked: z.array(NativeChecked).max(50),
+  })).min(2).max(5),
+  verifier_id: NativeId,
+})
+export type NativeReviewEvidence = z.infer<typeof NativeReviewEvidenceSchema>
 
 const RecordReviewInput = z.object({
   operation: z.literal("record_review"),
@@ -376,11 +705,26 @@ const RecordReviewInput = z.object({
     tokens: z.number().min(0).optional(),
     completion: z.enum(["complete", "partial", "failed"]).optional(),
     // 400 since 0.6.5: 200 bit on any review with real content (field feedback round 5).
-    checked: z.array(z.string().max(400)).max(50).optional(),
-    limitations: z.string().max(2000).optional(),
-    stage: z.enum(["independent", "cross_exam", "verification"]).optional(),
+    // Soft since 0.6.20: over-long entries are cut with a marker, not refused.
+    checked: z.array(softText(400)).max(50).optional(),
+    limitations: softText(2000).optional(),
+    stage: z.enum(["independent", "cross_exam", "verification", "fan", "native"]).optional(),
+    native: NativeReviewEvidenceSchema.optional(),
     // Required with stage:'verification', refused with any other stage (lib/ledger.ts).
     evidence: VerificationEvidenceSchema.optional(),
+    // 0.6.19: binds this independent record to one invoke_advisor receipt (meta block
+    // seat_receipt); needs packet_hash equal to that block's packet_sha256.
+    seat_receipt: z.string().regex(/^[0-9a-f]{16}$/).optional(),
+    // 0.6.20: a scoped seat names the registered units it examined; the server restricts the
+    // snapshot to them. Narrowing only — omit for a whole-phase seat. Refused with any stage
+    // that carries no snapshot (cross_exam, verification, fan). Ids reuse DeclaredUnitId
+    // (trimmed, no newline/comma) because they land in TOON lists and gate messages.
+    // Renders as `units?: string (≥1 chars, ≤200 chars)[] (max 200)` (minItems is not rendered).
+    units: z.array(DeclaredUnitId).min(1).max(200).optional(),
+    // 0.6.24: the live_smoke run ids this review read. A record that can carry the gate must
+    // cite the newest passing receipt of every covered unit with declared deliverables; the
+    // server resolves the ids, the caller never supplies a digest.
+    smoke_receipts: z.array(z.string().regex(/^[0-9a-f]{16}$/)).max(200).optional(),
   }),
 })
 
@@ -397,6 +741,33 @@ const AuthorizeAttemptsInput = z.object({
   }),
 })
 
+// 0.6.20 (field report): preflight knowledge is gathered per unit but useful per phase, and
+// had nowhere to live. A bounded per-phase fact store, surfaced by read_ledger facts.
+const RecordFactInput = z.object({
+  operation: z.literal("record_fact"),
+  phase: z.string().max(10000),
+  data: z.object({
+    key: z.string().trim().min(1).max(80),
+    /** 0.6.26: raised from 2000 — the cap bit hardest on an incident record, the fact most worth keeping. The phase-wide budget (PHASE_FACTS_BUDGET) bounds growth instead. */
+    text: z.string().trim().min(1).max(8000),
+    source: z.string().trim().min(1).max(400).optional(),
+  }),
+})
+
+// 0.6.21 (field report): attempts ended for reasons other than failure had no record, so a
+// unit with six attempts and zero rejections read like a unit in trouble. close_attempt
+// labels a non-failure ending; it changes no attempt id, counter, guard or verdict.
+const CloseAttemptInput = z.object({
+  operation: z.literal("close_attempt"),
+  unit_id: z.string().max(10000),
+  phase: z.string().max(10000),
+  data: z.object({
+    attempt: z.number().int().min(1),
+    outcome: z.enum(["delivered", "blocked", "validation_only"]),
+    note: z.string().trim().min(10).max(2000),
+  }),
+})
+
 export const WriteLedgerInputSchema = z.discriminatedUnion("operation", [
   SetUnitStatusInput,
   SetVerdictInput,
@@ -406,6 +777,9 @@ export const WriteLedgerInputSchema = z.discriminatedUnion("operation", [
   SetPhaseScopeInput,
   RecordReviewInput,
   AuthorizeAttemptsInput,
+  RecordEscapeInput,
+  RecordFactInput,
+  CloseAttemptInput,
 ])
 
 export type WriteLedgerInput = z.infer<typeof WriteLedgerInputSchema>
@@ -413,7 +787,7 @@ export type WriteLedgerInput = z.infer<typeof WriteLedgerInputSchema>
 export const ReadLedgerInputSchema = z.object({
   unit_id: z.string().max(10000).optional(),
   phase: z.string().max(10000).optional(),
-  query: z.enum(["verdicts", "rejections", "phase_gates", "reviews", "full", "delegation_metrics"]).optional(),
+  query: z.enum(["verdicts", "rejections", "phase_gates", "reviews", "full", "delegation_metrics", "review_outcomes", "facts", "reconstruct"]).optional(),
   verdict: z.enum(["pass", "fail", "pending", "inconclusive"]).optional(),
   include_notes: z.boolean().optional(),
   cursor: z.number().int().min(0).max(1000000).optional(),
@@ -464,6 +838,8 @@ export interface ProgressFile {
     {
       name: string
       units: Record<string, ProgressUnit>
+      /** 0.6.20: checklist entries removed by retire_unit, with the reason; newest last, ≤20. */
+      retired?: Array<{ unit_id: string; ts: string; reason: string }>
     }
   >
   error_log: ProgressError[]
@@ -514,7 +890,16 @@ const StartPhaseData = z.object({
   name: z.string().max(10000),
 })
 
+// 0.6.20 (field report): an orphan checklist entry (no ledger unit, no declaration) persisted
+// all session with no clear path. retire_unit removes it with a recorded reason.
+const RetireUnitData = z.object({
+  unit_id: z.string().max(10000),
+  phase: z.string().max(10000),
+  reason: z.string().min(10).max(2000),
+})
+
 export const WriteProgressInputSchema = z.discriminatedUnion("operation", [
+  z.object({ operation: z.literal("retire_unit"), data: RetireUnitData }),
   z.object({ operation: z.literal("update_status"), data: UpdateStatusData }),
   z.object({ operation: z.literal("complete_unit"), data: CompleteUnitData }),
   z.object({ operation: z.literal("log_error"), data: LogErrorData }),
@@ -525,6 +910,7 @@ export type WriteProgressInput = z.infer<typeof WriteProgressInputSchema>
 
 /** Per-operation `data` schemas for write_progress (schema-error hints; see lib/schemaError.ts). */
 export const ProgressOperationDataSchemas = {
+  retire_unit: RetireUnitData,
   update_status: UpdateStatusData,
   complete_unit: CompleteUnitData,
   log_error: LogErrorData,
@@ -534,9 +920,18 @@ export const ProgressOperationDataSchemas = {
 // ─── Journal Types ──────────────────────────────────────────────────────────
 
 export interface JournalEnv {
+  model?: string | null
+  effort?: string | null
+  model_rank?: import("./lib/modelRank.js").ModelRank
   os: string
   node: string
   foreman: string
+  /**
+   * 0.6.27: the host this session was declared under, server-authored like os/node/foreman
+   * and never taken from tool input. Rank rehydration after a mid-session restart compares
+   * against it — a declaration made under another host describes another host.
+   */
+  host?: import("./lib/hostProfiles.js").HostId
   agent: string
   worker: string
   claude?: string | null
@@ -568,6 +963,8 @@ export interface SessionSummary {
 }
 
 export interface JournalSession {
+  env?: JournalEnv
+  model_declarations?: Array<{ ts: string; model_rank: import("./lib/modelRank.js").ModelRank }>
   id: string
   ts: string
   branch: string
@@ -611,6 +1008,8 @@ export const JournalEventCode = z.enum([
   "CX_ERR", "ED_STALE",
   "T_FLAKE", "BLD_ERR",
   "SPEC_AMB", "SPEC_GAP", "GATE_FIX", "GATE_OVERRIDE",
+  // 0.6.20: a green suite that cannot observe the defect (field report); distinct from W_REJ.
+  "T_BLIND",
   "TOOL_ERR", "USR_INT",
   "SEC_BLOCK", "EGRESS_NOTICE",
 ])
@@ -632,14 +1031,21 @@ const InitSessionData = z.object({
     // R8: capability class per seat — declared, never self-assessed.
     agent_class: z.enum(["frontier", "capable", "compact"]).optional(),
     worker_class: z.enum(["frontier", "capable", "compact"]).optional(),
+    model: z.string().max(100).nullable().optional(),
+    effort: z.string().max(30).nullable().optional(),
   }),
+})
+
+const DeclareModelData = z.object({
+  model: z.string().max(100).nullable().optional(),
+  effort: z.string().max(30).nullable().optional(),
 })
 
 const LogEventData = z.object({
   t: JournalEventCode,
   u: z.string().max(200),
   tok: z.number().min(0),
-  msg: z.string().max(400),
+  msg: softText(400),
   wait: z.number().min(0).optional(),
   gate: z.string().max(10).optional(),
 })
@@ -661,6 +1067,7 @@ const EndSessionData = z.object({
 
 export const WriteJournalInputSchema = z.discriminatedUnion("operation", [
   z.object({ operation: z.literal("init_session"), data: InitSessionData }),
+  z.object({ operation: z.literal("declare_model"), data: DeclareModelData }),
   z.object({ operation: z.literal("log_event"), data: LogEventData }),
   z.object({ operation: z.literal("end_session"), data: EndSessionData }),
 ])
@@ -674,9 +1081,26 @@ export type WriteJournalInput = z.infer<typeof WriteJournalInputSchema>
  */
 export const JournalOperationDataSchemas = {
   init_session: InitSessionData,
+  declare_model: DeclareModelData,
   log_event: LogEventData,
   end_session: EndSessionData,
 } as const
+
+/**
+ * Soft-limited fields per operation (0.6.20). Path + limit are the contract the TRUNCATED
+ * warning is computed from; tests/softLimits.test.ts round-trips each entry through its
+ * operation schema so this table cannot drift from the zod checks.
+ */
+export const JournalSoftLimits: Record<string, readonly SoftLimit[]> = {
+  log_event: [{ path: "data.msg", max: 400 }],
+}
+export const LedgerSoftLimits: Record<string, readonly SoftLimit[]> = {
+  record_review: [
+    { path: "data.checked.[]", max: 400 },
+    { path: "data.limitations", max: 2000 },
+    { path: "data.native.reviewers.[].checked.[]", max: 400 },
+  ],
+}
 
 export const LedgerOperationDataSchemas = {
   set_unit_status: SetUnitStatusInput.shape.data,
@@ -687,6 +1111,9 @@ export const LedgerOperationDataSchemas = {
   set_phase_scope: SetPhaseScopeInput.shape.data,
   record_review: RecordReviewInput.shape.data,
   authorize_attempts: AuthorizeAttemptsInput.shape.data,
+  record_escape: RecordEscapeInput.shape.data,
+  record_fact: RecordFactInput.shape.data,
+  close_attempt: CloseAttemptInput.shape.data,
 } as const
 
 export const ReadJournalInputSchema = z.object({

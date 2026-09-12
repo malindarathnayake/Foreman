@@ -1,40 +1,49 @@
-import { readProgress, truncateProgress } from "../lib/progress.js"
+import path from "node:path"
+import { truncateProgress } from "../lib/progress.js"
 import { toKeyValue, toTable } from "../lib/toon.js"
+import type { HostId } from "../lib/hostProfiles.js"
+import { readSessionState } from "./sessionOrient.js"
+import { resolveModelRank, type ModelRank } from "../lib/modelRank.js"
 
-export async function handleReadProgress(filePath: string, lastNCompleted?: number): Promise<string> {
-  const progress = await readProgress(filePath)
+export async function handleReadProgress(
+  filePath: string,
+  lastNCompleted?: number,
+  ledgerPath = path.join(path.dirname(filePath), ".foreman-ledger.json"),
+  host: HostId = "claude-code",
+  modelRank: ModelRank = resolveModelRank()
+): Promise<string> {
+  const { progress, summary } = await readSessionState(ledgerPath, filePath, host, modelRank)
   const view = truncateProgress(progress, lastNCompleted)
 
-  // Progress is deliberately non-authoritative. Resume directives come only from
-  // session_orient, which can compare this checklist with the ledger and report drift.
+  // Use the exact resume calculation, never checklist completion or its next_up pointer.
   let output = "AUTHORITY\n"
   output += toKeyValue({
-    role: "planning_checklist_only",
+    role: "ledger_summary_with_planning_checklist",
     resume: "call session_orient",
-    note: view.status.planning_note,
+    note: "Ledger verdicts count passed units; phase gates determine project completion. Checklist entries are descriptive only.",
   })
 
-  output += "\nSTATUS\n"
+  output += "\nLEDGER STATUS\n"
+  output += toKeyValue(summary)
+
+  output += "\n\nPLANNING CHECKLIST (not project completion)\n"
   output += toKeyValue({
-    phase: view.status.phase,
-    last_completed: view.status.last_completed,
-    next_up: view.status.next_up,
-    blocked: view.status.blocked,
-    completed: `${view.status.completed_count}/${view.status.total_count} units`,
+    entries_marked_complete: view.status.completed_count,
+    entries_total: view.status.total_count,
   })
 
   if (view.completed.length > 0) {
-    output += `\nRECENT (last ${view.completed.length} completed)\n`
+    output += `\nCHECKLIST RECENT (last ${view.completed.length} marked complete)\n`
     output += toTable(
-      ["unit", "phase", "status", "notes"],
+      ["unit", "phase", "checklist_status", "notes"],
       view.completed.map(u => [u.id, u.phase, u.status, u.notes])
     )
   }
 
   if (view.incomplete.length > 0) {
-    output += "\n\nINCOMPLETE\n"
+    output += "\n\nCHECKLIST INCOMPLETE\n"
     output += toTable(
-      ["unit", "phase", "status", "notes"],
+      ["unit", "phase", "checklist_status", "notes"],
       view.incomplete.map(u => [u.id, u.phase, u.status, u.notes])
     )
   }

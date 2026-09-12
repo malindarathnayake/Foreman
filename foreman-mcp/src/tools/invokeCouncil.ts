@@ -20,6 +20,7 @@
 import fs from "fs/promises"
 import path from "path"
 import { createHash, randomBytes, randomUUID } from "crypto"
+import { appendReceipt, providerFromModelId } from "../lib/seatReceipts.js"
 import { z } from "zod"
 import type { CouncilSeatId } from "../lib/foremanEnv.js"
 import { loadCouncilConfig, type CouncilSeatConfig } from "../lib/councilConfig.js"
@@ -81,6 +82,8 @@ export const InvokeCouncilInputSchema = z.object({
 
 export interface InvokeCouncilDeps {
   journalPath: string
+  /** 0.6.19: receipts file beside the ledger; one receipt per seat when set. */
+  receiptsPath?: string
   /** Directory holding `.foremanenv`. Defaults to process.cwd(). */
   envDir?: string
   /** Override for the home credential store. Test seam. */
@@ -672,7 +675,31 @@ export async function handleInvokeCouncil(rawInput: unknown, deps: InvokeCouncil
 
   await tracer?.flush()
 
+  // ── Seat receipts (0.6.19 slice 7): one per seat, all lenses folded. The vendor comes
+  // from a prefix allowlist over the configured model id, else 'unknown' (never external).
+  const receipts: Partial<Record<CouncilSeatId, string>> = {}
+  if (deps.receiptsPath !== undefined) {
+    for (const seatCfg of seats) {
+      const mine = results.filter((x) => x.seat === seatCfg.seat)
+      const failed = mine.filter((x) => x.status !== "ok")
+      const bytesOut = mine.reduce((a, x) => a + (x.reply ? Buffer.byteLength(JSON.stringify(x.reply)) : 0), 0)
+      const tokens = mine.reduce((a, x) => a + (x.tokensIn ?? 0) + (x.tokensOut ?? 0), 0)
+      try {
+        const receipt = await appendReceipt(deps.receiptsPath, {
+          cli: "council", provider: providerFromModelId(seatCfg.model), model_requested: seatCfg.model, model_served: seatCfg.model,
+          ...(seatCfg.reasoningEffort !== undefined ? { reasoning_effort: seatCfg.reasoningEffort } : {}),
+          exit_code: failed.length === 0 ? 0 : 1, failure_reason: failed.length === 0 ? null : "nonzero_exit",
+          prompt_sha256: packetHash, bytes_in: packetBytes, bytes_out: bytesOut, ...(tokens > 0 ? { tokens_used: tokens } : {}),
+        })
+        receipts[seatCfg.seat] = receipt.id
+      } catch (err) {
+        receipts[seatCfg.seat] = `unavailable (${err instanceof Error ? err.message : String(err)})`
+      }
+    }
+  }
+
   return noticePrefix + renderCouncil({
+    receipts,
     runId,
     phase: input.phase,
     packetHash,
@@ -690,6 +717,7 @@ export async function handleInvokeCouncil(rawInput: unknown, deps: InvokeCouncil
 
 // ─── Output rendering ────────────────────────────────────────────────────────────
 interface RenderInput {
+  receipts: Partial<Record<CouncilSeatId, string>>
   runId: string
   phase: string
   packetHash: string
@@ -722,6 +750,11 @@ function renderCouncil(r: RenderInput): string {
   )
   lines.push(`packet_hash: ${r.packetHash}`)
   lines.push(`packet_bytes: ${r.packetBytes}`)
+  const receiptEntries = Object.entries(r.receipts)
+  if (receiptEntries.length > 0) {
+    // One receipt per seat; record_review binds one receipt per record with packet_hash above.
+    lines.push(`seat_receipts: ${receiptEntries.map(([seat, id]) => `${seat.toUpperCase()}=${id}`).join(", ")}`)
+  }
   lines.push(`seats_ok: ${ok.length}/${r.results.length}`)
 
   const totalIn = r.results.reduce((a, x) => a + (x.tokensIn ?? 0), 0)

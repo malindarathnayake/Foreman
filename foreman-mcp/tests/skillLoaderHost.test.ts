@@ -40,8 +40,8 @@ describe("renderHostPlaceholders — direct unit", () => {
   it("substitutes native spawn_agent worker instructions for codex", () => {
     const out = renderHostPlaceholders("before {{worker_invoke}} after", "codex")
     expect(out).toContain("spawn_agent")
-    expect(out).toContain("gpt-5.6-luna")
-    expect(out).toContain("record the actual model")
+    expect(out).toContain("worker_heavy")
+    expect(out).toContain("record the model Codex reports")
     expect(out).not.toContain("Agent tool")
     expect(out).not.toContain("{{worker_invoke}}")
   })
@@ -189,7 +189,7 @@ describe("loadSkill — bundled skills render correctly under both hosts", () =>
       expect(result.content).toContain("supersede")
     }
     expect(result.content).toContain("spawn_agent")
-    expect(result.content).toContain("gpt-5.6-luna")
+    expect(result.content).toContain("worker_heavy")
     expect(result.content).toContain('cli: "claude"')
     expect(result.content).toContain("claude-fable-5")
     const legacyModelCheck = result.content.indexOf("Model Check")

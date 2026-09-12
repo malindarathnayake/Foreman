@@ -316,6 +316,41 @@ describe("scrub chokepoints (4b)", () => {
     })
   })
 
+  // [CWE-532] 0.6.20 soft limits: the schema scrubs BEFORE it cuts, so a secret straddling
+  // the cut can never survive as an unredacted prefix (the write-time scrub is exact-literal).
+  it("journal JSON: a 450-char msg with a harvested value straddling the truncation cut stores no prefix of the value", async () => {
+    await withTmpDir(async (tmpDir) => {
+      const journalPath = path.join(tmpDir, "journal.json")
+      plant({ SCRUB_4B_JOURNAL_KEY: "fixture_value_4b00000b" })
+      resetForTest()
+
+      await initSession(journalPath, {
+        operation: "init_session",
+        data: {
+          target_version: "0.5.0",
+          branch: "release/v0.5.0",
+          phase: 1,
+          units: ["1a"],
+          env: { agent: "opus", worker: "sonnet", codex: null, gemini: null },
+        },
+      })
+      // The cut for a 450-char msg lands at 379 kept chars; the value spans 370..392.
+      const msg = "a".repeat(370) + "fixture_value_4b00000b" + "b".repeat(450 - 370 - 22)
+      expect(msg).toHaveLength(450)
+      const result = await logEvent(journalPath, { operation: "log_event", data: { t: "W_FAIL", u: "1a", tok: 100, msg } })
+      expect(result).toContain("warning: TRUNCATED: data.msg was 450 chars (limit 400)")
+
+      const raw = await fs.readFile(journalPath, "utf8")
+      expect(raw).not.toContain("fixture_value_4b00000b")
+      expect(raw).not.toContain("fixture_val")
+      expect(raw).toContain("[REDACTED")
+      const stored = JSON.parse(raw).sessions[0].events[0].msg as string
+      expect(stored).toHaveLength(400)
+      expect(stored).toMatch(/…\[truncated \d+ chars\]$/)
+      expect(stored.startsWith("a".repeat(370) + "[REDACTED")).toBe(true)
+    })
+  })
+
   it("progress JSON: a log_error what_failed carrying a harvested value is redacted on disk", async () => {
     await withTmpDir(async (tmpDir) => {
       const progressPath = path.join(tmpDir, "progress.json")

@@ -14,14 +14,14 @@ description: Pit-boss implementation orchestrator. A frontier pitboss orchestrat
 
 | Rule | Why |
 |------|-----|
-| Pit-boss NEVER writes implementation code — sole exception: a Direct Fix (Two-Tier Fix Protocol) | Separation of concerns |
+| Pit-boss NEVER writes implementation code, fixes, or tests; use an implementation worker | Separation of concerns |
 | Workers NEVER see full spec, ledger, or progress | Information isolation |
-| Workers are disposable — killed after each unit | Prevents hallucination accumulation |
-| Fresh worker for fixes after rejection | Sunk-cost bias in original worker |
+| Workers stay bounded to one unit; release after its correction work is complete | Prevents context accumulation across units |
+| Fresh worker after rejection unless the declared rank permits bounded reuse | Keep correction scope explicit |
 | Ledger is durable — persisted after every verdict | State survives sessions |
 | Mandatory new session at phase checkpoints | Context accumulation degrades quality |
 
-**Proportional entry:** full implementor ceremony is for prepared multi-unit work, security/trust boundaries, migrations, and changes where a silent defect is expensive. Ordinary low-risk CRUD and one-file maintenance should use direct work or `lighttask`; do not manufacture phases merely to satisfy this protocol.
+**Proportional entry:** full implementor ceremony is for prepared multi-unit work, security/trust boundaries, migrations, and changes where a silent defect is expensive. Ordinary low-risk CRUD and one-file maintenance can use `lighttask` before entering this protocol; do not manufacture phases merely to satisfy this protocol.
 
 {{include: session-start}}
 
@@ -30,6 +30,8 @@ description: Pit-boss implementation orchestrator. A frontier pitboss orchestrat
 Log only failures and delays. Do NOT log successes, worker spawns, or test passes.
 
 `mcp__foreman__write_journal({ operation: "log_event", data: { t: "<CODE>", u: "<unit>", tok: 0, msg: "<≤400 chars>" } })`
+
+A `msg` over 400 characters is cut to 400 with a trailing `…[truncated N chars]` marker and the call returns a warning; split long text across events if the tail matters. Ids and findings are never cut.
 
 | Code | Trigger |
 |------|---------|
@@ -101,16 +103,20 @@ Runs AFTER drafting the brief, BEFORE invoking the host's worker mechanism. Its 
 5. **If any contradiction or omission found: revise the brief before spawning.** Worker tests validate the brief, not the spec — they cannot catch spec/brief drift.
 6. **Brief self-consistency:** every test expectation in the brief (asserted status, value, error, log key) must be consistent with the brief's own implementation instruction, AFTER pattern, and the spec's error-handling row — a brief that tells the worker to return 400 and to assert 404 is a brief defect, not a worker defect.
 7. **Telemetry names (units that emit signals):** list every CUSTOM log/metric field the brief introduces and check it against the active stack profile's reserved-name rule (`ethos` telemetry section); core fields are exempt. If the stack profile resolved by fallback or the transport is unstated, log SPEC_AMB and ask — never lint against the reference backend by guess.
+8. **Contract claims (phase scope `has_api`):** the unit's `foreman-contract` block in `spec.md` registers its claims, smoke plan and deliverables; run `mcp__foreman__contract_probe({ phase, unit_id, claim_id })` for every claim before `preflight_check`, which refuses until each has a passing claim-mode probe under the current block (a url-mode probe is diagnostic and never counts; no block is a refusal, `claims: [], smoke: null` is the reviewed opt-out). A failing claim is a spec or reality gap to settle by the Probe check, never a reason to edit the block into passing. The block is frozen on the delegation: amending it after means a new preflight and a new attempt.
+9. **Files the unit creates:** pass `creates: [{ file, tests: [names] }]` to `preflight_check` for every file and test the brief orders into existence; their citations are forward instead of dead, and the pass verdict refuses until each test is declared in its file, so name them exactly as the brief does.
 
 Anti-pattern: *"I read Unit X's directive section carefully."* The spec is a graph, not a list. Every symbol has a cross-reference footprint across multiple sections (data model, error handling, phase directives, decisions table). Grep first.
 
 ### Spec amendment (SPEC_GAP)
 
+{{include: probe-check}}
+
 When preflight or validation shows the SPEC is wrong and an accepted decision or a live fact leaves only ONE valid correction, amend it in place as one atomic logical change across every affected document (`spec.md`, `handoff.md`, `testing-harness.md`, the PROGRESS Unit Plan) — never one section now and the rest later. Record it ONCE: a PROGRESS Decisions row (`SPEC_GAP-<n> | <date> | <reason> | sections touched`) and one `write_journal log_event SPEC_GAP`; no per-section callouts. Reopen a passed unit only if the amendment changes what that unit must do (`add_rejection` reopens it) — a correction that makes the spec match already-correct code is not a rejection. Re-run G3/G4 for affected units and the spec generator's G1, G3, G7, G10 for the amended sections. Anything material — acceptance criteria, public/data/security contracts, migrations, test strategy, scope — is NOT amended here: log `SPEC_AMB`, stop, and take it to the owner or a `spec_man` re-evaluation.
 
 ### Step 5: Spawn Worker
 
-**Shared-tree preflight (before every editing worker):** `mcp__foreman__repo_guard({ operation: "snapshot", phase, unit_id, files: [<the unit's files>], allowed_files: [<the files the brief authorizes>] })` — run it AFTER the `s:'delegated'` write and BEFORE spawning. Foreman captures the repository root, branch, HEAD, stash, every changed path with a content fingerprint, `core.autocrlf`, and `git ls-files --eol`, and freezes `allowed_files` onto that baseline. Treat the snapshot as an ownership boundary, not something to normalize. It cannot be re-taken for this attempt: a second baseline would discard the comparison recorded against the first. Outside a git work tree it reports `n/a` and the rules below apply by hand; a git probe that fails or truncates is a refusal, and nothing is recorded. A host-native worker that edits the shared tree runs **sequentially** unless the host proves it has an isolated worktree/sandbox. Parallel read-only explorers are allowed; parallel patch-only workers are allowed only when their editable sets are disjoint and every returned patch is protected by a content-addressed staleness check.
+**Shared-tree preflight (before every editing worker):** `mcp__foreman__repo_guard({ operation: "snapshot", phase, unit_id, files: [<the unit's files>], allowed_files: [<the files the brief authorizes>] })` — run it AFTER the `s:'delegated'` write and BEFORE spawning. Foreman captures the repository root, branch, HEAD, stash, every changed path with a content fingerprint, `core.autocrlf`, and `git ls-files --eol`, and freezes `allowed_files` onto that baseline. The two lists are NOT interchangeable: `files` only scopes the line-ending probe, `allowed_files` is the allow-list `compare` measures ownership against. Omitted, it falls back to a correction's inherited set and then to `files`, and the result reports `authorized_from` so you can see which; a worker that edits nothing declares `allowed_files: []` explicitly, and an allow-list that would be empty by accident is refused rather than frozen. Treat the snapshot as an ownership boundary, not something to normalize. It cannot be re-taken for this attempt: a second baseline would discard the comparison recorded against the first. Outside a git work tree it reports `n/a` and the rules below apply by hand; a git probe that fails or truncates is a refusal, and nothing is recorded. A `status: damaged` refusal means an authorized file is non-empty and entirely NUL bytes — a destroyed file, not a written one. Restore it (`git restore <path>`) before spawning anything: a zeroed file keeps its size and mtime, and a grep on it reports a missing symbol rather than a missing file. A host-native worker that edits the shared tree runs **sequentially** unless the host proves it has an isolated worktree/sandbox. Parallel read-only explorers are allowed; parallel patch-only workers are allowed only when their editable sets are disjoint and every returned patch is protected by a content-addressed staleness check.
 
 The worker brief MUST contain the Shared-Tree Safety paragraph above verbatim. If accepted uncommitted work is present and the host cannot prevent Git mutations, use a patch-only worker path or stop for owner direction. Never stash, commit, reset, checkout, clean, or move the user's work to make delegation convenient.
 
@@ -118,6 +124,8 @@ Record the delegation in the ledger BEFORE spawning. This is mechanically enforc
 ```
 mcp__foreman__write_ledger({ operation: "set_unit_status", phase, unit_id, data: { s: "delegated", brief: "<1-3 line summary of the worker brief>", tier: "standard", route_reason: "<why this tier fits this unit>", preflight: { symbols_grepped: <N from Step 4.5>, self_consistent: true, telemetry: "checked" | "n/a" } } })
 ```
+Record `worker_id: "<actual host-returned ID>"` for a native worker on the verdict, or — when the previous attempt still carries no ID (rejected before any verdict, or a verdict written without it) — on the eligible correction write, which binds it onto that attempt once (`worker_id_bound: { at: "correction" }`). A recorded ID never changes. Never invent an ID or carry a live-worker assumption across sessions.
+
 Tiers: `cheap` (mechanical, fully-specified change), `standard` (default capable worker), `premium` (subtle or high-risk unit escalated to a stronger model). Each (re-)delegation is appended to the unit's `delegations[]` history, so the tier choice and reason survive the brief overwrite on fix attempts.
 
 {{worker_invoke}}
@@ -128,9 +136,9 @@ Tiers: `cheap` (mechanical, fully-specified change), `standard` (default capable
 
 ### Step 6: Validate
 After worker returns, pit-boss validates independently — do not trust worker's self-report:
-1. **Repository-state guard — before tests:** `mcp__foreman__repo_guard({ operation: "compare", phase, unit_id, files: [<the unit's files>] })`. The authorized set is already frozen on the baseline, so `compare` takes no `allowed_files` — passing one is refused, because widening authorization after the worker ran would clear the worker's own mutation. Foreman re-reads the state and names every mutation outside the frozen set: a moved HEAD, a touched index or stash, a changed `core.autocrlf`, a file changed outside the brief, an already-dirty file whose content was overwritten, or a pre-existing uncommitted change that disappeared. A violation is a hard stop. Do not attempt automatic recovery and do not continue to tests; preserve evidence and escalate to the owner. The result is recorded on the delegation and `set_verdict v:'pass'` is refused for that attempt until it clears (`REPOSITORY GUARD`) — `user_override` waives it and is recorded as `guard_override`.
+1. **Repository-state guard — before tests:** `mcp__foreman__repo_guard({ operation: "compare", phase, unit_id, files: [<the unit's files>] })`. The authorized set is already frozen on the baseline, so `compare` takes no `allowed_files` — passing one is refused, because widening authorization after the worker ran would clear the worker's own mutation. Foreman re-reads the state and names every mutation outside the frozen set: a moved HEAD, a touched index or stash, a changed `core.autocrlf`, a file changed outside the brief, an already-dirty file whose content was overwritten, or a pre-existing uncommitted change that disappeared. A violation is a hard stop. Do not attempt automatic recovery and do not continue to tests; preserve evidence and escalate to the owner. The result is recorded on the delegation and `set_verdict v:'pass'` is refused for that attempt until it clears (`REPOSITORY GUARD`) — `user_override` waives it and is recorded as `guard_override`. Foreman's own writes are excluded by the server, not by you: the .foreman-* state files, their .corrupt/.tmp side files, and the fenced checklist block in Docs/PROGRESS.md never appear as violations. A violation naming Docs/PROGRESS.md means content OUTSIDE the fence changed (or a second fence appeared), and that is the worker's. A violation reading `destroyed, not edited` names an authorized file that is now entirely NUL — the ownership diff cannot see it, because the path is authorized.
 2. Read every modified file — confirm changes match the AFTER pattern from the brief
-3. Re-run tests — call mcp__foreman__run_tests with the unit's test command; read exit_code for pass/fail, STDERR tail for failure context. Do not run tests via Bash.
+3. Re-run tests — call mcp__foreman__run_tests with the unit's test command; read exit_code for pass/fail, STDERR tail for failure context. Do not run tests via Bash. Eligible Top corrections may use focused validation as described below, while still running spec-mandated checks. Foreman froze the spec's Test line on the delegation and refuses a delegation or verdict whose go test selectors omit the package of an authorized file (`CHECKPOINT REACH`, a `testdata` fixture belongs to its parent package). That is package selection, not observation: check yourself that the selected tests, `-run` filters and build tags exercise the change, and that a fixture read by a sibling package is covered by that package's tests.
 4. Spec check — read the original spec directive sentence by sentence; confirm each has a corresponding code path
 5. Export check — verify exported names and signatures match what the ledger records as interface contracts
 6. Consistency check — confirm changes integrate cleanly with prior accepted units; no regressions introduced
@@ -138,7 +146,7 @@ After worker returns, pit-boss validates independently — do not trust worker's
 
 ### Step 7: Verdict
 
-**ACCEPT** — required ledger sequence per unit is `ip` → `delegated` (Step 5) → `pass`; the ledger rejects a pass verdict without prior delegation:
+**ACCEPT** — required ledger sequence per unit is `ip` → `delegated` (Step 5) → `pass`; the ledger rejects a pass verdict without prior delegation. Wherever the unit's block declares a smoke plan or deliverables, run `mcp__foreman__live_smoke({ phase, unit_id, plan_id })` after the guard compare and the suite, before the verdict (remove stale outputs first: a deliverable that already exists is refused). Foreman runs the frozen plan through the real runner, digests every deliverable it produced and evaluates the declared properties; `set_verdict pass` refuses (`SMOKE REQUIRED`) without a passing smoke for this attempt whose harness, input, deliverable and reference digests still match, so any edit after the smoke means another run. A green suite, killed mutations and a clean guard prove that the controls exist, not that the output is right: mutation sensitivity is not domain coverage. Before the verdict, open the emitted bytes the receipt names and check them against the spec yourself; the reviewer who carries the gate cites the receipt's `run_id` in `record_review smoke_receipts` and does the same, never re-running the checkpoint as its only evidence.
 ```
 mcp__foreman__write_ledger({ operation: "set_unit_status", phase, unit_id, data: { s: "ip" } })   // when starting (Step 1)
 // s:'delegated' with brief was recorded in Step 5, before spawning the worker
@@ -148,9 +156,10 @@ mcp__foreman__write_progress({ operation: "complete_unit", data: { unit_id, phas
 
 **REJECT — enter fix protocol:**
 ```
-mcp__foreman__write_ledger({ operation: "add_rejection", phase, unit_id, data: { r: "reviewer", msg: "reason", ts: "timestamp" } })
+mcp__foreman__write_ledger({ operation: "add_rejection", phase, unit_id, data: { r: "reviewer", msg: "reason", ts: "timestamp", escape_class: "<class, when the unit's gate already passed>" } })
 mcp__foreman__write_progress({ operation: "log_error", data: { date, unit, what_failed, next_approach } })
 ```
+When the rejection is answered by a delegation you are about to record, skip `add_rejection` and put the finding on that write as `data.rejection: { r, msg, escape_class? }` — the ledger records the rejection first, then the attempt, with one timestamp (see Nit path).
 
 {{include: no-test-attestation}}
 
@@ -158,7 +167,7 @@ mcp__foreman__write_progress({ operation: "log_error", data: { date, unit, what_
 
 **Inner Loop (same worker):** Compile/import/type errors → self-fix max 2. Logic/spec errors → return to pit-boss immediately. Inner loop attempts do NOT count toward outer fix limit.
 
-**Outer Loop (fresh worker, max 3 attempts)** — Fix brief template:
+**Outer Loop (recorded worker attempt, max 3 failures)** - Use a fresh worker by default; apply the rank-based correction path below automatically when eligible. Fresh-worker fix brief template:
 ```
 # Fix Brief — Unit [ID], Attempt [N of 3]
 ## What Was Wrong — file:line reference + specific problem description
@@ -175,15 +184,31 @@ mcp__foreman__write_progress({ operation: "log_error", data: { date, unit, what_
 
 After 3 outer-loop failures: STOP. Escalate to user with full rejection history from ledger. Ledger-enforced: the cap counts failed attempts (rejection or fail verdict) since the unit last passed; a further attempt or a pass then needs `user_override` (recorded on the attempt or as `cap_override`). Fixing off the record is not a way past it — a pass also needs an attempt recorded after the latest failure (`ATTEMPT REQUIRED`). One owner decision can cover several attempts: at the cap, record `authorize_attempts { attempts, reason, user_override: true }` once; each further attempt is charged to it, `session_orient` shows what is left, and a pass closes it.
 
-**Direct Fix (pit-boss applies, no worker) — ALL must hold:** the unit already has a delegation and its latest delegation was host-native (units delegated through `invoke_worker` are sidecar-tracked and ineligible); the change is an exact literal substitution the rejection already spelled out — identifier rename, typo in a string/comment, import path, test name/message, or a constant the spec states verbatim; it touches only files in the unit's brief; it adds no function, branch, or test; it does not touch authn/authz, secrets, telemetry names, public contracts/schemas, concurrency, or error-handling semantics. Line count is not the boundary — `&&`→`||` on an auth check is one line and ineligible. Procedure: `add_rejection` as normal → `set_unit_status({ s: "ip", direct_fix: "<file>: <substitution>" })` (records the attempt; the ledger refuses the pass without it) → apply the substitution → full Step 6 + G1–G6 → `set_verdict({ v: "pass", via: "pitboss-direct", note: "direct-fix: <file> <what> (+N/-M)" })`. A direct fix is an outer-loop attempt (counts toward 3). Anything outside the list → fresh worker.
+**Rank-based corrections:** Use the `model_rank` and `workflow_permissions` returned by startup/orientation. Middle and top rank permit same-worker **mechanical** corrections (exact rename, import, literal or fixture correction with unchanged behavior and acceptance criteria) and **bounded** implementation fixes and test changes within the same unit and frozen authorized files. Top rank additionally permits focused validation and delta review. Standard/unknown follow the normal fresh-worker path. A changed understanding, unavailable worker, new session, or expanded scope requires a fresh worker. Authorization, budget, security boundaries, public contracts, acceptance criteria, and scope changes never qualify.
+
+Record the rejection once, then a new `s:'delegated'` attempt with `worker_id` (the actual existing native worker ID), `correction: { kind: "mechanical" | "bounded", from_attempt: <previous attempt>, files: [<changed files>] }`, a compact `brief` referencing the previous brief and stating the finding, required delta and validation, and the normal preflight attestation. Reuse only a worker from this active session. Its ID is bound to the previous attempt either by `set_verdict { worker_id }` or, while that attempt carries no ID (after an `add_rejection` with no verdict, or a verdict written without it), by this correction's `worker_id` (same session, and only after its guard compare cleared); a bound ID is never rebound. Retain an eligible worker while its unit is under validation/review, and start fresh if the host has already released it. Take a new guard snapshot before sending the follow-up, preserving the original frozen authorized file scope; compare before tests and verdict as usual. Reuse is still an outer attempt, subject to existing failure caps and unresolved guard violations. Retain the original Shared-Tree Safety instructions and supply relevant context excerpts rather than the ledger or full handoff.
+
+**Nit path (mechanical correction, four ledger/guard calls).** A nit is a finding whose fix is a literal, rename, import, fixture or test-assertion change inside the unit's frozen file set with unchanged behaviour and acceptance criteria. It goes through a worker like everything else; what is cut is bookkeeping, never a check. No `s:'ip'` write, no `add_rejection`, no `record_escape`, no re-supplied file list:
+
+1. `write_ledger { operation: "set_unit_status", phase, unit_id, data: { s: "delegated", brief: "<prior brief ref + the finding + the exact delta + validation>", preflight: { symbols_grepped: <N>, self_consistent: true, telemetry: "n/a" }, worker_id: "<recorded native worker>", correction: { kind: "mechanical", from_attempt: <current attempt>, files: [<the files>] }, rejection: { r: "<finder>", msg: "<file:line finding>", escape_class: "<original_defect | remediation_defect | test_gap | process | new_scope — when the unit's gate already passed>" } } }` — records the rejection, the escape and the new attempt in one write; a refused write records none of them and says so. The escape is classified here only when it is new: on a repeat finding against a gate the unit already escaped, the existing escape gains the source and `escape_class` is ignored (the warning says "classify with record_escape"), so the class goes on the verdict in step 5. Fresh-worker fixes (Standard/unknown rank, or a released worker) use the same `rejection` field without `correction`.
+2. `repo_guard { operation: "snapshot", phase, unit_id }` — on a correction the frozen authorized set and entry limit are copied from the previous baseline; a different `allowed_files` is refused.
+3. Resume the worker with the compact brief; run `run_tests` as in Step 6.
+4. `repo_guard { operation: "compare", phase, unit_id }` — a violation is still a hard stop.
+5. `write_ledger { operation: "set_verdict", phase, unit_id, data: { v: "pass", via: "worker", worker_id } }` — add `escape_class` here when the unit's escape is still unclassified (a reopen verdict, a correction on a covered pass with no `rejection`, or the repeat-finding case in step 1); it classifies the NEWEST unclassified escape, and the ledger refuses the pass while any older one (possible only after a recorded `escape_override`) stays unclassified — `record_escape` clears that one.
+
+Then the gate: the correction bumped this unit's attempt, so no seat covers it any more (the other units keep their earlier seats; the gate names the uncovered unit). Top rank: a fresh read-only verifier records `record_review { stage: "verification", evidence: { kind: "worker_delta", … } }` and `update_phase_gate g:'pass'` re-stamps the gate. Other ranks re-run a seat over that unit and record it with `data.units: [<unit id>]`. This is the boundary, not ceremony: an unreviewed fix behind a green gate is the loophole 0.6.9 closed. One `write_progress` at most — `complete_unit` only if the PROGRESS entry was reopened; no `log_error` for a nit, the ledger `rej[]` entry and the escape row are the record.
+
+Top rank may use focused intermediate validation of the changed behavior and its dependencies, while still running every spec-mandated unit check, Step 6 ownership/spec checks, and full checkpoint validation. Middle rank retains normal validation and review. After an eligible Top correction, a separate read-only verifier can check the complete delta and extend still-valid baseline review coverage through `stage:'verification'` with `evidence.kind:'worker_delta'`; see checkpoint review. Neither reuse nor rank permits self-review or skipping final independent verification.
+
+The legacy `direct_fix` / `via:'pitboss-direct'` record format remains readable for compatibility. Do not use it for new work: all implementation, fixes, fixture changes and test edits in this protocol go through a worker.
 
 ### Repeated Checkpoint Blocks
 
 A green suite plus a finding that "the suite cannot observe the production behavior" is a test-evidence failure, not a passed checkpoint.
 
-- After the **second checkpoint block of that class**, run a targeted mutation or fault-injection probe over the exact production seam before another reading-only review. The acceptance criterion is explicit: replacing/removing the control must make the focused suite fail.
+- After the **second checkpoint block of that class**, run a targeted mutation or fault-injection probe over the exact production seam before another reading-only review. The acceptance criterion is explicit: replacing/removing the control must make the focused suite fail. A kill proves sensitivity to that exact substitution and nothing more: read the substitution and the assertion that failed before crediting it to the control.
 - Mutation or fault-injection workers that edit source run **serially** on the shared tree or in separate, proven worktrees. Never run two source-mutating review seats concurrently.
-- Classify every later finding as `original_defect`, `remediation_defect`, `test_gap`, or `process/tooling`. This exposes when repeated remediation is manufacturing most of the new risk.
+- Classify every later finding as `original_defect`, `remediation_defect`, `test_gap`, or `process/tooling`. This exposes when repeated remediation is manufacturing most of the new risk. Post-gate: the ledger records an escape when a gated unit is rejected, re-verdicted below pass, or re-attempted; classify it with `write_ledger record_escape { class }` (or `add_rejection { escape_class }`) before the unit's next pass verdict, and `read_ledger { query: "review_outcomes" }` shows escapes per review basis.
 - After the **third checkpoint block**, STOP before writing another fix. Present the owner a decision packet: evidence gained since the prior attempt; surviving mutations/untested behavior; original-versus-remediation defect counts; remaining silent-failure impact; cost and scope of one more round; and explicit choices to continue, narrow, defer, or override.
 - Owner arbitration is the termination rule. Foreman never auto-passes because review is expensive, and an adversarial seat never creates an endless loop merely by producing a new opinion: another remediation round requires a confirmed behavior, contract, or evidence gap with a concrete acceptance test.
 
@@ -247,29 +272,7 @@ Any brief built from scrubbed material must include this disclosure verbatim: `[
 At phase end, after all six gates (G1–G6) pass:
 **1. Full Test Suite:** Run the complete test suite via mcp__foreman__run_tests, not Bash.
 
-**2. Review via Deliberation:**
-1. Check the active host's advisor seats — reuse the session-start probe results recorded in the `init_session` journal `env`; re-probe ({{advisor_checks}}) only if an advisor was not probed or its recorded status was a failure
-2. Map to tier:
-
-| Advisor A | Advisor B | Review path | Moderator |
-|-----------|-----------|-------------|-----------|
-| available | available | Invoke both independently | Pitboss (you) |
-| available | unavailable | Advisor A + recorded non-independent fallback | Pitboss (you) |
-| unavailable | available | Advisor B + recorded non-independent fallback | Pitboss (you) |
-| unavailable | unavailable | Ask the user before proceeding with pitboss-only gates | Pitboss (you) |
-
-3. Use the active host's invocation mappings:
-
-{{advisor_a}}
-{{advisor_b}}
-{{advisor_fallback}}
-
-4. Ask each advisor (append the Advisor Grounding Protocol's efficiency instruction verbatim — selective reading, no file dumps): "Review these phase changes against the spec. List any: (a) spec directives not implemented, (b) implementations that contradict the spec, (c) missing error handling, (d) test gaps, (e) security issues — prefix each `[CWE-###]` (closest class or `[CWE-UNMAPPED]` + reason if none fits); where a finding weakens a control or detection-evidence row in the spec's Threat Table, cite that row by component name — do NOT invent new technique mappings during code review, (f) telemetry contract violations — names, unbounded tag values, missing trace correlation, secrets/PII in signals. Be specific — file:line references required. Start every finding with its severity in brackets — `[CRITICAL]`, `[HIGH]`, `[MEDIUM]`, `[LOW]` — then the file:line, one finding per list item. For each category, list what you examined (files/functions) even when you report nothing — a category with no findings and no examined list is not reviewed."
-
-5. `mcp__foreman__normalize_review` — parse review output into structured findings (`findings_json` is record_review-ready; `unparsed_lines` counts prose that opened no finding — the examined list lands there, not in findings)
-6. An advisor result marked `completion: failed` (empty or echoed output, non-zero exit) is not a seat: record it with the reason in `limitations`, retry once, and after a second failure use the unavailable row above. Classify each finding: CONFIRMED / REJECTED / UNVERIFIED — every recorded finding carries one; `record_review` refuses a finding without it. A seat reporting zero findings with no examined list is `completion: "partial"`, never clean — no line-count floor decides this. If another seat has CONFIRMED findings, re-prompt the silent seat ONCE naming only the files involved (never the other seat's claims or lines) and record that pass separately with `stage: "cross_exam"`; it never counts as an independent seat.
-7. Persist the review durably — `mcp__foreman__write_ledger({ operation: "record_review", phase, data: { advisor, stage: "independent", completion, checked: [<what the seat examined>], findings: [{ severity, file, line, description, classification }] } })`. Use lowercase classification (`confirmed` / `rejected` / `unverified`). Security findings keep their `[CWE-###]` prefix in `description`. Survives the session; retrievable via `read_ledger({ query: "reviews" })`. The phase gate is ledger-enforced: it requires a review recorded after the latest unit verdict and refuses `pass` while any such review carries a `confirmed` finding — reject the affected unit (`add_rejection` → fix → `set_verdict`), then re-run the review so a fresh record shows it resolved. `user_override` waives and is recorded on the phase. Trivial follow-ups only — no confirmed finding above LOW since the last independent review, fixed by Direct Fix and re-verdicted `via: "pitboss-direct"` on an unscoped phase — may close with `record_review { stage: "verification", completion: "complete", evidence: { baseline_review_ts, units: [{ unit_id, attempt }], files, tests, probe } }` instead of a fresh seat; the gate checks every one of those conditions and a `cross_exam` record never counts as a seat. Anything larger needs a seat. When the gate answers `REVIEW REQUIRED` it also states whether that verification path is open right now — `VERIFICATION ELIGIBLE` with the record shape to write, or `VERIFICATION NOT ELIGIBLE` with the one blocker — read it before paying for another seat. A seat that failed, timed out, or reported nothing is superseded by re-running the SAME advisor to a complete record; never re-verdict a unit to clear it.
-8. If no CLIs available: ask user "Independent review unavailable. Proceed with pit-boss gates only? [y/N]"
+{{include: checkpoint-review}}
 
 **3. Persist State:**
 ```

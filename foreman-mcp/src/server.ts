@@ -27,6 +27,7 @@ import { activateImplementor } from "./tools/activateImplementor.js"
 import { activateDesignPartner } from "./tools/activateDesignPartner.js"
 import { activateSpecGenerator } from "./tools/activateSpecGenerator.js"
 import { activateLighttask } from "./tools/activateLighttask.js"
+import { activateResearcher } from "./tools/activateResearcher.js"
 import { activateSpecMan } from "./tools/activateSpecMan.js"
 import { activateDocMan } from "./tools/activateDocMan.js"
 import { previewDiagram } from "./tools/previewDiagram.js"
@@ -40,8 +41,11 @@ import {
 } from "./types.js"
 import { renderShape } from "./lib/schemaDoc.js"
 import { formatSchemaError, isZodError } from "./lib/schemaError.js"
-import { readJournal, initSession, logEvent, endSession } from "./lib/journal.js"
-import { invokeAdvisor, formatAdvisorResult, GEMINI_ADVISOR_MODEL, CODEX_ADVISOR_MODEL } from "./tools/invokeAdvisor.js"
+import { readJournal, initSession, declareModel, logEvent, endSession, rehydrateRank } from "./lib/journal.js"
+import { resolveModelRank, type ModelRank } from "./lib/modelRank.js"
+import { invokeAdvisor, advisorRunMeta, formatAdvisorResult, GEMINI_ADVISOR_MODEL, CODEX_ADVISOR_MODEL } from "./tools/invokeAdvisor.js"
+import { appendReceipt, receiptsPathFor, receiptFailure, sha256Hex, CLI_PROVIDER } from "./lib/seatReceipts.js"
+import { DEFAULT_PATHS } from "./lib/foremanFiles.js"
 import { sessionOrient } from "./tools/sessionOrient.js"
 import { renderIncludes, loadSkill } from "./lib/skillLoader.js"
 import { hostStatus } from "./tools/hostStatus.js"
@@ -49,6 +53,15 @@ import { type HostId, resolveHost, parseHostFlag, getProfile } from "./lib/hostP
 import { maybeCompress, compressionEnabled, getRetrieveOriginalTool, toolNameForHash } from "./lib/compression.js"
 import { ADVISOR_CLIS } from "./lib/advisorCli.js"
 import { codexAgentsInit, CODEX_AGENT_ROLES } from "./tools/codexAgentsInit.js"
+import { claudeWorkflowsInit, FOREMAN_WORKFLOWS } from "./tools/claudeWorkflowsInit.js"
+import { preflightCheck, PreflightCheckInputSchema } from "./tools/preflightCheck.js"
+import { renderOracle, runOracle, VerifyOracleInputSchema } from "./tools/verifyOracle.js"
+import { recordOracle } from "./lib/ledger.js"
+import { preflightPathFor } from "./lib/preflight.js"
+import { phaseOwnership, PhaseOwnershipInputSchema } from "./tools/phaseOwnership.js"
+import { contractProbe, ContractProbeInputSchema } from "./tools/contractProbe.js"
+import { workerStatus, WorkerStatusInputSchema } from "./tools/workerStatus.js"
+import { liveSmoke, LiveSmokeInputSchema } from "./tools/liveSmoke.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -76,11 +89,16 @@ export interface ServerConfig {
 }
 
 export async function createServer(config?: ServerConfig): Promise<McpServer> {
-  const ledgerPath = config?.ledgerPath ?? "Docs/.foreman-ledger.json"
-  const progressPath = config?.progressPath ?? "Docs/.foreman-progress.json"
-  const docsDir = config?.docsDir ?? "Docs"
-  const journalPath = config?.journalPath ?? "Docs/.foreman-journal.json"
+  const ledgerPath = config?.ledgerPath ?? DEFAULT_PATHS.ledgerPath
+  const progressPath = config?.progressPath ?? DEFAULT_PATHS.progressPath
+  const docsDir = config?.docsDir ?? DEFAULT_PATHS.docsDir
+  const journalPath = config?.journalPath ?? DEFAULT_PATHS.journalPath
   const host: HostId = config?.host ?? "claude-code"
+  // A declaration made under ANOTHER host describes another host, so it is never inherited.
+  // 0.6.27: one made under THIS host, in a session still open, is read back — a mid-session
+  // Foreman restart used to drop the operator to weight 0 with no way back but init_session.
+  // rehydrateRank enforces same-host, still-open, rank-present; anything else stays unknown.
+  let activeModelRank: ModelRank = (await rehydrateRank(journalPath, host)) ?? resolveModelRank()
 
   // Stack profile resolves once per process, like host: env wins, then the
   // project override file <docsDir>/foreman-stack-profile.md, then bundled reference.
@@ -154,7 +172,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
     },
     async (_extra) => {
-      const text = hostStatus(host)
+      const text = hostStatus(host, activeModelRank)
       return textResult(text)
     }
   )
@@ -206,11 +224,11 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     "read_ledger",
     {
       title: "Read Ledger",
-      description: "Reads the Foreman ledger with bounded output. Table queries are paged (cursor/limit, max 100), phase-filterable, and omit verdict notes unless include_notes:true. Oversized full/metrics reads return guidance instead of flooding host context. Query 'delegation_metrics' derives worker-delegation metrics from the events sidecar.",
+      description: "Reads the Foreman ledger with bounded output. Table queries are paged (cursor/limit, max 100), phase-filterable, and omit verdict notes unless include_notes:true. Oversized full/metrics reads return guidance instead of flooding host context. Query 'delegation_metrics' derives worker-delegation metrics from the events sidecar. Query 'review_outcomes' reports counted gate passes and escapes per review basis. Query 'reconstruct' rebuilds a read-only recovery worksheet from the append-only sidecars after a ledger loss: the units and attempts they attest, which ones the ledger is missing, and which seat receipts are reclaimable. It writes nothing.",
       inputSchema: z.strictObject({
         unit_id: z.string().max(10000).optional(),
         phase: z.string().max(10000).optional(),
-        query: z.enum(["verdicts", "rejections", "phase_gates", "reviews", "full", "delegation_metrics"]).optional(),
+        query: z.enum(["verdicts", "rejections", "phase_gates", "reviews", "full", "delegation_metrics", "review_outcomes", "facts", "reconstruct"]).optional(),
         verdict: z.enum(["pass", "fail", "pending", "inconclusive"]).optional(),
         include_notes: z.boolean().optional(),
         cursor: z.number().int().min(0).max(1000000).optional(),
@@ -233,7 +251,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     "read_progress",
     {
       title: "Read Progress",
-      description: "Reads the descriptive Foreman planning checklist. It is not resume authority; call session_orient to choose the next action.",
+      description: "Shows ledger-authoritative unit/phase counts and resume state using the same calculation as session_orient, followed by the descriptive planning checklist. Checklist completion is not project completion. Use session_orient for the focused resume workflow.",
       inputSchema: z.strictObject({
         last_n_completed: z.number().min(1).max(100).optional(),
       }),
@@ -245,7 +263,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
     },
     async (args, _extra) => {
-      const text = await handleReadProgress(progressPath, args.last_n_completed)
+      const text = await handleReadProgress(progressPath, args.last_n_completed, ledgerPath, host, activeModelRank)
       return textResult(text)
     }
   )
@@ -325,7 +343,31 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     async (args, _extra) => {
       const result = await invokeAdvisor(args.cli, args.prompt, args.timeout_ms)
       const pinned = args.cli === "gemini" ? GEMINI_ADVISOR_MODEL : args.cli === "codex" ? CODEX_ADVISOR_MODEL : undefined
-      const formatted = formatAdvisorResult(args.cli, result, args.prompt, pinned)
+      // 0.6.19: every run gets a receipt, failed ones included, so a failed seat can never
+      // be re-described as clean. The pit-boss copies seat_receipt and packet_sha256 into
+      // record_review; the ledger checks them against this file, never against the text.
+      const meta = advisorRunMeta(args.cli, result, args.prompt, pinned)
+      const extra: string[] = []
+      try {
+        const cli = args.cli as keyof typeof CLI_PROVIDER
+        const receipt = await appendReceipt(receiptsPathFor(ledgerPath), {
+          cli,
+          provider: CLI_PROVIDER[cli],
+          ...(pinned !== undefined ? { model_requested: pinned } : {}),
+          model_served: meta.modelServed ?? "unknown",
+          ...(meta.reasoningEffort !== undefined ? { reasoning_effort: meta.reasoningEffort } : {}),
+          exit_code: result.exitCode,
+          failure_reason: receiptFailure(result.exitCode, meta.failureReason),
+          prompt_sha256: sha256Hex(args.prompt),
+          bytes_in: Buffer.byteLength(args.prompt, "utf-8"),
+          bytes_out: Buffer.byteLength(meta.body, "utf-8"),
+          ...(meta.tokensUsed !== undefined ? { tokens_used: meta.tokensUsed } : {}),
+        })
+        extra.push(`seat_receipt: ${receipt.id}`, `packet_sha256: ${receipt.prompt_sha256}`)
+      } catch (err) {
+        extra.push(`seat_receipt: unavailable (${err instanceof Error ? err.message : String(err)})`)
+      }
+      const formatted = formatAdvisorResult(args.cli, result, args.prompt, pinned, extra)
       // Successful advisor output is PROSE — never lossy-compress it (silent loss of the
       // recommendations). A FAILED call is an unpredictable diagnostic dump: let the normal
       // compression path handle it; the agent sees exit_code != 0 and can retrieve_original.
@@ -339,24 +381,27 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     {
       title: "Write Ledger",
       description: [
-        "Writes one operation to the Foreman ledger. Per-operation data shapes are in the input schema (data field description); a rejected call returns one hint per field plus the expected shape.",
+        "Writes one ledger operation. Data shapes: the input schema; refusals return per-field hints.",
         "",
-        "Operations (phase required; unit_id where noted):",
-        "  set_unit_status (unit_id) — s:'delegated' needs a brief (≥20 chars) and a preflight attestation; s:'ip' with direct_fix records a literal fix as an attempt. Past 3 failed attempts since the last pass, an attempt needs an open grant or user_override.",
-        "  set_verdict (unit_id) — v:'pass' needs a prior delegation, an attempt after the latest failure (ATTEMPT REQUIRED), past the cap a granted/overridden attempt or user_override (cap_override), and on a no-test/no-build phase a ≥5-word note; v:'fail' counts as a failed attempt.",
-        "  add_rejection (unit_id) — counts a failed attempt; reopens a passed unit to 'pending'.",
-        "  authorize_attempts (unit_id) — the owner's decision, once: N more attempts past the cap, charged per attempt; refused below the cap or while a grant is open; a pass closes it.",
-        "  declare_phase_units — additive declared id set (cap 200); retire needs a reason; frozen once the gate is 'pass'.",
-        "  update_phase_gate — g:'pass' needs every unit passed, every declared id registered, and a current independent review (or eligible verification; cross_exam never counts) with no 'confirmed' finding and no partial, failed, or silent record without checked[]; user_override waives the review conditions (recorded on the phase).",
-        "  set_phase_scope — once per phase; hot_path/security_boundary make the gate require agent_class:'frontier'.",
-        "  record_review — every finding needs a classification; 'line' is a string, severity lowercase; zero findings need checked[] or completion:'complete'; 'confirmed' blocks the gate; stage:'verification' (direct-fix re-verdicts only) needs completion:'complete' + evidence. Limit: checked ≤50 entries of ≤400 chars.",
+        "Operations:",
+        "  set_unit_status (unit_id) — delegated needs brief ≥20 chars + preflight, optional data.rejection; a ranked correction { kind, from_attempt, files: [\"path\"] } reuses the worker; direct_fix is legacy-only. Past 3 failures: grant or user_override.",
+        "  set_verdict (unit_id) — v:'pass' needs a prior delegation, an attempt after the latest failure (ATTEMPT REQUIRED), past the cap a grant or user_override (cap_override), a ≥5-word note on a no-test phase, no unclassified escape, a live_smoke when declared; v:'fail' is a failed attempt.",
+        "  add_rejection (unit_id) — { r, msg, ts? (server time if absent) }: a failed attempt; reopens a passed unit; on a gated unit records an escape (escape_class classifies).",
+        "  record_escape (unit_id) — classifies a post-gate defect (source:'later' when found later); refused if the unit never escaped.",
+        "  close_attempt (unit_id) — delivered | blocked | validation_only; changes no id, counter or cap.",
+        "  authorize_attempts (unit_id) — the owner's decision, once: N attempts past the cap; refused below it or with a grant open; a pass closes it.",
+        "  declare_phase_units — declared id set (cap 200); retire needs a reason; frozen once the gate passes.",
+        "  update_phase_gate — g:'pass' needs every unit passed, declared ids registered, a current seat review with no confirmed finding, no unclassified escape, deliverable receipts cited; user_override waives, recorded.",
+        "  set_phase_scope — once per phase; hot_path/security_boundary need agent_class:'frontier' at the gate.",
+        "  record_review — every finding needs a classification; zero findings need checked[] or completion:'complete'; 'confirmed' blocks the gate; verification needs evidence; deliverable units cite live_smoke run_ids (smoke_receipts). Limit: checked ≤50 entries of ≤400 chars.",
       ].join("\n"),
       inputSchema: z.strictObject({
-        operation: z.enum(["set_unit_status", "set_verdict", "add_rejection", "declare_phase_units", "update_phase_gate", "set_phase_scope", "record_review", "authorize_attempts"]),
+        operation: z.enum(["set_unit_status", "set_verdict", "add_rejection", "declare_phase_units", "update_phase_gate", "set_phase_scope", "record_review", "authorize_attempts", "record_escape", "record_fact", "close_attempt"]),
         unit_id: z.string().max(10000).optional(),
         phase: z.string().max(10000).optional(),
         data: z.record(z.string(), z.unknown()).describe(
-          "Per-operation shape (every key, enum value, and limit):\n" + shapesOf(LedgerOperationDataSchemas)
+          "Per-operation shape (every key, enum value, and limit):\n" + shapesOf(LedgerOperationDataSchemas) +
+          "\nSoft limits: record_review checked[] entries, limitations, and native.reviewers[].checked[] entries over their limit are cut to the limit with a trailing '…[truncated N chars]' marker and the result carries a warning; every other limit (ids, findings, evidence, notes) refuses the write."
         ),
       }),
       outputSchema: TextOutputSchema,
@@ -367,7 +412,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
     },
     async (args, _extra) => {
-      const text = await handleWriteLedger(ledgerPath, args)
+      const text = await handleWriteLedger(ledgerPath, args, host, activeModelRank, { specPath: path.join(docsDir, "spec.md"), projectRoot: process.cwd() })
       return textResult(text)
     }
   )
@@ -417,7 +462,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     {
       title: "Repository Guard",
       description:
-        "Runs the shared-tree ownership check around an editing worker and records it on the unit's newest delegation. 'snapshot' captures repository root, branch, HEAD, stash, every changed path with a content fingerprint, core.autocrlf, and line-ending attributes before the worker runs, and freezes allowed_files onto that baseline; 'compare' re-reads the state afterwards and names every mutation outside the frozen set — a moved HEAD, a touched index or stash, a changed config, a file changed outside the brief, an already-dirty file whose content was overwritten, or a pre-existing uncommitted change that disappeared. Foreman writes both results, so set_verdict refuses a pass whose guard did not clear (REPOSITORY GUARD). A baseline cannot be re-taken for an attempt that has one, and compare takes no allowed_files of its own. It compares up to max_entries changed paths (default 500, raisable to 5000). Any git probe that fails, times out, or truncates is a refusal, never a clean tree. Outside a git work tree it reports n/a and gates nothing. Order: set_unit_status s:'delegated' -> snapshot -> spawn the worker -> compare -> set_verdict.",
+        "Runs the shared-tree ownership check around an editing worker and records it on the unit's newest delegation. TWO FILE LISTS, NOT INTERCHANGEABLE: `allowed_files` IS the allow-list compare measures ownership against; `files` only scopes the line-ending probe. Omitted, allowed_files falls back to a correction's inherited set then to `files`; an explicit [] declares a worker that edits nothing; an accidentally empty allow-list is REFUSED, because a guard authorizing nothing can only ever hard-stop. The result reports authorized_from. 'snapshot' captures root, branch, HEAD, stash, every changed path with a content fingerprint, core.autocrlf and line endings before the worker runs, freezing allowed_files onto that baseline; 'compare' re-reads them and names every mutation outside the frozen set — a moved HEAD, a touched index or stash, a changed config, a file changed outside the brief, an already-dirty file overwritten, or a pre-existing uncommitted change that vanished. Both scan the authorized set for non-empty all-NUL files — destroyed, not edited: snapshot refuses (status: damaged), compare records a violation naming them, which the ownership diff cannot (the path is authorized). set_verdict refuses a pass whose guard did not clear (REPOSITORY GUARD). A baseline cannot be re-taken, and compare takes no allowed_files. max_entries bounds compared paths (default 500, max 5000). A git probe that fails, times out or truncates is a refusal, never a clean tree; outside a git work tree it reports n/a and gates nothing. Foreman's own writes (.foreman-* state files with their .corrupt/.tmp side files, and the fenced block in Docs/PROGRESS.md) are never charged to the worker; PROGRESS.md outside the fence still is. On a correction, snapshot copies the from_attempt set when omitted; a different one is refused.",
       inputSchema: z.strictObject({
         operation: z.enum(["snapshot", "compare"]),
         phase: z.string().min(1).max(10000),
@@ -438,7 +483,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
     },
     async (args, _extra) => {
-      const text = await handleRepoGuard(args, { ledgerPath })
+      const text = await handleRepoGuard(args, { ledgerPath, progressPath, journalPath, docsDir })
       return textResult(text)
     }
   )
@@ -479,7 +524,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
     },
     async (args, _extra) => {
-      const text = await handleInvokeCouncil(args, { journalPath })
+      const text = await handleInvokeCouncil(args, { journalPath, receiptsPath: receiptsPathFor(ledgerPath) })
       return textResult(text)
     }
   )
@@ -525,17 +570,19 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       title: "Write Journal",
       description: [
         "Writes to the Foreman session journal — a friction log, not a diary.",
+        "Declare the orchestrator model and effort in init_session data.env; omitted or unmapped identity uses normal protocol. Foreman derives rank and workflow permissions. Use declare_model with model and effort to replace the declaration after a model change; omitted fields become unknown. Rank is separate from agent_class and never waives workers, ownership or checkpoint gates.",
         "",
         "Sequence per session: init_session (once, at session start) → log_event (0–200 entries, anomalies only) → end_session (once, at checkpoint or handoff).",
         "The event-code enum is anomaly-only by design: log failures, delays, and degraded tooling; never successes, worker spawns, or test passes. Host tooling that is broken or unusable (e.g. run_tests cannot spawn) is TOOL_ERR. There is no informational code.",
         "",
         "Exact data shapes for every operation are in this tool's input schema (the description of the data field); a rejected call returns one hint per field plus the expected shape.",
-        "Limit: log_event data.msg is at most 400 characters.",
+        "Limit: log_event data.msg is at most 400 characters. Longer msg text is cut to 400 with a trailing marker and the write returns a warning; it is not refused.",
       ].join("\n"),
       inputSchema: z.strictObject({
-        operation: z.enum(["init_session", "log_event", "end_session"]),
+        operation: z.enum(["init_session", "declare_model", "log_event", "end_session"]),
         data: z.record(z.string(), z.unknown()).describe(
-          "Per-operation shape (every key, enum value, and limit):\n" + shapesOf(JournalOperationDataSchemas)
+          "Per-operation shape (every key, enum value, and limit):\n" + shapesOf(JournalOperationDataSchemas) +
+          "\nSoft limit: log_event msg over 400 chars is cut to 400 with a trailing '…[truncated N chars]' marker and the result carries a warning."
         ),
       }),
       outputSchema: TextOutputSchema,
@@ -549,13 +596,20 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       const input = { operation: args.operation, data: args.data } as any
       try {
         if (args.operation === "init_session") {
-          const journal = await initSession(journalPath, input)
-          return textResult(JSON.stringify({ ok: true, session_id: journal.sessions[journal.sessions.length - 1].id }))
+          const journal = await initSession(journalPath, input, host)
+          const session = journal.sessions[journal.sessions.length - 1]
+          activeModelRank = session.env!.model_rank!
+          return textResult(JSON.stringify({ ok: true, session_id: session.id, model_rank: activeModelRank }))
+        } else if (args.operation === "declare_model") {
+          const journal = await declareModel(journalPath, input, activeModelRank.session_id ?? "", host)
+          activeModelRank = journal.sessions[journal.sessions.length - 1].env!.model_rank!
+          return textResult(JSON.stringify({ ok: true, session_id: activeModelRank.session_id, model_rank: activeModelRank }))
         } else if (args.operation === "log_event") {
           const result = await logEvent(journalPath, input)
           return textResult(result)
         } else {
           const journal = await endSession(journalPath, input)
+          activeModelRank = resolveModelRank()
           return textResult(JSON.stringify({ ok: true, sessions: journal.sessions.length, rollup: !!journal.rollup }))
         }
       } catch (err) {
@@ -614,7 +668,8 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "passed is exit code 0. List-style checkers such as gofmt -l exit 0 and print the files needing work: pass fail_on_stdout:true so any stdout counts as a failure. Output shaping: truncation always keeps the TAIL of each stream. strip_patterns (≤10 JS regex sources, per line, both streams, before the cap) drops known noise and reports stripped_lines; tail_lines keeps the last N lines. All opt-in; default output is unchanged.",
       ].join("\n"),
       inputSchema: z.strictObject({
-        runner: z.string().min(1).max(50),
+        // 0.6.20: a pinned toolchain path inside the project root is allowed (basename must be an allowed runner).
+        runner: z.string().min(1).max(260),
         args: z.array(z.string().max(10000)).max(100).default([]),
         timeout_ms: z.number().min(1).max(600000).optional(),
         max_output_chars: z.number().min(1).max(50000).optional(),
@@ -656,7 +711,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
     },
     async (_extra) => {
-      const text = await sessionOrient(ledgerPath, progressPath, host)
+      const text = await sessionOrient(ledgerPath, progressPath, host, activeModelRank)
       return textResult(text)
     }
   )
@@ -700,6 +755,126 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     )
   }
 
+  // 0.6.20 (field report): the brief preflight was an attestation; this checks it. Every host.
+  server.registerTool(
+    "preflight_check",
+    {
+      title: "Preflight Check",
+      description: [
+        "Checks a worker brief against the spec BEFORE the attempt is spent, and records a passing receipt the ledger requires on set_unit_status s:'delegated'.",
+        "Refuses: a symbol in `symbols` the spec does not contain; a citation in the brief (path, file:line, named test, `-run` selector) that does not resolve in the repo. Files and tests the unit CREATES go in `creates: [{ file, tests }]`: their citations are forward, and the pass verdict refuses until each exists and each test is declared in its file. Reports checkpoint reach: whether the spec's Test line's go test selectors include the package of every authorized file (a testdata fixture belongs to its parent package); an omission fails, and the delegation refuses it unless the owner overrides.",
+        "Advises: directive sentences with no echo in the brief, contradiction markers, drifted file:line citations, files outside `files` that reference `type_names`/`introduces` (dispatch sites with a default arm first).",
+        "Returns brief_hash; copy it into the delegation as preflight.receipt with symbols_grepped as the same array.",
+      ].join(" "),
+      inputSchema: PreflightCheckInputSchema.strict(),
+      outputSchema: TextOutputSchema,
+      annotations: { title: "Preflight Check", readOnlyHint: false, destructiveHint: false },
+    },
+    async (args, _extra) => textResult(await preflightCheck(args, preflightPathFor(ledgerPath), ledgerPath, path.join(docsDir, "spec.md")))
+  )
+
+  // 0.6.22 (architecture council): the unit's own code path against the real system, as a receipt.
+  server.registerTool(
+    "live_smoke",
+    {
+      title: "Live Smoke",
+      description: "Runs the smoke plan registered for the unit in the spec's ```foreman-contract block (runner, args, cwd, env names, harness_files, input_files, checks) through the project's real runner, and records a receipt on the unit bound to the current attempt, the contract digest and digests of the harness and application inputs. Takes only plan_id: the command cannot be supplied at call time. The plan's env names resolve from the server environment first and ~/.foreman-mcp/.env second and reach the child only. Declared deliverables must be absent before the run and are digested and evaluated after it (size bounds, JSON checks, values_in against a reference frozen at delegation). Wherever a plan or deliverable is declared, set_verdict pass requires a passing smoke for the current attempt whose digests still match; a review that carries the gate cites the run_id in smoke_receipts.",
+      inputSchema: LiveSmokeInputSchema.strict(),
+      outputSchema: TextOutputSchema,
+      annotations: { title: "Live Smoke", readOnlyHint: false, destructiveHint: false },
+    },
+    async (args, _extra) => textResult(await liveSmoke(args, ledgerPath, path.join(docsDir, "spec.md")))
+  )
+
+  // 0.6.21 (field report): ownership is discovered at worker time; find it once at phase start.
+  server.registerTool(
+    "phase_ownership",
+    {
+      title: "Phase Ownership",
+      description: "Runs the ownership sweep once for every unit in a phase (each against its own Files column) and assigns every outside reference to the unit whose Files hold it, or UNASSIGNED. Dispatch sites with a default arm first. Advisory and lexical; stale once a unit lands, so re-run after each. Names are matched as written (ops.Kind), not resolved.",
+      inputSchema: PhaseOwnershipInputSchema.strict(),
+      outputSchema: TextOutputSchema,
+      annotations: { title: "Phase Ownership", readOnlyHint: true, destructiveHint: false },
+    },
+    async (args, _extra) => textResult(await phaseOwnership(args))
+  )
+
+  // 0.6.21 (field report): the live-contract step, executed by Foreman, recorded as a receipt.
+  server.registerTool(
+    "contract_probe",
+    {
+      title: "Contract Probe",
+      description: "Claim mode { phase, unit_id, claim_id }: loads the request and assertions from the claim registered in the spec's ```foreman-contract block, sends it from Foreman's own HTTP client (GET/HEAD only) and records the result on the unit; only claim-mode probes satisfy preflight in a has_api phase. Diagnostic mode { url, expect } explores and never satisfies a claim. Assertions: status, min_bytes, contains, json_nonempty_path, json_array_length {path, exact, min, max}. Capture is capped and an over-cap body fails every body assertion. Header values may be ${ENV:NAME}, resolved from the server environment first and ~/.foreman-mcp/.env second; never printed or stored.",
+      inputSchema: ContractProbeInputSchema.strict(),
+      outputSchema: TextOutputSchema,
+      annotations: { title: "Contract Probe", readOnlyHint: false, destructiveHint: false },
+    },
+    async (args, _extra) => textResult(await contractProbe(args, ledgerPath, path.join(docsDir, "spec.md")))
+  )
+
+  // 0.6.21 (field report): a heartbeat line turns a ten-minute blind spot into a progress line.
+  server.registerTool(
+    "worker_status",
+    {
+      title: "Worker Status",
+      description: "Reads the worker heartbeat file (.foreman-heartbeat.jsonl beside the ledger; workers append {ts, phase, unit, attempt, files, note} every few tool calls) and reports the last heartbeat age, files touched so far and stale lines from earlier attempts, keyed on the unit's current attempt. Advisory: self-reported activity, not progress; never clears, rejects or terminates an attempt.",
+      inputSchema: WorkerStatusInputSchema.strict(),
+      outputSchema: TextOutputSchema,
+      annotations: { title: "Worker Status", readOnlyHint: true, destructiveHint: false },
+    },
+    async (args, _extra) => textResult(await workerStatus(args, ledgerPath))
+  )
+
+  // 0.6.20 (field report): the protocol asked for a mutation probe and shipped no tool. Every host.
+  server.registerTool(
+    "verify_oracle",
+    {
+      title: "Verify Oracle",
+      description: [
+        "Mutation probe for a unit's guard tests: for each mutation the file must contain `old` exactly once; the tool writes `new`, runs the guard test through run_tests (allowlist and shaping apply), restores the original bytes and verifies the restore by hash.",
+        "killed = the guard test failed with the control removed; survived = the suite cannot observe that control, OR the mutation changed no behaviour (an additive mutation is labelled); invalid = old absent/ambiguous, file outside the root, a refused runner, a build failure, or a run that executed NO TEST. A failed restore aborts loudly.",
+        "Zero tests is invalid on both sides: a baseline that runs no tests is red before any mutation is written, and a mutated run that executes nothing (a -run filter the mutation just stopped matching) is never a kill or a survivor.",
+        "The report is recorded on the unit (unit.oracle) and read by the repeated-block rule.",
+      ].join(" "),
+      inputSchema: VerifyOracleInputSchema.strict(),
+      outputSchema: TextOutputSchema,
+      annotations: { title: "Verify Oracle", readOnlyHint: false, destructiveHint: false },
+    },
+    async (args, _extra) => {
+      const report = await runOracle(args)
+      let note = ""
+      try {
+        await recordOracle(ledgerPath, args.phase, args.unit_id, report)
+      } catch (err) {
+        note = `\nledger: ${err instanceof Error ? err.message : String(err)}`
+      }
+      return textResult(renderOracle(report) + note)
+    }
+  )
+
+  // Claude Code only (0.6.20): install Foreman's saved Workflow scripts into the project.
+  if (host === "claude-code") {
+    server.registerTool(
+      "claude_workflows_init",
+      {
+        title: "Init Claude Workflows",
+        description: [
+          "Installs Foreman's saved Workflow scripts into the project's .claude/workflows/ so the host's Workflow tool can run them by name:",
+          "foreman-checkpoint-review (phase review fan; record its report stage:'fan', never a gate seat), foreman-design-panel (independent stances, attack, synthesis with conflicts for the user), foreman-triage (verify field reports in code, design and attack fixes; implementation stays with the unit protocol).",
+          "Existing files are skipped unless overwrite:true. A workflow run is paid and user-approved: confirm the workflow, phases and agent count with the user first unless the session opted in. Call once per project.",
+        ].join(" "),
+        inputSchema: z.strictObject({
+          project_dir: z.string().min(1).optional().describe("Project root holding .claude/; defaults to the server cwd"),
+          workflows: z.array(z.enum(FOREMAN_WORKFLOWS)).min(1).optional().describe("Subset to install; default all"),
+          overwrite: z.boolean().optional().describe("Replace existing files (default false)"),
+        }),
+        outputSchema: TextOutputSchema,
+        annotations: { title: "Init Claude Workflows", readOnlyHint: false, destructiveHint: false },
+      },
+      async (args, _extra) => textResult(await claudeWorkflowsInit(args))
+    )
+  }
+
   // Codex-only: write .codex/agents role TOMLs + optional [agents] config for parallel fan-out.
   if (host === "codex") {
     server.registerTool(
@@ -711,18 +886,23 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
           "and creates .codex/config.toml with [agents] max_threads/max_depth only when that file is absent.",
           "Existing .codex/config.toml is never overwritten (may hold mcp_servers); a merge hint is returned instead.",
           "explorer/worker TOMLs override Codex built-in roles of those names to pin sandbox_mode.",
+          "reviewer/verifier are the default native review roles; complete stage:'native' evidence can satisfy the Codex gate without external CLIs.",
           "Model pins are optional — omit to let Codex choose. Call once per project before parallel fan-out.",
         ].join(" "),
         inputSchema: z.strictObject({
           project_dir: z.string().min(1).optional().describe("Project root (default: process.cwd())"),
           max_threads: z.number().int().min(1).max(12).optional().describe("Concurrent agent threads (default 6)"),
           max_depth: z.number().int().min(1).max(3).optional().describe("Nesting depth (default 1; >1 warns)"),
-          roles: z.array(z.enum(CODEX_AGENT_ROLES)).min(1).optional().describe("Roles to write (default: explorer, worker)"),
+          roles: z.array(z.enum(CODEX_AGENT_ROLES)).min(1).optional().describe("Roles to write (default: explorer, worker, reviewer, verifier)"),
           overwrite: z.boolean().optional().describe("Overwrite existing role TOMLs (default false). Never overwrites config.toml."),
           models: z
             .strictObject({
+              reviewer: z.string().min(1).optional(),
+              verifier: z.string().min(1).optional(),
               explorer: z.string().min(1).optional(),
               worker: z.string().min(1).optional(),
+              worker_light: z.string().min(1).optional(),
+              worker_heavy: z.string().min(1).optional(),
             })
             .optional()
             .describe("Optional per-role model pins; omit to let Codex choose"),
@@ -877,6 +1057,44 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   )
 
   server.registerTool(
+    "researcher",
+    {
+      title: "Researcher Protocol",
+      description: [
+        "Activates the Foreman researcher protocol: question -> hypothesis -> bounded variant ->",
+        "evidence -> decision -> checkpoint, for iterative work whose answer is measured rather than",
+        "specified (tuning a prompt until a model reads video or images correctly; bringing a",
+        "deterministic engine to a correctness and latency bar).",
+        "Enforces by protocol, not by gate: one change per variant; the evaluation set and verdict",
+        "method declared BEFORE the run; the same evaluation set across compared variants; negative",
+        "results kept; recorded results never rewritten, only superseded with a reason; decisions cited",
+        "with alternatives and remaining uncertainty; a checkpoint carrying the exact next action and",
+        "verified against live artifacts before it is trusted on resume.",
+        "Tracks one Docs/research.md thread — no ledger, no delegation, no verdict.",
+        "Promotion to shipped code LEAVES this protocol for lighttask (its own grounding, adversarial review",
+        "and verification, direct implementation permitted for a small unit) or the full pipeline (spec,",
+        "worker delegation, repository guard, verdicts, gate review — all ledger-enforced). A measurement is",
+        "not a gate in either case.",
+        "The LLM MUST follow the returned instructions to run the research session.",
+        "Pass optional context to describe the question being investigated.",
+      ].join(" "),
+      inputSchema: z.strictObject({
+        context: z.string().max(10000).optional(),
+      }),
+      outputSchema: TextOutputSchema,
+      annotations: {
+        title: "Researcher Protocol",
+        readOnlyHint: true,
+        destructiveHint: false,
+      },
+    },
+    async (args, _extra) => {
+      const text = await activateResearcher(skillsDir, args.context, host)
+      return textResult(text)
+    }
+  )
+
+  server.registerTool(
     "spec_man",
     {
       title: "Spec-Man Protocol",
@@ -1007,7 +1225,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
           // failure case is rare (skill load error) and the unrendered placeholders
           // are still readable text.
           const raw = await fs.readFile(filePath, "utf-8")
-          const text = await renderIncludes(raw, filePath)
+          const text = await renderIncludes(raw, filePath, host)
           return {
             contents: [{ uri: resourceUri.href, mimeType: "text/markdown", text }],
           }

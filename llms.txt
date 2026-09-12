@@ -8,7 +8,7 @@ or routing policy. It orchestrates protocols, records state, and refuses invalid
 transitions (a unit cannot pass without a recorded delegation; a phase cannot
 pass while any unit is not `pass`).
 
-Package: `@malindarathnayake/foreman-mcp` · Version: `0.5.7` · Runtime: Node.js `>=22`
+Package: `@malindarathnayake/foreman-mcp` · Version: `0.6.27` · Runtime: Node.js `>=22`
 
 This file is written for an AI agent that just connected to the server. It is
 an operating packet, not a feature list — read the whole thing before your
@@ -16,20 +16,27 @@ first tool call.
 
 ## 1. Public tool surface (contract)
 
-Tool count: 27
+Tool count: 35
 
 - bundle_status — Returns the Foreman bundle version and override info.
 - host_status — Returns the active Foreman host and the model slugs used for worker/advisor invocation.
 - changelog — Returns the Foreman changelog, optionally since a version.
 - ethos — Serves the canonical engineering-ethos document (proportionality tiers, three pillars, review checklist), rendered with the active stack profile.
-- read_ledger — Reads bounded Foreman ledger slices; tabular queries support phase/verdict filters plus cursor/limit pagination, and oversized full reads fail with recovery guidance.
+- read_ledger — Reads bounded Foreman ledger slices; tabular queries support phase/verdict filters plus cursor/limit pagination, and oversized full reads fail with recovery guidance. `query: "reconstruct"` builds a read-only recovery worksheet from the append-only sidecars after a ledger loss: units and attempts they attest, what the ledger is missing, which seat receipts are reclaimable. It writes nothing.
 - read_progress — Reads the planning checklist. It is descriptive only; `session_orient` is the resume authority.
 - read_journal — Reads the Foreman session journal; returns session history with rollup.
 - capability_check — Checks whether the claude, codex, or gemini CLI is available and authenticated, with a closed auth-status taxonomy. CLI versions are telemetry, not compatibility pins.
 - invoke_advisor — Invokes the claude, codex, or gemini CLI via stdin for independent review. Claude runs headless `claude-fable-5` at `max` effort with tools disabled.
 - write_ledger — Writes an operation to the Foreman ledger (unit status, verdicts, rejections, phase gates, scope, durable reviews).
 - invoke_worker — EXPERIMENTAL (egress: sends briefs + file excerpts to your configured HTTP endpoint). Delegates a single patch task to the remote OpenAI-compatible endpoint configured in `.foremanenv`; returns a shape-checked, verbatim patch for the host to apply.
-- repo_guard — Runs the shared-tree ownership check around an editing worker: `snapshot` records branch, HEAD, stash, index, dirty paths, `core.autocrlf`, and line-ending attributes on the delegation; `compare` re-reads them and names every mutation outside the brief. Foreman writes both, so a pass verdict can be refused until the guard clears. Reports `n/a` outside a git work tree.
+- repo_guard — Runs the shared-tree ownership check around an editing worker: `snapshot` records branch, HEAD, stash, index, dirty paths, `core.autocrlf`, and line-ending attributes on the delegation; `compare` re-reads them and names every mutation outside the brief. `allowed_files` IS the allow-list `compare` measures against; `files` only scopes the line-ending probe, and an accidentally empty allow-list is refused rather than frozen. Both refuse or flag an authorized file that is non-empty and entirely NUL bytes — destroyed, not edited. Foreman writes both, so a pass verdict can be refused until the guard clears. Reports `n/a` outside a git work tree.
+- claude_workflows_init — Claude Code host only. Installs Foreman's saved Workflow scripts (checkpoint review fan, design panel, field-report triage) into the project's `.claude/workflows/`; a workflow review is same-model perspective recorded as `fan`, never a gate seat.
+- preflight_check — Checks a worker brief against the spec before the attempt is spent: symbols must appear in the spec, citations must resolve in the repo (a `-run` operand resolves as a Go regex against test declarations); files the unit creates go in creates: [{ file, tests }], whose citations are forward and are checked at the pass verdict; checkpoint reach reports whether the spec's Test line selects the Go package of every authorized file (a testdata fixture belongs to its parent package), and the delegation refuses an omission unless the owner overrides. Directive omissions, contradiction markers and out-of-set references are reported. Returns the brief_hash the ledger requires on the delegation.
+- phase_ownership — Runs the ownership sweep once for every unit in a phase, each against its own Files column, and assigns every outside reference to an owning unit or UNASSIGNED. Advisory and lexical; re-run after each unit lands.
+- contract_probe — Sends a GET or HEAD from Foreman's own HTTP client. Claim mode takes a claim_id and loads the request and assertions from the unit's foreman-contract block in the spec; the record carries the claim id and the contract digest. Diagnostic mode takes a url and never satisfies a claim. Header values written as ${ENV:NAME} resolve from the server environment first and ~/.foreman-mcp/.env second; values are never printed or stored. Capture streams under a 4 MB cap; an incomplete capture fails every body assertion. In a has_api phase preflight_check requires a passing claim-mode probe for every registered claim under the current contract digest.
+- live_smoke — Runs the smoke plan registered in the unit's foreman-contract block (plan_id only: command, cwd, env names, harness files, application inputs and deliverables come from the spec; the env names resolve from the server environment first and ~/.foreman-mcp/.env second and reach the child only) through the project's runner and records a receipt bound to the attempt, the contract digest, a harness digest, an input digest and, per declared deliverable, the digest of the bytes the run produced and the result of its assertions (size bounds, JSON checks, values_in against a reference file frozen at delegation). Refuses while a declared deliverable already exists. Wherever a plan or deliverable is declared, set_verdict pass requires a passing smoke for the current attempt whose digests still match; a newer failed run supersedes a pass; a review that carries the gate cites the run_id in record_review smoke_receipts.
+- worker_status — Reads the worker heartbeat file and reports last heartbeat age and files touched, keyed on the unit's current attempt. Advisory; never clears, rejects or terminates an attempt.
+- verify_oracle — Mutation probe: applies each mutation, runs the guard test, restores by hash; reports killed, survived (the suite cannot observe that control, or the mutation changed nothing) and invalid, recorded on the unit. A run that executed NO TEST is invalid on both sides — a baseline running zero tests is red before any mutation is written, and a mutated run whose `-run` filter now matches nothing is never a kill or a survivor.
 - invoke_council — EXPERIMENTAL (egress: sends the review evidence packet to your configured HTTP endpoint). Convenes an adaptive review council of remote read-only seats across risk lenses, returns structured findings for the host to moderate and the user to arbitrate. Entirely optional: with no seats configured it returns `status: unavailable` and Foreman proceeds on its normal advisor flow.
 - write_progress — Writes an operation to the Foreman progress file.
 - write_journal — Writes to the Foreman session journal (init_session / log_event / end_session).
@@ -41,6 +48,7 @@ Tool count: 27
 - pitboss_implementor — Activates the pitboss-implementor protocol for multi-phase implementation from prepared specs (worker fan-out, gates, retries, resume).
 - design_partner — Activates the design-partner protocol: a collaborative design session that produces `Docs/design-summary.md`.
 - spec_generator — Activates the spec-generator protocol: turns an approved design summary into spec/handoff/progress/testing docs.
+- researcher — Activates the Foreman researcher protocol: question -> hypothesis -> bounded variant -> evidence -> decision -> checkpoint, for iterative work whose answer is measured rather than specified (tuning a prompt until a model reads video or images correctly; bringing a deterministic engine to a correctness and latency bar). Enforces by protocol, not by gate: one change per variant, the evaluation set and verdict method declared BEFORE the run, negative results kept, recorded results superseded rather than rewritten. Tracks a thin Docs/research.md index with one line per run pointing at per-run detail files. Promotion to shipped code leaves this protocol for the normal gates.
 - lighttask — Activates the lighttask protocol for small surgical work that still needs grounding and review.
 - spec_man — Activates the spec-man protocol: produces intended-behavior specs from existing repos, tickets, or plans.
 - doc_man — Activates the doc-man protocol: generates grounded technical documentation (README, architecture, data-flow, Confluence, machine docs).

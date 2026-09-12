@@ -2,6 +2,8 @@ import path from "path"
 import { computeGateUnitsHash, readLedgerWithStatus } from "../lib/ledger.js"
 import { toKeyValue, toTable } from "../lib/toon.js"
 import { renderDelegationMetrics } from "../lib/delegationMetrics.js"
+import { renderReviewOutcomes } from "../lib/reviewBasis.js"
+import { reconstruct, type ReconstructReport } from "../lib/reconstruct.js"
 import type { ReadLedgerInput, Unit } from "../types.js"
 
 const DEFAULT_PAGE_LIMIT = 50
@@ -61,6 +63,58 @@ function describeGrant(unit: Unit): string {
   return g.closed ? `#${g.id} closed (${g.closed.reason}), ${used}` : `#${g.id} open, ${g.remaining} of ${g.granted} remaining`
 }
 
+/**
+ * The recovery worksheet (0.6.26). Deliberately a worksheet and not a writer: a preflight
+ * record holds a brief's HASH, and set_unit_status needs the brief TEXT, so nothing here
+ * can re-record an attempt on its own. What it can do is replace "reconstruct it from
+ * memory" with "transcribe this list", and name exactly which briefs still have to come
+ * from the operator.
+ */
+function renderReconstruct(r: ReconstructReport): string {
+  const head = toKeyValue({
+    ledger_phases: r.ledger_phases.join(", ") || "none",
+    phases_attested: [...r.phases.keys()].join(", ") || "none",
+    units_attested: r.units.length,
+    units_missing_from_ledger: r.units.filter((u) => u.missing_unit).length,
+    unrecorded_attempts: r.units.reduce((n, u) => n + u.unrecorded_attempts.length, 0),
+    orphaned_receipts: r.orphaned_receipts.length,
+  })
+  const sources = toTable(["sidecar", "status", "detail"], r.sources.map((s) => [s.file, s.status, s.detail]))
+  const missing = r.units.filter((u) => u.missing_unit || u.unrecorded_attempts.length > 0)
+  const body = missing.length === 0
+    ? "\nNothing to replay: every unit the sidecars attest is registered in the ledger, and every passing preflight record has a delegation carrying its brief_hash."
+    : "\n" + toTable(
+        ["phase", "unit", "in_ledger", "attempts_attested", "unrecorded_brief_hashes", "files_promised"],
+        missing.map((u) => [
+          u.phase,
+          u.unit_id,
+          u.missing_unit ? "MISSING" : "yes",
+          String(u.preflights.length),
+          u.unrecorded_attempts.map((p) => `${p.brief_hash}@${p.ts}`).join(" ") || "none",
+          [...new Set(u.unrecorded_attempts.flatMap((p) => (p.forward ?? []).map((f) => f.file)))].join(" ") || "none",
+        ]),
+      )
+  const receipts = r.orphaned_receipts.length === 0 ? "" :
+    "\n\nORPHANED SEAT RECEIPTS (a review was recorded against each and the record is gone)\n" +
+    toTable(["receipt", "phase", "review_ts", "seat"], r.orphaned_receipts.map((c) => [c.id, c.phase, c.review_ts, `${c.cli ?? "?"}/${c.model_served ?? "?"}`])) +
+    "\nThese receipts are reclaimable: record_review with the same seat_receipt is accepted now that the ledger " +
+    "holds no record citing it, and the rebind is written into the receipts chain."
+  return [
+    head,
+    "\nSIDECARS READ\n" + sources,
+    "\nREPLAY WORKSHEET" + body,
+    receipts,
+    "\nHOW TO USE THIS\n" +
+    "  1. declare_phase_units for every phase above whose units the ledger is missing.\n" +
+    "  2. For each unrecorded attempt, set_unit_status s:'delegated' with the ORIGINAL brief text.\n" +
+    "     Foreman holds only the hash; if the text you supply hashes differently the write is refused,\n" +
+    "     which is the check working. When the text is genuinely gone, run preflight_check again on the\n" +
+    "     brief you can reconstruct and delegate under the new hash — a re-attested attempt, not a forged one.\n" +
+    "  3. Re-record verdicts and reviews last, so the gate predicates see a complete unit history.\n" +
+    "  Nothing in this report has been written to the ledger.",
+  ].join("\n")
+}
+
 export async function handleReadLedger(filePath: string, input: ReadLedgerInput): Promise<string> {
   // Read-only: never rename a corrupt ledger from a read path
   const { ledger, corrupt } = await readLedgerWithStatus(filePath, { readOnly: true })
@@ -102,6 +156,9 @@ export async function handleReadLedger(filePath: string, input: ReadLedgerInput)
       failed_since_pass: unit.epoch_failed === undefined ? "n/a" : String(unit.epoch_failed),
       needs_attempt: unit.needs_attempt ? "true" : "false",
       cap_grant: describeGrant(unit),
+      outcomes: Object.entries(unit.outcomes ?? {}).map(([k, v]) => `${k}:${v}`).join(" ") || "none recorded",
+      probes: unit.probes?.length ? `${unit.probes.filter((p) => p.passed).length} passed / ${unit.probes.length} (newest ${unit.probes.at(-1)!.method} ${unit.probes.at(-1)!.target} -> ${unit.probes.at(-1)!.status ?? "transport error"})` : "none",
+      oracle: unit.oracle ? `${unit.oracle.killed}/${unit.oracle.mutations} killed, survivors ${unit.oracle.survivors.join(",") || "none"}` : "none",
     }), "unit", input.phase)
   }
 
@@ -159,6 +216,7 @@ export async function handleReadLedger(filePath: string, input: ReadLedgerInput)
             const meta = [
               review.completion ? `completion=${review.completion}` : null,
               review.checked ? `checked=${review.checked.length}` : null,
+              review.units ? `units=${review.units.length}` : null,
               review.stage ? `stage=${review.stage}` : null,
             ].filter(Boolean).join("; ")
             rows.push([phaseId, review.advisor, "", "", meta ? `(no findings; ${meta})` : "(no findings)"])
@@ -199,6 +257,18 @@ export async function handleReadLedger(filePath: string, input: ReadLedgerInput)
         input.phase,
       )
     }
+    case "facts": {
+      // 0.6.20: per-phase facts gathered during preflight, reusable by later units.
+      const rows: string[][] = []
+      for (const [phaseId, phase] of phaseEntries) for (const f of phase.facts ?? []) rows.push([phaseId, f.key, f.text, f.source ?? "", f.ts])
+      return renderPage(["phase", "key", "fact", "source", "recorded"], rows, input, 'full text: read_ledger({ query: "full", phase: "<phase>" })')
+    }
+    case "reconstruct":
+      // 0.6.26: read-only recovery worksheet assembled from the append-only sidecars.
+      return boundNonPageOutput(renderReconstruct(await reconstruct(filePath, ledger)), query, input.phase)
+    case "review_outcomes":
+      // 0.6.19: recomputed from per-phase scalar totals on every read; never a rollup.
+      return boundNonPageOutput(renderReviewOutcomes(ledger, input.phase), query, input.phase)
     case "full":
     default:
       if (input.phase && !ledger.phases[input.phase]) {

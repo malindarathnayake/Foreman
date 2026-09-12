@@ -34,6 +34,10 @@ import { createHash } from "crypto"
 import fs from "fs/promises"
 import path from "path"
 import { runExternalCli } from "./externalCli.js"
+import {
+  DEFAULT_SCOPE, EMPTY_RELATIVE_SCOPE, PROGRESS_STATE_FILE, fenceBlocksOf, fencedFingerprint, isForemanStateFile, relativeScope,
+  type ForemanFileScope, type RelativeScope,
+} from "./foremanFiles.js"
 import type { RepoEntry, RepoSnapshot } from "../types.js"
 
 const GIT_TIMEOUT_MS = 10_000
@@ -54,21 +58,10 @@ export const MAX_FILE_ARGS = 100
 /** Files larger than this are fingerprinted by size alone. */
 const MAX_HASH_BYTES = 8 * 1024 * 1024
 
-/**
- * Foreman's own state files are written by Foreman during the unit, not by the worker.
- * Counting them as worker mutations made every real run report a violation.
- */
-const FOREMAN_STATE = new Set([
-  ".foreman-ledger.json",
-  ".foreman-progress.json",
-  ".foreman-journal.json",
-  ".foreman-events.jsonl",
-])
-
-function isForemanState(p: string): boolean {
-  const base = p.split(/[\\/]/).pop() ?? p
-  return FOREMAN_STATE.has(base) || base.startsWith(".foreman-ledger.json.") || base.endsWith(".tmp")
-}
+// Foreman's own state files are written by Foreman during the unit, not by the worker;
+// counting them as worker mutations made every real run report a violation. The set is
+// lib/foremanFiles.ts (v0.6.20): the same names the writers import, so the guard and the
+// writers cannot disagree, and nothing outside that set is excused. [CWE-863]
 
 interface GitResult {
   ok: boolean
@@ -199,13 +192,108 @@ async function stagedFingerprints(dir: string, paths: string[]): Promise<{ ok: b
   return { ok: true, map }
 }
 
+/**
+ * Is a HEAD move attributable to Foreman? (0.6.27, field report.)
+ *
+ * The protocol says commit the ledger at every verdict, and the guard says nothing moves HEAD
+ * between snapshot and compare. Both are right and they collide: committing your own ledger made
+ * the guard report a violation on work nobody did wrong.
+ *
+ * 0.6.21 vetoed `pitboss_paths` because "content cannot attribute a write to an actor" — and that
+ * holds for content. A COMMIT is not content: it carries a manifest of the paths it touched, so
+ * attribution is by construction rather than by inference, and the veto's reason does not reach it.
+ * The guard already excuses Foreman's own writes in the WORKING TREE (isForemanStateFile); this
+ * makes the identical writes excusable once committed, which is the inconsistency the field hit.
+ *
+ * Fail closed on anything that is not a plain advance: `after` must be a DESCENDANT of `before`,
+ * so a reset, an amend, a rebase or a checkout still fails — none of them has an ancestry path.
+ * Every path in the range must be Foreman-owned; one source file and the whole move is a violation.
+ */
+export type HeadAttribution =
+  | { attributable: true; commits: number }
+  | { attributable: false; reason: string }
+
+export async function attributeHeadMove(
+  dir: string, before: string, after: string, rel: RelativeScope
+): Promise<HeadAttribution> {
+  if (before === "none" || after === "none") {
+    return { attributable: false, reason: "a repository with no commits on one side of the comparison" }
+  }
+  // exit 0 = ancestor. A non-zero exit OR a failed probe is "not a plain advance": fail closed.
+  const ancestor = await git(dir, ["merge-base", "--is-ancestor", before, after])
+  if (!ancestor.ok) {
+    return { attributable: false, reason: `${after.slice(0, 12)} does not descend from ${before.slice(0, 12)} (a reset, amend, rebase or checkout, not a commit)` }
+  }
+  const names = await git(dir, ["diff", "--name-only", `${before}..${after}`], outputBudget(MAX_ENTRIES))
+  if (!names.ok || names.truncated) {
+    return { attributable: false, reason: "the commit range could not be read completely" }
+  }
+  const paths = names.out.split(/\r?\n/).map((l) => normalizePath(l.trim())).filter(Boolean)
+  const outside = paths.filter((p) => !isForemanStateFile(p, rel))
+  if (outside.length > 0) {
+    return {
+      attributable: false,
+      reason: `the commit range touches ${outside.length} path(s) Foreman does not write: ${outside.slice(0, 5).join(", ")}${outside.length > 5 ? ", …" : ""}`,
+    }
+  }
+  const count = await git(dir, ["rev-list", "--count", `${before}..${after}`])
+  return { attributable: true, commits: count.ok ? Number(count.out.trim()) || paths.length : paths.length }
+}
+
 export function snapshotHash(s: Omit<RepoSnapshot, "hash">): string {
   return createHash("sha256").update(JSON.stringify(s)).digest("hex").slice(0, 16)
 }
 
+/**
+ * NUL scan (0.6.26, field report 2026-09-11). The same crash that zeroed the ledger also
+ * left a 46 KB source file as 46 KB of NUL bytes, and NOTHING noticed: the file still
+ * exists, still has its size, still has its mtime, and `grep` on it reports a missing
+ * SYMBOL rather than a missing file — so the pit-boss reads it as a code problem. It
+ * surfaced hours later only because a mutation anchor that had matched stopped matching.
+ *
+ * A non-empty file that is entirely NUL is not a state any editor, compiler or formatter
+ * produces; it is the signature of a write that reached the directory entry but not the
+ * data blocks. The guard already knows the authorized set, so this costs one read of a
+ * few KB per file — the scan stops at the first non-zero byte, which for real source is
+ * byte 0.
+ */
+const ZERO_SCAN_CHUNK = 64 * 1024
+
+export async function isZeroFilled(absPath: string): Promise<boolean> {
+  let handle
+  try {
+    handle = await fs.open(absPath, "r")
+    const stat = await handle.stat()
+    // An empty file is not damage, and a directory is not a file.
+    if (!stat.isFile() || stat.size === 0) return false
+    const buf = Buffer.allocUnsafe(ZERO_SCAN_CHUNK)
+    let read = 0
+    while (read < stat.size && read < MAX_HASH_BYTES) {
+      const { bytesRead } = await handle.read(buf, 0, ZERO_SCAN_CHUNK, read)
+      if (bytesRead === 0) break
+      for (let i = 0; i < bytesRead; i++) if (buf[i] !== 0) return false
+      read += bytesRead
+    }
+    return read > 0
+  } catch {
+    return false   // unreadable or absent: not this check's business
+  } finally {
+    await handle?.close().catch(() => {})
+  }
+}
+
+/** Every path in `files` whose bytes are entirely NUL. Bounded by the authorized-set cap. */
+export async function zeroFilledFiles(dir: string, files: string[]): Promise<string[]> {
+  const out: string[] = []
+  for (const f of files.slice(0, MAX_FILE_ARGS)) {
+    if (await isZeroFilled(path.join(dir, f))) out.push(f)
+  }
+  return out
+}
+
 export type SnapshotOutcome =
   | { status: "n/a"; reason: string }
-  | { status: "ok"; snapshot: RepoSnapshot }
+  | { status: "ok"; snapshot: RepoSnapshot; scope: RelativeScope; foreman_files: number; damaged: string[] }
   | { status: "refused"; reason: string }
   | { status: "failed"; reason: string }
 
@@ -219,7 +307,8 @@ export async function takeSnapshot(
   dir: string,
   files: string[] = [],
   allowed: string[] = [],
-  maxEntries: number = MAX_ENTRIES
+  maxEntries: number = MAX_ENTRIES,
+  scope: ForemanFileScope = DEFAULT_SCOPE
 ): Promise<SnapshotOutcome> {
   const entryLimit = Math.min(Math.max(Math.trunc(maxEntries) || MAX_ENTRIES, 1), ENTRY_CEILING)
   for (const f of [...files, ...allowed]) {
@@ -268,26 +357,67 @@ export async function takeSnapshot(
     return { status: "failed", reason: "git ls-files --eol failed or truncated; the line-ending state could not be read" }
   }
 
-  const parsed = parsePorcelainZ(status.out).filter((e) => !isForemanState(e.path))
+  const rel = await relativeScope(scope, root.out)
+  const parsed = parsePorcelainZ(status.out).filter((e) => !isForemanStateFile(e.path, rel))
   const truncated = parsed.length > entryLimit
   const kept = parsed.slice(0, entryLimit)
 
-  const stagedResult = await stagedFingerprints(dir, kept.map((e) => e.path))
+  // Fenced files (Docs/PROGRESS.md): a tracked-clean one is synthesised into the entry list
+  // so the after-write has a baseline to compare against. Synthesised entries do not count
+  // toward the entry limit; there is at most one. Paths come from server config, never from
+  // tool input, and go after `--` like every other path. [CWE-863]
+  const keptPaths = new Set(kept.map((e) => e.path))
+  const synthesised: Array<{ path: string; code: string }> = []
+  for (const f of rel.fenced) {
+    if (keptPaths.has(f)) continue
+    try {
+      const st = await fs.stat(path.join(dir, f))
+      if (st.isDirectory()) continue
+    } catch {
+      continue // absent and not in the dirty set: nothing to fingerprint
+    }
+    synthesised.push({ path: f, code: "  " })
+  }
+
+  const stagedResult = await stagedFingerprints(dir, [...kept, ...synthesised].map((e) => e.path))
   if (!stagedResult.ok) {
     return { status: "failed", reason: "git ls-files -s failed, timed out, or truncated for the changed paths; the index could not be read" }
   }
   const staged = stagedResult.map
 
   const entries: RepoEntry[] = []
-  for (const e of kept) {
-    entries.push({
+  for (const e of [...kept, ...synthesised]) {
+    const entry: RepoEntry = {
       path: e.path.length > MAX_PATH_LEN ? `${e.path.slice(0, MAX_PATH_LEN)}…` : e.path,
       code: e.code,
       wt: await worktreeFingerprint(dir, e.path),
       idx: staged.get(e.path) ?? "none",
-    })
+    }
+    if (rel.fenced.has(e.path)) {
+      entry.fenced = true
+      // `wt` keeps its full-content meaning; `fwt` is the fence-stripped digest, present only
+      // when the file was actually hashed (absent, dir, and big:<n> carry no fwt).
+      if (/^[0-9a-f]{16}$/.test(entry.wt)) {
+        entry.fwt = fencedFingerprint(await fs.readFile(path.join(dir, e.path), "utf-8"))
+      }
+    }
+    entries.push(entry)
   }
   entries.sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0))
+  // 0.6.20 (verifier [CWE-345]): the fence interior is excluded from the fingerprint, so a
+  // worker could plant content inside it. A Foreman fence write always accompanies a
+  // progress-state write; marking the state files lets compare demand that pairing.
+  // Only the progress-state file is marked. Recording the snapshot itself rewrites the
+  // ledger, so a ledger mark would move on every attempt and the check would never fire
+  // (Codex review, 2026-09-10); write_progress is the only Foreman writer of the fence,
+  // and it always rewrites the progress-state file in the same call.
+  const marks: Record<string, string> = {}
+  for (const p of [...rel.state].sort()) {
+    if (path.basename(p) !== PROGRESS_STATE_FILE) continue
+    try {
+      marks[p] = createHash("sha256").update(await fs.readFile(path.join(dir, p))).digest("hex").slice(0, 16)
+    } catch { /* absent state file: no mark */ }
+  }
 
   const base = {
     root: normalizePath(root.out),
@@ -301,8 +431,16 @@ export async function takeSnapshot(
     truncated,
     entry_limit: entryLimit,
     allowed: allowed.map(normalizePath).slice(0, MAX_FILE_ARGS),
+    fenced: [...rel.fenced].sort(),
+    marks,
   }
-  return { status: "ok", snapshot: { ...base, hash: snapshotHash(base) } }
+  return {
+    status: "ok", snapshot: { ...base, hash: snapshotHash(base) }, scope: rel,
+    foreman_files: rel.state.size + rel.fenced.size,
+    // Kept OUT of the snapshot itself: the baseline hash identifies the tree state a
+    // comparison is frozen against, and damage is an observation about it, not part of it.
+    damaged: await zeroFilledFiles(dir, base.allowed),
+  }
 }
 
 /**
@@ -314,7 +452,11 @@ export async function takeSnapshot(
  * its staged blob changed, which is how a worker overwriting the user's uncommitted work
  * is caught.
  */
-export function compareSnapshots(before: RepoSnapshot, after: RepoSnapshot): string[] {
+export function compareSnapshots(
+  before: RepoSnapshot, after: RepoSnapshot, rel: RelativeScope = EMPTY_RELATIVE_SCOPE,
+  /** 0.6.27: resolved by the caller, which has git; absent means "treat any HEAD move as a violation". */
+  head: HeadAttribution | undefined = undefined
+): string[] {
   const violations: string[] = []
   const allowed = new Set((before.allowed ?? []).map(normalizePath))
 
@@ -325,8 +467,11 @@ export function compareSnapshots(before: RepoSnapshot, after: RepoSnapshot): str
   if (before.branch !== after.branch) {
     violations.push(`branch changed: '${before.branch}' -> '${after.branch}'`)
   }
-  if (before.head !== after.head) {
-    violations.push(`HEAD moved: ${before.head.slice(0, 12)} -> ${after.head.slice(0, 12)} (a worker must not commit, reset, or checkout)`)
+  if (before.head !== after.head && !head?.attributable) {
+    violations.push(
+      `HEAD moved: ${before.head.slice(0, 12)} -> ${after.head.slice(0, 12)} (a worker must not commit, reset, or checkout)` +
+      (head && !head.attributable ? ` — not attributable to Foreman: ${head.reason}` : "")
+    )
   }
   if (before.stash_ref !== after.stash_ref || before.stash_count !== after.stash_count) {
     violations.push(`stash changed: ${before.stash_ref.slice(0, 12)}/${before.stash_count} entries -> ${after.stash_ref.slice(0, 12)}/${after.stash_count}`)
@@ -342,12 +487,55 @@ export function compareSnapshots(before: RepoSnapshot, after: RepoSnapshot): str
     )
   }
 
-  const b = new Map(before.entries.map((e) => [e.path, e]))
-  const a = new Map(after.entries.map((e) => [e.path, e]))
+  // Both sides are read through the same filter, so a baseline recorded by a server that
+  // predates the shared list (it may carry .foreman-seats.jsonl) cannot manufacture a
+  // "disappeared" violation on upgrade.
+  const b = new Map(before.entries.filter((e) => !isForemanStateFile(e.path, rel)).map((e) => [e.path, e]))
+  const a = new Map(after.entries.filter((e) => !isForemanStateFile(e.path, rel)).map((e) => [e.path, e]))
+  // A baseline taken before fence-aware guarding has no `fenced` list. It is compared exactly
+  // as before (untouched -> clean, written -> today's violation), with the cause named.
+  const legacyNote = before.fenced === undefined
+    ? " (baseline predates fence-aware guarding; the next attempt's baseline excludes Foreman's fenced block)"
+    : ""
 
   for (const [p, entry] of a) {
     if (allowed.has(p)) continue
     const was = b.get(p)
+    if (rel.fenced.has(p)) {
+      // Foreman-fenced file: Foreman's block write is exactly what turns "  " into " M", so
+      // the status code is not compared when both sides carry a fence-aware entry.
+      if (!was) {
+        // Synthesised for a tracked-clean file nobody touched: the only way an after-entry
+        // exists with no baseline entry and a clean status is a legacy baseline.
+        if (entry.fenced && entry.code === "  ") continue
+        violations.push(`file changed outside the brief: ${p}${legacyNote}`)
+      } else if (was.fenced && entry.fenced) {
+        const key = was.fwt !== undefined && entry.fwt !== undefined ? "fwt" : "wt"
+        // 0.6.20: the interior changed but nothing outside the fence did. Foreman's own fence
+        // write always changes a progress-state file too; if no state mark moved, the block
+        // was written by something other than Foreman. [CWE-345]
+        const stateMoved = before.marks === undefined || after.marks === undefined ||
+          Object.keys({ ...before.marks, ...after.marks }).some((k) => before.marks![k] !== after.marks![k])
+        if (key === "fwt" && was.fwt === entry.fwt && was.wt !== entry.wt && !stateMoved) {
+          violations.push(`Foreman-fenced block changed with no Foreman progress write: ${p}`)
+        } else if (was[key] !== entry[key]) {
+          violations.push(
+            key === "fwt" && fenceBlocksOf(entry.fwt!) > fenceBlocksOf(was.fwt!)
+              ? `Foreman-fenced file gained a second fence: ${p}`
+              : `Foreman-fenced file changed outside its fence: ${p}`
+          )
+        } else if (was.idx !== entry.idx) {
+          violations.push(`staged content changed outside the brief: ${p}`)
+        }
+      } else if (was.wt !== entry.wt) {
+        violations.push(`pre-existing uncommitted change overwritten outside the brief: ${p}${legacyNote}`)
+      } else if (was.idx !== entry.idx) {
+        violations.push(`staged content changed outside the brief: ${p}${legacyNote}`)
+      } else if (was.code !== entry.code) {
+        violations.push(`git status of a file outside the brief changed: ${p} (${was.code.trim()} -> ${entry.code.trim()})${legacyNote}`)
+      }
+      continue
+    }
     if (!was) {
       violations.push(`file changed outside the brief: ${p}`)
     } else if (was.wt !== entry.wt) {

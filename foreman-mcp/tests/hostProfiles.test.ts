@@ -98,15 +98,20 @@ describe("hostProfiles — getProfile", () => {
     expect(codex.id).toBe("codex")
     expect(codex.displayName).toBe("Codex")
     expect(codex.placeholders.worker_invoke).toContain("spawn_agent")
-    expect(codex.placeholders.worker_invoke).toContain("gpt-5.6-luna")
-    expect(codex.placeholders.worker_invoke).toContain("record the actual model")
+    // v0.6.15: the seat is picked per unit and its model is pinned in
+    // .codex/agents/<role>.toml, so the text names seats rather than a model.
+    expect(codex.placeholders.worker_invoke).toContain("worker_light")
+    expect(codex.placeholders.worker_invoke).toContain("worker_heavy")
+    expect(codex.placeholders.worker_invoke).toContain("record the model Codex reports")
     expect(codex.placeholders.worker_invoke).not.toContain("Agent tool")
     expect(codex.placeholders.advisor_checks).toContain('cli: "claude"')
     expect(codex.placeholders.advisor_a).toContain('cli: "claude"')
     expect(codex.placeholders.advisor_a).toContain('model: "claude-fable-5"')
     expect(codex.placeholders.advisor_a).toContain("max")
     expect(codex.placeholders.advisor_b).toContain('cli: "gemini"')
-    expect(codex.placeholders.advisor_fallback).toContain("Non-independent")
+    // Native review is now the default, while external advisors remain optional.
+    expect(codex.placeholders.advisor_fallback).toContain("Native review")
+    expect(codex.placeholders.advisor_fallback).toContain("PERSPECTIVE, not independence")
     expect(codex.placeholders.autonomy).toContain("host-controlled")
   })
 

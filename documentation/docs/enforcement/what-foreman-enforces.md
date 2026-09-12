@@ -61,6 +61,17 @@ The **ledger validation** is TypeScript in `lib/ledger.ts`. It runs on every `wr
 | same | no independent review, and no eligible verification record, at or after the latest verdict; `cross_exam` records never count | `REVIEW REQUIRED` | `user_override: true`, recorded as `review_override` |
 | same | a current review has a `confirmed` finding | `CONFIRMED FINDINGS` | `user_override: true`, recorded as `confirmed_override` |
 | same | a current review is `partial`, `failed`, has zero findings with no `checked` list and no `completion: complete`, or carries a finding recorded before 0.6.4 without a classification | `INCOMPLETE REVIEW` | `user_override: true`, recorded as `incomplete_override` |
+| `set_unit_status { s: "delegated" }` | the brief's hash has no passing `preflight_check` record for this unit and phase | `PREFLIGHT RECEIPT` | none — run `preflight_check` |
+| same | the spec's `Test:` line does not select the Go package of an authorized file | `CHECKPOINT REACH` | `user_override: true`, recorded as `reach_override` |
+| same | another unit holds the repository window | `WINDOW BUSY` | record its verdict or `close_attempt` first |
+| `repo_guard { operation: "snapshot" }` | the authorized file set would be empty by accident | `refused` | pass `allowed_files`, or `[]` to declare a read-only guard |
+| same | an authorized file is non-empty and entirely NUL bytes | `damaged` | restore the file |
+| `set_verdict { v: "pass" }` | the attempt's ownership guard did not clear | `REPOSITORY GUARD` | `user_override: true`, recorded as `guard_override` |
+| same | a declared smoke plan or deliverable has no passing `live_smoke` for this attempt, or its digests moved | `SMOKE REQUIRED`, `DELIVERABLES` | `user_override: true`, recorded as `smoke` |
+| same | a file or test promised under `creates` still does not exist | `FORWARD CITATIONS UNMET` | none — create it |
+| same | the spec contract or checkpoint moved since the attempt was frozen | `CONTRACT CHANGED`, `CHECKPOINT CHANGED` | none — re-preflight |
+| `update_phase_gate { g: "pass" }` | three consecutive counted passes carried by same-provider review alone | `INDEPENDENCE BOUND` | a receipted cross-vendor seat, or `user_override` on the record |
+| `record_review` | the seat receipt is already bound to a review the ledger still holds | `SEAT RECEIPT` | none — a receipt whose record is gone is reclaimable automatically |
 | any write with a bad shape | field missing, wrong enum, over a limit | `SCHEMA ERROR` | fix the call |
 
 Every override is written into the ledger where `read_ledger` and `session_orient` can show it. There is no silent override.

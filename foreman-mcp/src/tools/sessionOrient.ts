@@ -5,6 +5,7 @@ import { naturalSort } from "../lib/naturalSort.js"
 import type { Phase, ProgressFile, Unit } from "../types.js"
 import type { HostId } from "../lib/hostProfiles.js"
 import { unsupportedCapabilities } from "../lib/capabilitySet.js"
+import { modelRankSummary, resolveModelRank, type ModelRank } from "../lib/modelRank.js"
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -37,24 +38,27 @@ function unitUniverse(phase: Phase): string[] {
 
 // ─── sessionOrient ─────────────────────────────────────────────────────────────
 
-export async function sessionOrient(
+/** One read-only snapshot shared by resume routing and the progress display. */
+export async function readSessionState(
   ledgerPath: string,
   progressPath: string,
-  host: HostId = "claude-code"
-): Promise<string> {
+  host: HostId = "claude-code",
+  modelRank: ModelRank = resolveModelRank()
+): Promise<{ summary: Record<string, string | number | boolean>; progress: ProgressFile }> {
   const { ledger, corrupt } = await readLedgerWithStatus(ledgerPath, { readOnly: true })
   const progress = await readProgress(progressPath, { readOnly: true })
   const progressTarget = firstProgressUnit(progress)
 
   // Corrupt ledger must not masquerade as a fresh project
   if (corrupt) {
-    return toKeyValue({
+    return { progress, summary: {
+      ...modelRankSummary(modelRank),
       status: "ledger_corrupt",
       ledger_path: ledgerPath,
       hint:
         "Ledger JSON failed to parse. File left untouched. Prior project state is NOT gone — " +
         "inspect/restore the file before any write_ledger call (writes rename it to .corrupt.<ts> and start fresh).",
-    })
+    } }
   }
 
   // Natural order: p2 before p10, U0.9 before U0.18. Plain lexicographic sort resumed
@@ -64,7 +68,8 @@ export async function sessionOrient(
 
   // Empty ledger special case
   if (phases_total === 0) {
-    return toKeyValue({
+    return { progress, summary: {
+      ...modelRankSummary(modelRank),
       status: "no_phases_yet",
       action: "plan_project",
       resume_target: "null",
@@ -78,19 +83,32 @@ export async function sessionOrient(
       active_rejections: 0,
       phases_total: 0,
       phases_done: 0,
+      units_total: 0,
+      units_passed: 0,
+      units_remaining: 0,
+      escapes_unclassified: 0,
       unsupported_capabilities: unsupportedCapabilities(host),
       stale_gates: "none",
       state_drift: progressTarget ? `progress:${progressTarget};ledger:no_phases` : "none",
       progress_advisories: "none",
       attempt_grants: "none",
       missing_declared_units: "none",
-    })
+    } }
   }
 
   // ── phases_done ──────────────────────────────────────────────────────────────
   let phases_done = 0
+  let units_total = 0
+  let units_passed = 0
+  let escapes_unclassified = 0
   for (const key of phaseKeys) {
-    if (isPhaseDone(ledger.phases[key])) phases_done++
+    const phase = ledger.phases[key]
+    if (isPhaseDone(phase)) phases_done++
+    // 0.6.19: a post-gate defect awaiting classification blocks the next pass on its unit.
+    escapes_unclassified += (phase.escapes ?? []).filter((e) => e.class === "unclassified").length
+    // Declared-but-unregistered units are pending, just as they are for resume routing.
+    units_total += unitUniverse(phase).length
+    units_passed += Object.values(phase.units).filter(unit => unit.v === "pass").length
   }
 
   // ── status ───────────────────────────────────────────────────────────────────
@@ -286,7 +304,8 @@ export async function sessionOrient(
       computeGateUnitsHash(phase.units, phase.declared_units) !== phase.gate_units_hash.hash
   })
 
-  return toKeyValue({
+  return { progress, summary: {
+    ...modelRankSummary(modelRank),
     status,
     action,
     resume_target,
@@ -302,10 +321,23 @@ export async function sessionOrient(
     attempt_grants,
     phases_total,
     phases_done,
+    units_total,
+    units_passed,
+    units_remaining: units_total - units_passed,
+    escapes_unclassified,
     unsupported_capabilities: unsupportedCapabilities(host),
     stale_gates: staleGates.length === 0 ? "none" : staleGates.join(","),
     state_drift,
     progress_advisories,
     missing_declared_units,
-  })
+  } }
+}
+
+export async function sessionOrient(
+  ledgerPath: string,
+  progressPath: string,
+  host: HostId = "claude-code",
+  modelRank: ModelRank = resolveModelRank()
+): Promise<string> {
+  return toKeyValue((await readSessionState(ledgerPath, progressPath, host, modelRank)).summary)
 }

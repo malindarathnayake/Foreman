@@ -104,7 +104,7 @@ doc_man               writes documentation from the code and labels what it cann
 1. **`design_partner`** asks 5 to 8 scoping questions and stops for your answers. When the blocking ones are settled it writes `Docs/design-summary.md` and asks you to approve it.
 2. **`spec_generator`** reads the approved summary and writes four files in `Docs/`: `spec.md` (phases and units, each with a directive), `handoff.md` (session-start and recovery instructions), `PROGRESS.md` (checklist and decisions), and `testing-harness.md` (test tiers and commands). It seeds the ledger with every phase and unit.
 3. **`pitboss_implementor`** works one unit at a time. The procedure tells the model to read the unit directive, build a brief for a worker, record the delegation in the ledger, start a worker subagent in your host, inspect every changed file, run the unit's test command, and record a pass or a rejection. A rejected unit goes to a fresh worker with the rejection history. After three failed attempts since the unit last passed, the ledger refuses another attempt, and a pass, without your override.
-4. **At the end of a phase** the procedure sends the changes to outside reviewers. On Claude Code those are the Codex CLI and Gemini CLI, if installed. Findings are classified and recorded. The ledger refuses to close the phase while a review carries a confirmed finding, until the fix is re-verdicted and a fresh review shows it resolved. Then the procedure tells you to start a new session.
+4. **At the end of a phase** the procedure reviews the changes. Codex mode uses native reviewers plus a verifier, and adds available Claude/Gemini CLI advisors at major checkpoints; extra CLIs are optional. On Claude Code, reviewers are the Codex CLI and Gemini CLI, if installed. Findings are classified and recorded. The ledger refuses to close the phase while a review carries a confirmed finding, until the fix is re-verdicted and a fresh review shows it resolved. Then the procedure tells you to start a new session.
 5. **Next session**, `session_orient` reads the ledger and returns the action and target: `implement_unit p2/u3`, `retry_phase_gate`, or `complete`. A unit that was in progress when the session stopped is restarted, not resumed mid-edit.
 
 Normal implementation units are delegated. The model edits directly only under `lighttask`, or under the implementor's Direct Fix rule, which allows a literal substitution after a rejection and nothing else.
@@ -121,7 +121,7 @@ Normal implementation units are delegated. The model edits directly only under `
 | Delegating a unit | a brief of 20+ characters and a preflight attestation are included |
 | A pass verdict | a delegation was recorded first; after a rejection, a fix attempt was recorded after it (a worker delegation or a direct fix); on a phase with no tests, a written attestation of how it was checked |
 | Another attempt, or a pass, after three failed attempts since the unit last passed | you decide once with `authorize_attempts`, or set `user_override` on the write; either is recorded on the unit |
-| Closing a phase after a fix | an independent review, or a verification record with evidence for a direct fix, postdates the re-verdict; a cross-examination record never counts |
+| Closing a phase after a fix | an independent review, a complete native review on Codex, or a verification record with evidence for a direct fix, postdates the re-verdict; a cross-examination record never counts |
 | A review finding | it carries a classification: confirmed, rejected, or unverified |
 | Closing a phase | every unit passed, every declared unit is registered, a review was recorded after the latest verdict, and no such review carries a confirmed finding, is partial, or is silent without an examined list; `user_override` waives the review conditions and is recorded on the phase |
 | A rejection on a passed unit | never refused; it reopens the unit to pending |
@@ -161,7 +161,7 @@ Every unit is a brief, a worker run, a file inspection, a test run, and a verdic
 <details>
 <summary><b>What can leave your machine</b></summary>
 
-Reviews spawn the Codex, Gemini, or Claude CLI as child processes; each uses its own provider login. One experimental tool, `invoke_worker`, sends a brief and file excerpts to an endpoint you configure. Optional Langfuse tracing sends review metadata. Nothing else makes a network call. Read [SECURITY.md](SECURITY.md) and [Security](https://malindarathnayake.github.io/Foreman/reference/privacy-and-security) before enabling it.
+Codex native reviews run through the host. External reviews spawn the Codex, Gemini, or Claude CLI as child processes; each uses its own provider login. One experimental tool, `invoke_worker`, sends a brief and file excerpts to an endpoint you configure. Optional Langfuse tracing sends review metadata. Nothing else makes a network call. Read [SECURITY.md](SECURITY.md) and [Security](https://malindarathnayake.github.io/Foreman/reference/privacy-and-security) before enabling it.
 
 </details>
 
@@ -176,7 +176,7 @@ Full docs: [malindarathnayake.github.io/Foreman](https://malindarathnayake.githu
 
 ## Project
 
-**Current release:** `v0.6.12` | **Package:** `@malindarathnayake/foreman-mcp` | **Runtime:** Node.js `>=22`
+**Current release:** `v0.6.27` | **Package:** `@malindarathnayake/foreman-mcp` | **Runtime:** Node.js `>=22`
 
 - [Changelog](CHANGELOG.md)
 - [Security policy](SECURITY.md)

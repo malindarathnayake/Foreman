@@ -4,7 +4,7 @@ import { z } from "zod"
 import { atomicWriteFile } from "../lib/atomicWrite.js"
 import { toKeyValue } from "../lib/toon.js"
 
-export const CODEX_AGENT_ROLES = ["explorer", "worker"] as const
+export const CODEX_AGENT_ROLES = ["explorer", "worker_light", "worker", "worker_heavy", "reviewer", "verifier"] as const
 export type CodexAgentRole = (typeof CODEX_AGENT_ROLES)[number]
 
 export const CodexAgentsInitInputSchema = z.object({
@@ -18,6 +18,10 @@ export const CodexAgentsInitInputSchema = z.object({
     .object({
       explorer: z.string().min(1).optional(),
       worker: z.string().min(1).optional(),
+      worker_light: z.string().min(1).optional(),
+      worker_heavy: z.string().min(1).optional(),
+      reviewer: z.string().min(1).optional(),
+      verifier: z.string().min(1).optional(),
     })
     .optional(),
 })
@@ -27,12 +31,60 @@ export type CodexAgentsInitInput = z.infer<typeof CodexAgentsInitInputSchema>
 const EXPLORER_INSTRUCTIONS = `Stay in exploration mode.
 Trace the real execution path, cite files and symbols, and do not propose fixes unless asked.
 Prefer fast search and targeted file reads over broad scans.
-Never write files. Never produce a Foreman ledger verdict.`
+Never write files. Never spawn further subagents. Never produce a Foreman ledger verdict.`
 
 const WORKER_INSTRUCTIONS = `Implement only the bounded worker brief you are given.
 Do not read or request the full spec, ledger, or progress file.
 Self-fix compile/import/type errors at most twice; return immediately on logic/spec issues.
 Do not spawn further subagents (max_depth=1).`
+
+/**
+ * Default model per implementation seat, matching Foreman's existing cost tiers.
+ * Every id below answered a live probe on codex-cli 0.153.4; note that the same family
+ * at a different version does NOT resolve — gpt-6-terra and gpt-6-sol are both refused
+ * on a ChatGPT account, so these are not interchangeable with a version bump. Override
+ * per role with the models input when an id rotates.
+ */
+export const CODEX_SEAT_MODELS: Partial<Record<CodexAgentRole, string>> = {
+  worker_light: "gpt-5.6-terra",
+  worker: "gpt-5.6-sol",
+  worker_heavy: "gpt-6-astra",
+}
+
+const WORKER_LIGHT_INSTRUCTIONS = `Implement one small, fully specified change.
+You were chosen because the brief names the exact edit: a literal substitution, a rename, a
+constant, a test name, an import path, or a mechanical repeat of a stated pattern.
+If the brief turns out to require a judgement call, a new branch, or a design decision,
+STOP and report that it needs a stronger seat rather than guessing.
+` + WORKER_INSTRUCTIONS
+
+const WORKER_HEAVY_INSTRUCTIONS = `Implement one demanding change that a smaller seat could not.
+You were chosen for concurrency, migrations, error-handling semantics, public contracts, or a
+unit that already failed at a lower tier — the brief says which.
+Spend the extra reasoning on the failure modes, not on scope: the brief's file list still binds.
+` + WORKER_INSTRUCTIONS
+
+const REVIEWER_INSTRUCTIONS = `You are one adversarial reviewer in a native Foreman review.
+Answer ONLY the lens question you are given; findings from another lens are noise here.
+Cite file:line for every finding, from code you actually opened. Never invent a symbol or a line.
+Severity is blast radius, not confidence. Do not report style preferences at any severity.
+Zero findings is a valid answer, but you must still list what you examined — silence with no
+account of what was read is treated as a failed review, not an approval.
+Return completion (complete/partial/failed), your lens, a non-empty checked list, findings and limitations.
+Never write files. Never spawn further subagents. Never produce a Foreman ledger verdict.`
+
+const VERIFIER_INSTRUCTIONS = `You verify a native Foreman review and write its single report.
+The native reviewers may use the same model you are running on, so their findings are claims to test,
+not evidence. Open every cited file:line and keep only what the code actually supports.
+Classify each finding confirmed / rejected / unverified, re-rate severity by blast radius, and
+merge duplicates across lenses. Check every reviewer's completion and examined list; a missing,
+failed, silent or partial native reviewer makes the overall review incomplete. Include optional
+external advisor claims when supplied, preserving their source. Prefer unverified over a guessed confirmation: a false
+confirmation costs a remediation round, and an honest unknown costs a sentence.
+The orchestrator sees your report and nothing the reviewers said, so a finding you drop is gone.
+Return completion, a non-empty checked list, classified findings and limitations. Unresolved
+unverified findings require a partial result. Never claim cross-vendor independence for native agents.
+Never write files. Never spawn further subagents. Never produce a Foreman ledger verdict.`
 
 function escapeTomlString(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')
@@ -120,6 +172,11 @@ export async function codexAgentsInit(raw: CodexAgentsInitInput): Promise<string
   hints.push(
     "explorer.toml and worker.toml override Codex built-in roles of the same name (intended — pins sandbox_mode)"
   )
+  if (roles.includes("reviewer") || roles.includes("verifier")) {
+    hints.push(
+      "reviewer/verifier are the default native review roles: read-only reviewers run within max_threads, followed by a separate verifier; complete stage:'native' evidence can satisfy the Codex gate without external CLIs"
+    )
+  }
 
   const codexDir = path.join(projectDir, ".codex")
   const agentsDir = path.join(codexDir, "agents")
@@ -160,6 +217,26 @@ export async function codexAgentsInit(raw: CodexAgentsInitInput): Promise<string
       sandboxMode: "workspace-write",
       instructions: WORKER_INSTRUCTIONS,
     },
+    worker_light: {
+      description: "Small mechanical implementation seat for fully specified edits.",
+      sandboxMode: "workspace-write",
+      instructions: WORKER_LIGHT_INSTRUCTIONS,
+    },
+    worker_heavy: {
+      description: "High-reasoning implementation seat for demanding or previously failed units.",
+      sandboxMode: "workspace-write",
+      instructions: WORKER_HEAVY_INSTRUCTIONS,
+    },
+    reviewer: {
+      description: "Read-only adversarial reviewer for one risk lens of a review fan.",
+      sandboxMode: "read-only",
+      instructions: REVIEWER_INSTRUCTIONS,
+    },
+    verifier: {
+      description: "Read-only verifier that re-derives fan findings from code and writes the report.",
+      sandboxMode: "read-only",
+      instructions: VERIFIER_INSTRUCTIONS,
+    },
   }
 
   for (const role of roles) {
@@ -175,7 +252,7 @@ export async function codexAgentsInit(raw: CodexAgentsInitInput): Promise<string
       description: spec.description,
       sandboxMode: spec.sandboxMode,
       instructions: spec.instructions,
-      model: input.models?.[role],
+      model: input.models?.[role] ?? CODEX_SEAT_MODELS[role],
     })
     await atomicWriteFile(abs, body)
     written.push(rel)

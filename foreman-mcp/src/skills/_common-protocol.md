@@ -10,21 +10,27 @@ CRITICAL: Never write `.foreman-ledger.json` directly — all mutations go throu
 1. `mcp__foreman__bundle_status` — verify version, log warnings
 2. `mcp__foreman__session_orient` — the ONLY resume authority. Follow its `action` and `resume_target`.
 3. If `state_drift` is not `none`, STOP and reconcile ledger/progress before delegation. Never choose the progress target over the ledger target. If `missing_declared_units` is not `none`, seed those units (`set_unit_status s:'pending'`) before delegation — they are declared spec scope the ledger doesn't track yet.
-4. `mcp__foreman__read_progress` — descriptive planning checklist only; it never tells you where to resume.
+4. `mcp__foreman__read_progress` — ledger status from the same calculation as `session_orient`, followed by descriptive checklist notes. Use ledger `units_passed`/`units_total` and `phases_done`/`phases_total` when reporting progress. Checklist `entries_marked_complete` is not project completion; all unit verdicts passing can still leave a phase gate pending.
 5. `mcp__foreman__read_ledger` — read only the bounded slice needed for the current action, e.g. `read_ledger({ query: "verdicts", phase: "<current-phase>", limit: 50 })` or `read_ledger({ phase, unit_id })`. Never start a session with `query:"full"`. Table cells clip at 240 chars — a unit's full verdict note comes from `read_ledger({ phase, unit_id })`; full rejection/review text from `read_ledger({ query: "full", phase })`.
-6. `mcp__foreman__write_journal({ operation: "init_session", data: { target_version: "<version>", branch: "<branch>", phase: "<phase-id>", units: ["<unit ids>"], env: { agent: "frontier-pitboss", worker: "configured-worker", claude: null, codex: null, gemini: null } } })` — in a session that will run phase checkpoints (implementor), run the host's advisor probes first and record each advisor as `"<version>/<auth_status>"` (e.g. `"0.47.0/ok"`, `"0.47.0/auth_expired"`) instead of `null`; `null` means exactly "not probed" and is correct for sessions that never review. If the handoff declares units for the current (not-yet-passed) phase that the ledger doesn't know, `declare_phase_units` + seed them before delegation; if such units surface for a phase whose gate already passed, STOP and escalate — reopening a gate is a user decision.
+6. `mcp__foreman__write_journal({ operation: "init_session", data: { target_version: "<version>", branch: "<branch>", phase: "<phase-id>", units: ["<unit ids>"], env: { agent: "frontier-pitboss", model: "<your model, or unknown>", effort: "<your reasoning effort, or unknown>", worker: "configured-worker", claude: null, codex: null, gemini: null } } })` — {{session_advisor_setup}} If the handoff declares units for the current (not-yet-passed) phase that the ledger doesn't know, `declare_phase_units` + seed them before delegation; if such units surface for a phase whose gate already passed, STOP and escalate — reopening a gate is a user decision.
 7. Find handoff.md in `Docs/` or `docs/`
 8. Answer the five questions:
 
 | Question | Source |
 |----------|--------|
 | Where am I? | `session_orient` ledger-derived `action` + `resume_target` |
-| Where am I going? | Progress checklist |
+| Where am I going? | `session_orient` next pending unit; spec/handoff for planned scope |
 | What is the goal? | spec.md Intent |
 | What has been tried? | Ledger unit history |
 | What failed? | Ledger rejection history |
 
-9. Do NOT rely on host plan/task state or `read_progress` hints — the ledger through `session_orient` is the single authority
+9. Do NOT infer completion or a resume target from host plan/task state or checklist entries — the ledger through `session_orient` is the single authority; `read_progress` mirrors that calculation.
+
+**Declared workflow rank:** At startup, report your model and reasoning effort as known; say `unknown` when unavailable. Foreman trusts this declaration and computes the rank; do not submit a rank or infer one from the worker model. Weight 3 Top: Astra (`gpt-6-astra`) at `high`, `xhigh`, `max` or `ultra`, and Fable 5.1. Weight 2 Middle: Opus or Terra. Weight 1 Standard: Sonnet or Luna. Weight 0 Unknown: other or undeclared models, including Sol. Standard and Unknown use normal Foreman protocol without blocking startup. Rank is separate from configured `agent_class`, worker capability and cost tier; weights never add across agents.
+
+Use permitted shortcuts automatically: Middle can reuse a native worker for mechanical corrections with a compact follow-up; Top additionally permits bounded fixes/test changes, focused intermediate checks and independently verified delta review. Existing ownership, authorization, attempt limits and checkpoint gates still apply. All implementation, fixes and test edits require a worker in the implementor protocol. A compact follow-up records the correction once against its prior brief; do not rewrite unchanged facts across multiple records. A correction's finding rides the delegated write (`data.rejection`) and a post-gate escape class rides the rejection or the verdict (`escape_class`); neither skips the guard, the attempt cap, or the checkpoint review.
+
+If your model or effort changes within this session, call `write_journal({ operation: "declare_model", data: { model: "<current model>", effort: "<current effort>" } })` before the next workflow action. This replaces both fields; omitted or unknown information grants no shortcut. Each new session declares again; ending the session or restarting the server clears the active declaration. Previously accepted review evidence retains its provenance after a host/model switch; the next action uses the incoming rank. `session_orient` and `read_progress` expose `model_rank`, `model_weight` and `workflow_permissions`.
 
 **Resume handling:**
 
@@ -143,12 +149,28 @@ This is MANDATORY. The spec writer's #1 failure mode is glossing over ambiguitie
 
 **Resolution flow:**
 1. **Detect** — flag every ambiguity while validating design summary or designing implementation order
-2. **Classify** — Trivial (one sensible answer given context → resolve with note) or Non-trivial (genuine tradeoffs → escalate)
+2. **Classify** — Empirical (a fact about a system outside the repository that a side-effect-free probe with a credential the project holds can answer → run the Probe check, probe first, record the result, then it is Trivial), Trivial (one sensible answer given context → resolve with note), or Non-trivial (genuine tradeoffs → escalate). An ambiguity is never escalated while a probe could still answer it; a probe with side effects or a missing credential is one line to the user, who is present, never a packet.
 3. **Escalate non-trivial** — use the built-in Deliberation Protocol (above)
 4. **Wait** — do NOT proceed until user arbitrates each ambiguity
 5. **Incorporate** — update design context with resolved decisions
 
 **Skip condition:** If user says "skip council" or "just ask me directly", present ambiguities as numbered list for inline resolution.
+<!-- /section -->
+
+<!-- section: probe-check -->
+**Probe check — answer it yourself, before any packet.** Whenever a gap is about how something outside the repository behaves — an API's schema or a query's shape, a field or node name, a permission string, a response taxonomy, a rate limit, a webhook's payload, whether a port answers, what a service returns — write and answer this block before classifying the gap, and put the block at the top of any decision or journal entry the gap produces:
+
+```
+Probe check:
+- Docs: <official source and the exact version checked, via which tool> | none found
+- What would answer it: <introspection | GET or list call | connect to the port | send a test message | dry run | read a log>
+- Side effects: none | <what it would create, send, or change>
+- Credentials: available (<store or file, never the value>) | missing
+- Cost: <N calls against <limit>> | negligible
+- Decision: PROBE NOW | ASK ONE LINE (side effects or missing credential) | OWNER DECISION (policy, ownership, cost, scope, security-control wording)
+```
+
+Fill `Docs` first when a research tool is available (a Perplexity MCP, WebFetch, the vendor's own MCP): find the official reference for the version the project actually runs, quote the version you checked, and never cite a document whose version you could not match. Docs and probe are a pair: the docs say what should be there, the probe confirms what is; a doc claim the probe contradicts is recorded as a contradiction, and neither alone settles a gap that both could check. `PROBE NOW` is the answer whenever the probe is side-effect-free and the credential exists: write the probe, run it, keep the artifact under `bin/` with the secret never printed, and record the result as a live fact; the gap is then a SPEC_GAP amendment, not an owner decision. `ASK ONE LINE` is one sentence to the user, who is present and can approve a probe with side effects or supply a credential; it is never a packet. `OWNER DECISION` is reserved for what no probe can settle. A gap is never escalated while a probe could still answer it, and discovery replaces the packet, not the unit protocol: once the fact is known, the change still goes through its ledger record, guard cycle and verdict.
 <!-- /section -->
 
 <!-- section: uncertainty-protocol -->
@@ -176,7 +198,7 @@ When facts cannot be confirmed from available files, declare explicitly:
 | Worker code doesn't compile | Worker inner loop. Still failing → pit-boss fix worker |
 | Tests fail after worker | Inner loop for mechanical. Spec failures → pit-boss rejects |
 | 3 fix attempts exhausted | Escalate to user with ledger history |
-| CLI unavailable for review | Ask user for explicit waiver |
+| CLI unavailable for review | {{cli_unavailable}} |
 | Spec ambiguity discovered | STOP, ask user. Do not guess. |
 | MCP tool call fails | Retry once. If persistent, log error and continue with degraded state |
 
@@ -272,4 +294,30 @@ Read the `ethos` tool at session start whenever the work is flagged: any design 
 
 - **Tier declaration**: proportionality is declared, not inferred — every major path carries a tier (`standard`/`hot`/`extreme`) in the design summary and spec; an undeclared tier in a generated document is a gap to escalate, not a default to apply.
 - **Conflicts recorded**: pillar conflicts (perf-vs-security, perf-vs-telemetry, cost-vs-coverage) are written into the spec Decisions table or a ledger note and arbitrated — never silently resolved.
+<!-- /section -->
+
+<!-- section: checkpoint-review -->
+**2. Review via Deliberation:**
+1. Check the active host's advisor seats — reuse the session-start probe results recorded in the `init_session` journal `env`; re-probe ({{advisor_checks}}) only if an advisor was not probed or its recorded status was a failure
+2. Map to tier:
+
+| Advisor A | Advisor B | Review path | Moderator |
+|-----------|-----------|-------------|-----------|
+| available | available | Invoke both independently | Pitboss (you) |
+| available | unavailable | Advisor A + recorded non-independent fallback | Pitboss (you) |
+| unavailable | available | Advisor B + recorded non-independent fallback | Pitboss (you) |
+| unavailable | unavailable | Ask the user before proceeding with pitboss-only gates | Pitboss (you) |
+
+3. Use the active host's invocation mappings:
+
+{{advisor_a}}
+{{advisor_b}}
+{{advisor_fallback}}
+
+4. Ask each advisor (append the Advisor Grounding Protocol's efficiency instruction verbatim — selective reading, no file dumps): "Review these phase changes against the spec. List any: (a) spec directives not implemented, (b) implementations that contradict the spec, (c) missing error handling, (d) test gaps, (e) security issues — prefix each `[CWE-###]` (closest class or `[CWE-UNMAPPED]` + reason if none fits); where a finding weakens a control or detection-evidence row in the spec's Threat Table, cite that row by component name — do NOT invent new technique mappings during code review, (f) telemetry contract violations — names, unbounded tag values, missing trace correlation, secrets/PII in signals. Be specific — file:line references required. Start every finding with its severity in brackets — `[CRITICAL]`, `[HIGH]`, `[MEDIUM]`, `[LOW]` — then the file:line, one finding per list item. For each category, list what you examined (files/functions) even when you report nothing — a category with no findings and no examined list is not reviewed."
+
+5. `mcp__foreman__normalize_review` — parse review output into structured findings (`findings_json` is record_review-ready; `unparsed_lines` counts prose that opened no finding — the examined list lands there, not in findings)
+6. An advisor result marked `completion: failed` (empty or echoed output, non-zero exit) is not a seat: record it with the reason in `limitations`, retry once, and after a second failure use the unavailable row above. Classify each finding: CONFIRMED / REJECTED / UNVERIFIED — every recorded finding carries one; `record_review` refuses a finding without it. A seat reporting zero findings with no examined list is `completion: "partial"`, never clean — no line-count floor decides this. If another seat has CONFIRMED findings, re-prompt the silent seat ONCE naming only the files involved (never the other seat's claims or lines) and record that pass separately with `stage: "cross_exam"`; it never counts as an independent seat.
+7. Persist the review durably — `mcp__foreman__write_ledger({ operation: "record_review", phase, data: { advisor, stage: "independent", completion, checked: [<what the seat examined>], findings: [{ severity, file, line, description, classification }] } })`. Use lowercase classification (`confirmed` / `rejected` / `unverified`). Security findings keep their `[CWE-###]` prefix in `description`. Survives the session; retrievable via `read_ledger({ query: "reviews" })`. The phase gate is ledger-enforced: it requires a review recorded after the latest unit verdict and refuses `pass` while any such review carries a `confirmed` finding — reject the affected unit (`add_rejection` → fix → `set_verdict`), then obtain fresh full-review or eligible delta-verification evidence showing it resolved. `user_override` waives and is recorded on the phase. For eligible Top corrections, a fresh read-only verifier (different from every correcting worker) may extend a retained complete independent or native baseline with `record_review { stage: "verification", completion: "complete", checked: [<delta examined>], findings: [], evidence: { kind: "worker_delta", verifier_id: "<actual verifier ID>", baseline_review_ts, units: [{ unit_id, attempt }], files, tests, probe } }`. Cover every changed attempt and all frozen authorized paths across corrections since that baseline; retain passing test/probe evidence or an explicit allowed n/a reason. No hot-path/security-boundary phase or confirmed finding above LOW since the baseline qualifies. The gate validates the evidence links and current coverage; a rank label alone never satisfies review, and a `cross_exam` record never counts as a seat. The verifier checks both the fix and the test oracle against the spec. If eligibility fails, obtain a fresh full review. Complete native baseline evidence remains usable on other hosts with its same-provider label. Legacy direct-fix verification records remain compatible, but new corrections always use workers. A seat that failed, timed out, or reported nothing is superseded by re-running the SAME advisor to a complete record; never re-verdict a unit to clear it. When the seat ran through `invoke_advisor`, copy `seat_receipt` and `packet_sha256` from its meta block into the record as `seat_receipt` and `packet_hash`: the ledger checks them against the receipts file it wrote, and only a receipted seat on another vendor counts as cross-vendor review. A gate pass is stamped with the basis that carried it (receipted external, declared external, same-provider native, delta, or override); the third consecutive counted pass carried by same-provider review alone is refused (`INDEPENDENCE BOUND`) until a receipted cross-vendor seat resets it or the owner overrides on the record. After a gate passes, a rejection, a non-pass verdict, or a new attempt on one of its units records an escape against that gate; classify it with `record_escape { class }` (or `add_rejection { escape_class }`) before the unit's next pass verdict. `read_ledger { query: "review_outcomes" }` reports gates and escapes per basis. Review currency is judged per unit: a record covers a unit when it was recorded at or after that unit's verdict and its snapshot names the unit's current attempt. A new attempt on one unit stales coverage for that unit only; the gate refuses with UNCOVERED UNITS naming the units whose current attempt no seat-grade record covers. Re-run the seat over exactly those units and record it with data.units: [<those unit ids>] so the record claims only what the seat examined; omit data.units only when the seat reviewed the whole phase. Earlier seats keep covering the units they snapshot; a confirmed finding or an incomplete record on such a seat keeps blocking while it carries any unit no later seat covers, and the block names those units — re-cover them (scoped or whole) to retire it. A scoped record cannot be a verification baseline. The gate stamp lists every carrying seat, and its basis is the weakest per-unit class: a moved unit covered only by same-provider review makes the pass same-provider for the independence bound.
+8. If no CLIs available: ask user "Independent review unavailable. Proceed with pit-boss gates only? [y/N]"
 <!-- /section -->

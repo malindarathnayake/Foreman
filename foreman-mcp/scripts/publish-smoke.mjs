@@ -63,6 +63,7 @@ export const EXPECTED_TOOLS = [
   "design_partner",
   "spec_generator",
   "lighttask",
+  "researcher",
   "spec_man",
   "doc_man",
   "run_tests",
@@ -75,6 +76,13 @@ export const EXPECTED_TOOLS = [
   "invoke_worker",
   "invoke_council",
   "repo_guard",
+  "claude_workflows_init",
+  "preflight_check",
+  "verify_oracle",
+  "phase_ownership",
+  "contract_probe",
+  "worker_status",
+  "live_smoke",
 ]
 
 const JSONRPC_TIMEOUT_MS = 60_000

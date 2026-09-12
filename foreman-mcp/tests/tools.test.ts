@@ -471,7 +471,7 @@ describe("handleReadProgress", () => {
   it("marks progress as non-authoritative before STATUS", async () => {
     const result = await handleReadProgress(progressPath)
     expect(result).toContain("AUTHORITY")
-    expect(result).toContain("role: planning_checklist_only")
+    expect(result).toContain("role: ledger_summary_with_planning_checklist")
     expect(result).toContain("resume: call session_orient")
     expect(result).not.toContain("Resume at")
     const hintIdx = result.indexOf("AUTHORITY")
@@ -482,7 +482,8 @@ describe("handleReadProgress", () => {
   it("does not synthesize a resume instruction when no units exist", async () => {
     const result = await handleReadProgress(progressPath)
     expect(result).not.toContain("mcp__foreman__spec_generator")
-    expect(result).toContain("completed: 0/0 units")
+    expect(result).toContain("status: no_phases_yet")
+    expect(result).toContain("units_total: 0")
   })
 
   it("shows pending units as checklist data without making them resume authority", async () => {
@@ -501,7 +502,8 @@ describe("handleReadProgress", () => {
       data: { unit_id: "u1", phase: "p1", completed_at: "2026-04-06T10:00:00Z", notes: "done" },
     })
     const result = await handleReadProgress(progressPath)
-    expect(result).toContain("completed: 1/1 units")
+    expect(result).toContain("entries_marked_complete: 1")
+    expect(result).toContain("entries_total: 1")
     expect(result).not.toContain("Run phase checkpoint")
   })
 
@@ -532,14 +534,16 @@ describe("handleReadProgress", () => {
     expect(result).toContain("u1")
   })
 
-  it("completed count is reflected in status", async () => {
+  it("checklist completion is labeled separately from ledger counts", async () => {
     await writeProgress(progressPath, {
       operation: "complete_unit",
       data: { unit_id: "u1", phase: "p1", completed_at: "2026-04-02T10:00:00Z", notes: "done" },
     })
 
     const result = await handleReadProgress(progressPath)
-    expect(result).toContain("1/1 units")
+    expect(result).toContain("entries_marked_complete: 1")
+    expect(result).toContain("units_passed: 0")
+    expect(result).not.toContain("1/1 units")
   })
 })
 

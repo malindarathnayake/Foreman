@@ -1,11 +1,11 @@
 ---
 id: protocols
-title: The six protocols
-sidebar_label: The six protocols
+title: The seven protocols
+sidebar_label: The seven protocols
 description: What each protocol tool returns, what it produces, and which one to ask for.
 ---
 
-# The six protocols
+# The seven protocols
 
 A protocol tool takes one argument, `context`, and returns a Markdown procedure. The host model reads it and follows it for the rest of the session. The MCP server does not execute the procedure and does not stop other tools from being called first. "One protocol per session" is how the procedures are written to be used, not a rule the server enforces.
 
@@ -17,6 +17,7 @@ A protocol tool takes one argument, `context`, and returns a Markdown procedure.
 | `spec_generator` | You have an approved design summary | `Docs/spec.md`, `handoff.md`, `PROGRESS.md`, `testing-harness.md`; seeds every phase and unit in the ledger |
 | `pitboss_implementor` | You have a spec with more than one unit | Code, through workers; a ledger entry per unit; a review record per phase |
 | `lighttask` | One small change you could describe in a sentence | The change itself, made directly; `Docs/lighttask.md` as the tracker |
+| `researcher` | Iterative work whose answer is measured, not specified: tuning a prompt, tuning an engine | A thin `Docs/research.md` index plus one file per run under `Docs/research/<thread>/` |
 | `spec_man` | An existing repo whose intended behavior is undocumented or stale | A specification, machine-readable or feature-level, with every claim cited to code, tests, or a requirement |
 | `doc_man` | You need documentation of what exists | The requested documents, with unverifiable behavior labelled as such |
 
@@ -24,6 +25,7 @@ Picking:
 
 ```text
 one small, clear change            -> lighttask
+tune it and measure the result     -> researcher
 new feature                        -> design_partner, then spec_generator, then pitboss_implementor
 spec already written, many units   -> pitboss_implementor
 existing system, no reliable spec  -> spec_man
@@ -39,6 +41,8 @@ documentation                      -> doc_man
 **`pitboss_implementor`** is the long one. Per unit: read the directive, read the source files, write a brief, run the brief preflight, record the delegation, spawn a worker, inspect every changed file, run the test command, record a verdict. Per phase: run the full suite, send the phase to reviewers, record findings, close the gate, end the session. See [A unit's life](./unit-life.md) and [Phase gates and reviews](./phase-gates.md). The model does not edit product code under this protocol, with one exception: a Direct Fix, a literal substitution after a rejection.
 
 **`lighttask`** is the one protocol where the model edits directly. It grounds the change against the current code, makes it, validates it, and records it in `Docs/lighttask.md`. No workers, no phases, no ledger units unless the repo already has a ledger.
+
+**`researcher`** is for work where you do not know the answer yet and will find it by measuring. The loop is question, hypothesis, bounded variant, evidence, decision, checkpoint. It gates nothing — it records and disciplines, and the disciplines are the ones that make a week of iteration trustworthy: one change per variant; the evaluation set and the verdict method declared BEFORE the run, so a favoured variant cannot win on a moved goalpost; the same evaluation set across compared variants, or they are two anecdotes; negative results kept; recorded results superseded rather than rewritten. Three verdict methods: `deterministic` (pass/fail per case plus a measurement, where a correctness regression outranks any speed gain), `scored` (rubric, version, and who scored it — a model scoring its own output is recorded as exactly that), `observed` (provisional; a thread cannot close on it). Layout follows the atlas rule: the index holds references, each run holds its own evidence, and where they disagree the run file wins. Promotion to shipped code leaves this protocol for `lighttask` or the full pipeline.
 
 **`spec_man`** reads what exists and writes what was intended. It has a source priority: user requirements first, then existing specs, then code and tests. It has two output modes, a machine spec with a fixed section list (status, problem, target behavior, non-goals, user-visible behavior, system behavior, data contract, interfaces, acceptance criteria, risks) and a feature spec for one capability. A re-evaluation flow compares an existing spec to the code and rates the delta before proposing changes.
 

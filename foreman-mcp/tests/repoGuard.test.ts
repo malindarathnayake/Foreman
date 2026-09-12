@@ -13,7 +13,12 @@ import path from "path"
 import { execFileSync } from "child_process"
 import { readLedger, writeLedger } from "../src/lib/ledger.js"
 import { compareSnapshots, invalidPathReason, normalizePath, parsePorcelainZ, takeSnapshot, ENTRY_CEILING, MAX_ENTRIES } from "../src/lib/repoGuard.js"
+import { attributeHeadMove } from "../src/lib/repoGuard.js"
 import { handleRepoGuard } from "../src/tools/repoGuard.js"
+import { handleWriteProgress, FENCE_START, FENCE_END } from "../src/tools/writeProgress.js"
+import { preflightCheck } from "../src/tools/preflightCheck.js"
+import { preflightPathFor } from "../src/lib/preflight.js"
+import { fencedFingerprint, foremanFileScope, relativeScope } from "../src/lib/foremanFiles.js"
 import type { RepoSnapshot } from "../src/types.js"
 
 let repoDir: string
@@ -450,5 +455,314 @@ describe("set_verdict enforces the guard", () => {
     await delegate()
     await verdict()
     expect((await unitOf()).v).toBe("pass")
+  })
+})
+
+// ─── Foreman's own writes are not the worker's (v0.6.20) ──────────────────────
+//
+// Field defect: every write_progress in a unit window charged Docs/PROGRESS.md to the
+// worker, and the state-file exclusion was a second list in the guard that had already
+// drifted from the writers (.foreman-seats.jsonl was missing). The set now comes from
+// lib/foremanFiles.ts, which the writers import, and PROGRESS.md is fingerprinted with
+// Foreman's fenced block removed rather than excused.
+
+describe("Foreman's own writes are excluded from one shared list", () => {
+  let docsDir: string
+  let docsLedger: string
+  let docsProgress: string
+  let docsJournal: string
+  const progressMd = () => path.join(docsDir, "PROGRESS.md")
+
+  beforeEach(async () => {
+    docsDir = path.join(repoDir, "Docs")
+    docsLedger = path.join(docsDir, ".foreman-ledger.json")
+    docsProgress = path.join(docsDir, ".foreman-progress.json")
+    docsJournal = path.join(docsDir, ".foreman-journal.json")
+    await fs.mkdir(docsDir)
+    await fs.writeFile(progressMd(), "# Plan\n\nhand-written prose\n")
+    git(["add", "."])
+    git(["commit", "-q", "-m", "docs"])
+  })
+
+  const serverPaths = () => ({ ledgerPath: docsLedger, progressPath: docsProgress, journalPath: docsJournal, docsDir })
+  async function docsGuard(operation: "snapshot" | "compare", extra: Record<string, unknown> = {}, paths = serverPaths()) {
+    return handleRepoGuard({ operation, phase: "p1", unit_id: "u1", project_dir: repoDir, ...extra } as never, paths)
+  }
+  async function docsBaseline(paths = serverPaths()) {
+    await writeLedger(paths.ledgerPath, { operation: "set_unit_status", phase: "p1", unit_id: "u1", data: { s: "delegated", brief: BRIEF, preflight: PREFLIGHT } })
+    return docsGuard("snapshot", { files: ["a.ts"], allowed_files: ["a.ts"] }, paths)
+  }
+  /** Foreman's own progress write, exactly as the tool does it. */
+  async function foremanWritesProgress(paths = serverPaths(), name = "Phase") {
+    return handleWriteProgress(paths.progressPath, { operation: "start_phase", data: { phase: "p1", name } }, paths.docsDir, paths.ledgerPath)
+  }
+
+  it("T1: write_progress during the window clears, on a fenceless file and again on a fenced one", async () => {
+    await docsBaseline()
+    await foremanWritesProgress()
+    expect(await fs.readFile(progressMd(), "utf-8")).toContain(FENCE_START)
+    const first = await docsGuard("compare")
+    expect(status(first), first).toBe("status: ok")
+
+    // Second attempt: the file is now dirty with a fence; Foreman rewrites the block.
+    await writeLedger(docsLedger, { operation: "add_rejection", phase: "p1", unit_id: "u1", data: { r: "reviewer", msg: "nit", ts: "2026-09-10T00:00:00Z" } })
+    await docsBaseline()
+    await foremanWritesProgress(serverPaths(), "Renamed phase")
+    const second = await docsGuard("compare")
+    expect(status(second), second).toBe("status: ok")
+  })
+
+  it("T2: content outside the fence is still the worker's", async () => {
+    await foremanWritesProgress()
+    await docsBaseline()
+    const content = await fs.readFile(progressMd(), "utf-8")
+    await fs.writeFile(progressMd(), content.replace("hand-written prose", "worker rewrote the plan"))
+    const text = await docsGuard("compare")
+    expect(status(text)).toBe("status: violation")
+    expect(text).toMatch(/Foreman-fenced file changed outside its fence: Docs\/PROGRESS\.md/)
+  })
+
+  it("T3: a PROGRESS.md created during the window is a change outside the brief", async () => {
+    await fs.rm(progressMd())
+    git(["commit", "-q", "-am", "no progress doc"])
+    await docsBaseline()
+    await fs.writeFile(progressMd(), "# worker-made\n")
+    const text = await docsGuard("compare")
+    expect(text).toMatch(/file changed outside the brief: Docs\/PROGRESS\.md/)
+    expect(text).not.toMatch(/predates/)
+  })
+
+  it("T4b: a hand-malformed fence plus Foreman's appended block clears", async () => {
+    await fs.writeFile(progressMd(), `# Plan\n${FENCE_START}\nprose after a stray start marker\n`)
+    git(["commit", "-q", "-am", "stray marker"])
+    await docsBaseline()
+    await foremanWritesProgress()
+    const text = await docsGuard("compare")
+    expect(status(text), text).toBe("status: ok")
+  })
+
+  it("a worker planting a second fence is caught", async () => {
+    await foremanWritesProgress()
+    await docsBaseline()
+    await fs.appendFile(progressMd(), `\n${FENCE_START}\n- [x] u1 — pass\n${FENCE_END}\n`)
+    const text = await docsGuard("compare")
+    expect(text).toMatch(/Foreman-fenced file gained a second fence: Docs\/PROGRESS\.md/)
+  })
+
+  it("T8: deleting PROGRESS.md during the window is a change outside its fence", async () => {
+    await docsBaseline()
+    await fs.rm(progressMd())
+    const text = await docsGuard("compare")
+    expect(status(text)).toBe("status: violation")
+    expect(text).toMatch(/Foreman-fenced file changed outside its fence: Docs\/PROGRESS\.md/)
+  })
+
+  it("T6: state files and their writers' side files are excused; a bare *.tmp is not", async () => {
+    await docsBaseline()
+    for (const f of [
+      ".foreman-seats.jsonl", ".foreman-events.jsonl", ".foreman-journal.json",
+      ".foreman-ledger.json.corrupt.1725000000000", `.foreman-journal.json.${Date.now()}.0badf00d.tmp`,
+    ]) await fs.writeFile(path.join(docsDir, f), "{}")
+    expect(status(await docsGuard("compare"))).toBe("status: ok")
+    await fs.writeFile(path.join(repoDir, "scratch.tmp"), "worker scratch")
+    const text = await docsGuard("compare")
+    expect(text).toMatch(/file changed outside the brief: scratch\.tmp/)
+  })
+
+  it("T6b: custom-named state files are excused with their side files, by path", async () => {
+    const stateDir = path.join(repoDir, "state")
+    await fs.mkdir(stateDir)
+    const paths = {
+      ledgerPath: path.join(stateDir, "ledger.json"), progressPath: path.join(stateDir, "progress.json"),
+      journalPath: path.join(stateDir, "journal.json"), docsDir: stateDir,
+    }
+    await docsBaseline(paths)
+    await fs.writeFile(path.join(stateDir, "progress.json"), "{}")
+    await fs.writeFile(path.join(stateDir, "ledger.json.corrupt.1725000000000"), "{")
+    await fs.writeFile(path.join(stateDir, `journal.json.${Date.now()}.0badf00d.tmp`), "{}")
+    expect(status(await docsGuard("compare", {}, paths))).toBe("status: ok")
+    await fs.mkdir(path.join(repoDir, "other"))
+    await fs.writeFile(path.join(repoDir, "other", "ledger.json"), "{}")
+    expect(await docsGuard("compare", {}, paths)).toMatch(/file changed outside the brief: other\/ledger\.json/)
+  })
+
+  it("0.6.24 (fifth field report): preparing the next brief with preflight_check while a worker window is open is not a violation", async () => {
+    await fs.writeFile(path.join(docsDir, "spec.md"), "#### u1 — a\n- Edit `a` in a.ts.\n\n#### u2 — b\n- Edit `b` in b.ts.\n")
+    git(["add", "."])
+    git(["commit", "-q", "-m", "spec"])
+    await docsBaseline()
+    // Foreman's own preflight record for the NEXT unit lands beside the ledger, inside the guarded tree.
+    const text = await preflightCheck({ phase: "p1", unit_id: "u2", brief: "Edit `b` in b.ts as the spec says, twenty chars.", symbols: ["b"], repo_root: repoDir, spec_path: "Docs/spec.md" }, preflightPathFor(docsLedger), docsLedger)
+    expect(text).toContain("status: pass")
+    await expect(fs.stat(path.join(docsDir, ".foreman-preflight.jsonl"))).resolves.toBeTruthy()
+    const compare = await docsGuard("compare")
+    expect(status(compare), compare).toBe("status: ok")
+  })
+
+  it("T11b: the snapshot reports how many Foreman paths the exclusion covers, and says so when none do", async () => {
+    const text = await docsBaseline()
+    expect(text).toContain("foreman_files: 8")
+    expect(text).toContain("changed_paths: 0")
+    expect(text).not.toContain("note:")
+
+    const elsewhere = await fs.mkdtemp(path.join(os.tmpdir(), "elsewhere-"))
+    try {
+      const out = await docsBaseline({
+        ledgerPath: path.join(elsewhere, ".foreman-ledger.json"), progressPath: path.join(elsewhere, ".foreman-progress.json"),
+        journalPath: path.join(elsewhere, ".foreman-journal.json"), docsDir: elsewhere,
+      })
+      expect(out).toContain("foreman_files: 0")
+      expect(out).toMatch(/note: Foreman paths resolve outside this repository root/)
+    } finally {
+      await fs.rm(elsewhere, { recursive: true, force: true })
+    }
+  })
+
+  it("a scope spelled through a link (or an 8.3 short name) still covers the tree", async () => {
+    const spellings: string[] = []
+    const link = repoDir + "-link"
+    await fs.symlink(repoDir, link, process.platform === "win32" ? "junction" : "dir")
+    spellings.push(link)
+    if (process.platform === "win32") {
+      try {
+        const short = execFileSync("cmd", ["/d", "/c", `for %I in ("${repoDir}") do @echo %~sI`], { encoding: "utf-8", windowsVerbatimArguments: true }).trim()
+        if (short && short.toLowerCase() !== repoDir.toLowerCase()) spellings.push(short)
+      } catch { /* 8.3 names disabled on this volume */ }
+    }
+    try {
+      for (const spelled of spellings) {
+        await fs.rm(docsLedger, { force: true })
+        const paths = {
+          ledgerPath: path.join(spelled, "Docs", ".foreman-ledger.json"), progressPath: path.join(spelled, "Docs", ".foreman-progress.json"),
+          journalPath: path.join(spelled, "Docs", ".foreman-journal.json"), docsDir: path.join(spelled, "Docs"),
+        }
+        const snap = await docsBaseline(paths)
+        expect(snap, spelled).toContain("foreman_files: 8")
+        await foremanWritesProgress(paths)
+        const text = await docsGuard("compare", {}, paths)
+        expect(status(text), `${spelled}\n${text}`).toBe("status: ok")
+      }
+    } finally {
+      await fs.rm(link, { recursive: true, force: true })
+    }
+  })
+
+  it("the fence-aware fingerprint keeps wt whole and adds fwt; the snapshot carries its fenced list", async () => {
+    await foremanWritesProgress()
+    const out = await takeSnapshot(repoDir, [], [], undefined, foremanFileScope(serverPaths()))
+    if (out.status !== "ok") throw new Error("expected ok")
+    const entry = out.snapshot.entries.find((e) => e.path === "Docs/PROGRESS.md")!
+    expect(entry.fenced).toBe(true)
+    expect(entry.wt).toMatch(/^[0-9a-f]{16}$/)
+    expect(entry.fwt).toBe(fencedFingerprint("# Plan\n\nhand-written prose\n"))
+    expect(out.snapshot.fenced).toEqual(["Docs/PROGRESS.md"])
+    // Without a scope: names-only exclusion, no fenced handling, no fenced list entries.
+    const plain = await takeSnapshot(repoDir, [])
+    if (plain.status !== "ok") throw new Error("expected ok")
+    expect(plain.snapshot.entries.find((e) => e.path === "Docs/PROGRESS.md")?.fenced).toBeUndefined()
+    expect(plain.snapshot.fenced).toEqual([])
+  })
+
+  describe("a baseline recorded before fence-aware guarding", () => {
+    const scope = () => foremanFileScope(serverPaths())
+    /** What a pre-0.6.20 server stored: no fenced list, no PROGRESS.md entry for a clean file, seats file counted. */
+    function legacyOf(snapshot: RepoSnapshot, extra: RepoSnapshot["entries"] = []): RepoSnapshot {
+      const { fenced: _drop, ...rest } = snapshot
+      const entries = rest.entries
+        .filter((e) => !(e.fenced && e.code === "  "))
+        .map(({ fenced: _f, fwt: _w, ...e }) => e)
+      return { ...rest, entries: [...entries, ...extra] }
+    }
+
+    it("compares an untouched PROGRESS.md clean, and a stale seats entry does not 'disappear'", async () => {
+      const before = await takeSnapshot(repoDir, [], ["a.ts"], undefined, scope())
+      if (before.status !== "ok") throw new Error("expected ok")
+      const legacy = legacyOf(before.snapshot, [{ path: "Docs/.foreman-seats.jsonl", code: "??", wt: "0123456789abcdef", idx: "none" }])
+      expect(legacy.fenced).toBeUndefined()
+      expect(legacy.entries.map((e) => e.path)).not.toContain("Docs/PROGRESS.md")
+      await fs.writeFile(path.join(repoDir, "a.ts"), "export const a = 2\n")
+      const after = await takeSnapshot(repoDir, [], ["a.ts"], undefined, scope())
+      if (after.status !== "ok") throw new Error("expected ok")
+      const rel = await relativeScope(scope(), after.snapshot.root)
+      expect(compareSnapshots(legacy, after.snapshot, rel)).toEqual([])
+    })
+
+    it("reports a write_progress in the window exactly as before, naming the cause", async () => {
+      const before = await takeSnapshot(repoDir, [], ["a.ts"], undefined, scope())
+      if (before.status !== "ok") throw new Error("expected ok")
+      const legacy = legacyOf(before.snapshot)
+      await foremanWritesProgress()
+      const after = await takeSnapshot(repoDir, [], ["a.ts"], undefined, scope())
+      if (after.status !== "ok") throw new Error("expected ok")
+      const rel = await relativeScope(scope(), after.snapshot.root)
+      const violations = compareSnapshots(legacy, after.snapshot, rel)
+      expect(violations).toHaveLength(1)
+      expect(violations[0]).toMatch(/^file changed outside the brief: Docs\/PROGRESS\.md \(baseline predates fence-aware guarding/)
+    })
+
+    it("a dirty PROGRESS.md recorded with a full-content fingerprint: untouched is clean, overwritten is today's violation", async () => {
+      await fs.appendFile(progressMd(), "user's uncommitted note\n")
+      const before = await takeSnapshot(repoDir, [], ["a.ts"], undefined, scope())
+      if (before.status !== "ok") throw new Error("expected ok")
+      const legacy = legacyOf(before.snapshot)
+      expect(legacy.entries.find((e) => e.path === "Docs/PROGRESS.md")?.fenced).toBeUndefined()
+      const rel = await relativeScope(scope(), before.snapshot.root)
+      const untouched = await takeSnapshot(repoDir, [], ["a.ts"], undefined, scope())
+      if (untouched.status !== "ok") throw new Error("expected ok")
+      expect(compareSnapshots(legacy, untouched.snapshot, rel)).toEqual([])
+      await foremanWritesProgress()
+      const written = await takeSnapshot(repoDir, [], ["a.ts"], undefined, scope())
+      if (written.status !== "ok") throw new Error("expected ok")
+      expect(compareSnapshots(legacy, written.snapshot, rel)[0]).toMatch(/^pre-existing uncommitted change overwritten outside the brief: Docs\/PROGRESS\.md \(baseline predates/)
+    })
+  })
+})
+
+// 0.6.27 (field report): committing the ledger every verdict and "nothing moves HEAD" are both
+// right and they collided. A commit carries the paths it touched, so Foreman's own is attributable.
+describe("a HEAD move Foreman itself made is attributable", () => {
+  let repo: string
+  const g = (a: string[]) => execFileSync("git", ["-C", repo, ...a], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim()
+  const rel = async () => relativeScope(foremanFileScope({
+    ledgerPath: path.join(repo, "Docs", ".foreman-ledger.json"),
+    progressPath: path.join(repo, "Docs", ".foreman-progress.json"),
+    journalPath: path.join(repo, "Docs", ".foreman-journal.json"),
+    docsDir: path.join(repo, "Docs"),
+  }), repo)
+
+  beforeEach(async () => {
+    repo = await fs.mkdtemp(path.join(os.tmpdir(), "ff0911b-"))
+    g(["init", "-q", "-b", "main"]); g(["config", "user.email", "t@e.com"]); g(["config", "user.name", "T"])
+    g(["config", "commit.gpgsign", "false"]); g(["config", "core.autocrlf", "false"])
+    await fs.mkdir(path.join(repo, "Docs"), { recursive: true })
+    await fs.writeFile(path.join(repo, "app.ts"), "export const a = 1\n")
+    await fs.writeFile(path.join(repo, "Docs", ".foreman-ledger.json"), '{"v":1,"ts":"t","phases":{}}')
+    g(["add", "."]); g(["commit", "-q", "-m", "init"])
+  })
+  afterEach(async () => { await fs.rm(repo, { recursive: true, force: true }) })
+
+  it("clears a commit whose whole range is Foreman-owned, and refuses one that touches source", async () => {
+    const base = g(["rev-parse", "HEAD"])
+    await fs.writeFile(path.join(repo, "Docs", ".foreman-ledger.json"), '{"v":1,"ts":"t2","phases":{}}')
+    g(["add", "-A"]); g(["commit", "-q", "-m", "ledger"])
+    expect(await attributeHeadMove(repo, base, g(["rev-parse", "HEAD"]), await rel())).toMatchObject({ attributable: true, commits: 1 })
+
+    const mid = g(["rev-parse", "HEAD"])
+    await fs.writeFile(path.join(repo, "app.ts"), "export const a = 2\n")
+    g(["add", "-A"]); g(["commit", "-q", "-m", "src"])
+    const r = await attributeHeadMove(repo, mid, g(["rev-parse", "HEAD"]), await rel())
+    expect(r.attributable).toBe(false)
+    expect((r as { reason: string }).reason).toContain("app.ts")
+  })
+
+  it("refuses anything that is not a plain advance — a reset has no ancestry path", async () => {
+    const base = g(["rev-parse", "HEAD"])
+    await fs.writeFile(path.join(repo, "Docs", ".foreman-ledger.json"), '{"v":1,"ts":"t3","phases":{}}')
+    g(["add", "-A"]); g(["commit", "-q", "-m", "ledger"])
+    const ahead = g(["rev-parse", "HEAD"])
+    g(["reset", "-q", "--hard", base])
+    const r = await attributeHeadMove(repo, ahead, g(["rev-parse", "HEAD"]), await rel())
+    expect(r.attributable).toBe(false)
+    expect((r as { reason: string }).reason).toMatch(/does not descend from/)
   })
 })

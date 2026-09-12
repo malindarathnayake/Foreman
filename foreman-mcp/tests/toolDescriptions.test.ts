@@ -116,7 +116,10 @@ describe("write_ledger shapes live in the data schema description", () => {
     expect(shapes).toContain("'pass'|'fail'|'pending'|'inconclusive'")
     expect(shapes).toContain("via?: 'worker'|'pitboss-direct'|'n/a'")
     expect(shapes).toContain("line: string (≤20 chars)")
-    expect(shapes).toContain("preflight?: { symbols_grepped: integer (≥1), self_consistent: true")
+    // 0.6.20: symbols_grepped is an array checked by preflight_check (the legacy count is still read) and the receipt is the brief hash
+    expect(shapes).toContain("preflight?: { symbols_grepped:")
+    expect(shapes).toContain("self_consistent: true")
+    expect(shapes).toContain("receipt?: string")
     expect(shapes).toContain("completion?: 'complete'|'partial'|'failed'")
     expect(shapes).toContain("stage?: 'independent'|'cross_exam'|'verification'")
     expect(shapes).toContain("authorize_attempts: { attempts: integer (≥1, ≤10), reason: string (≥10 chars, ≤2000 chars), user_override: true }")

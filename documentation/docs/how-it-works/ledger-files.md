@@ -52,6 +52,14 @@ Per session: id, timestamp, branch, phase, units, environment (host, worker, rev
 
 An append-only JSON-lines file with a SHA-256 chain, written only for external workers. Each delegation gets a chain: started, worker completed, patch checked, and a terminal validation event that the `write_ledger` hook appends when the verdict lands. The phase gate compares each passed unit's ledger verdict to its latest chain's terminal outcome. A broken chain throws loudly and halts the gate.
 
+## Durability and recovery
+
+Two shapes, deliberately. The ledger, progress and journal are rewritten whole and replaced by an atomic rename; the sidecars beside them (events, seat receipts, preflight records, heartbeats) are append-only and hash-chained.
+
+Since 0.6.26 every rewrite is fsynced before the rename. Without that, a rename is atomic for the file's IDENTITY but not for the bytes behind it — the directory entry can reach the disk while the data blocks are still in page cache, and a crash in that window leaves the file at full size filled with NUL. That is not hypothetical; it is what prompted the fix.
+
+When a ledger is lost anyway (a restore from git, a crash before the fix), `read_ledger { query: "reconstruct" }` reads the sidecars that survived and prints a recovery worksheet: the units and attempts they attest, which ones the ledger no longer holds, and which seat receipts are reclaimable. It writes nothing, on purpose. A preflight record holds a brief's HASH and `set_unit_status` needs the text, so re-recording an attempt still needs you; guessing the rest would produce a ledger that looks complete and attests to nothing.
+
 ## Caps
 
 | Where | Cap | Behavior |

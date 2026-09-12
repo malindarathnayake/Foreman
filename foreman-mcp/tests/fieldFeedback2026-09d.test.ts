@@ -7,9 +7,11 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
+import { fileURLToPath } from "url"
 import { Client } from "@modelcontextprotocol/client"
 import { InMemoryTransport } from "@modelcontextprotocol/server"
 import { createServer } from "../src/server.js"
+import { renderIncludes } from "../src/lib/skillLoader.js"
 import { ATTEMPT_CAP, readLedger, writeLedger } from "../src/lib/ledger.js"
 import { handleWriteLedger } from "../src/tools/writeLedger.js"
 import { handleReadLedger } from "../src/tools/readLedger.js"
@@ -19,6 +21,7 @@ import { countLegacyCheckboxes, handleWriteProgress } from "../src/tools/writePr
 import type { ExternalCliResult } from "../src/lib/externalCli.js"
 import type { SidecarEvent } from "../src/lib/eventsSidecar.js"
 import type { VerificationEvidence } from "../src/types.js"
+import { TRUNCATION_MARKER_RE } from "../src/lib/softLimits.js"
 
 let tmpDir: string
 let ledgerPath: string
@@ -134,19 +137,23 @@ async function baselineThenDirectFix(baseFindings: Array<typeof LOW | typeof HIG
 // ─── item 5: checked[] entries up to 400 characters ────────────────────────────
 
 describe("checked[] cap", () => {
-  it("accepts 400-character entries and refuses 401", async () => {
-    await handleWriteLedger(ledgerPath, {
+  it("accepts 400-character entries and cuts 401 with a marker and a warning", async () => {
+    const first = await handleWriteLedger(ledgerPath, {
       operation: "record_review",
       phase: "p1",
       data: { advisor: "codex", findings: [], completion: "complete", checked: ["x".repeat(400)] },
     })
-    await expect(
-      handleWriteLedger(ledgerPath, {
-        operation: "record_review",
-        phase: "p1",
-        data: { advisor: "codex", findings: [], completion: "complete", checked: ["x".repeat(401)] },
-      })
-    ).rejects.toThrow(/data\.checked\.0: [\s\S]*checked\?: string \(≤400 chars\)\[\] \(max 50\)/)
+    expect(first).not.toContain("TRUNCATED")
+    // 0.6.20: the entry has no gate weight beyond presence, so the write goes through cut.
+    const result = await handleWriteLedger(ledgerPath, {
+      operation: "record_review",
+      phase: "p1",
+      data: { advisor: "codex", findings: [], completion: "complete", checked: ["x".repeat(401)] },
+    })
+    expect(result).toContain("warning: TRUNCATED: data.checked[0] was 401 chars (limit 400)")
+    const stored = (await readLedger(ledgerPath)).phases.p1.reviews!.at(-1)!.checked![0]
+    expect(stored).toHaveLength(400)
+    expect(stored).toMatch(TRUNCATION_MARKER_RE)
   })
 })
 
@@ -189,7 +196,8 @@ describe("invoke_advisor — empty or echoed output is a failed seat", () => {
 
   it("the description and the checkpoint protocol say so", async () => {
     expect(await toolDescription("invoke_advisor")).toContain("reported as completion: failed")
-    const implementor = await fs.readFile(new URL("../src/skills/implementor.md", import.meta.url), "utf-8")
+    const skillPath = fileURLToPath(new URL("../src/skills/implementor.md", import.meta.url))
+    const implementor = await renderIncludes(await fs.readFile(skillPath, "utf-8"), skillPath)
     expect(implementor).toContain("An advisor result marked `completion: failed` (empty or echoed output, non-zero exit) is not a seat")
   })
 })
@@ -308,8 +316,10 @@ describe("stage: verification", () => {
   })
 
   it("the implementor names the verification path and its limits", async () => {
-    const implementor = await fs.readFile(new URL("../src/skills/implementor.md", import.meta.url), "utf-8")
-    expect(implementor).toContain('record_review { stage: "verification", completion: "complete", evidence:')
+    const skillPath = fileURLToPath(new URL("../src/skills/implementor.md", import.meta.url))
+    const implementor = await renderIncludes(await fs.readFile(skillPath, "utf-8"), skillPath)
+    expect(implementor).toContain('record_review { stage: "verification", completion: "complete", checked:')
+    expect(implementor).toContain('evidence: { kind: "worker_delta", verifier_id:')
     expect(implementor).toContain("a `cross_exam` record never counts as a seat")
   })
 })
