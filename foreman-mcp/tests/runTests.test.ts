@@ -141,7 +141,18 @@ describe('runTests', () => {
         const allowed = ['go', 'npm']
         expect(pinnedToolchain('go', allowed, root)).toBeNull()
         expect(pinnedToolchain('bin/go1.26.8/bin/go.exe', allowed, root)).toEqual({ ok: true, command: path.join(root, 'bin', 'go1.26.8', 'bin', 'go.exe') })
-        expect(pinnedToolchain('bin\\go1.26.8\\bin\\go.exe', allowed, root)).toMatchObject({ ok: true })
+        // A backslash path is a SEPARATOR on Windows and a legal filename character on POSIX, so
+        // the same argument resolves to two different things and the correct answer differs by
+        // platform. On win32 the basename is 'go' and it is accepted; on POSIX the whole string is
+        // one filename whose basename is not an allowed runner, so the allowlist check refuses it.
+        // Normalising the separator would be a bug, not a fix: it would reinterpret a filename that
+        // is legal on POSIX. This pins both answers rather than asserting the Windows one everywhere.
+        const backslashed = 'bin\\go1.26.8\\bin\\go.exe'
+        expect(pinnedToolchain(backslashed, allowed, root)).toMatchObject(
+          process.platform === 'win32'
+            ? { ok: true }
+            : { ok: false, error: expect.stringContaining('is not an allowed runner') },
+        )
         expect(pinnedToolchain('../outside/go.exe', allowed, root)).toMatchObject({ ok: false, error: expect.stringContaining('inside the project root') })
         expect(pinnedToolchain('bin/go1.26.8/bin/curl.exe', allowed, root)).toMatchObject({ ok: false, error: expect.stringContaining("'curl' is not an allowed runner") })
         expect(pinnedToolchain('bin/go1.26.8/bin/missing.exe', ['missing'], root)).toMatchObject({ ok: false, error: expect.stringContaining('pinned runner not found') })
