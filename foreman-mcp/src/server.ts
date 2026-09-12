@@ -27,6 +27,7 @@ import { activateImplementor } from "./tools/activateImplementor.js"
 import { activateDesignPartner } from "./tools/activateDesignPartner.js"
 import { activateSpecGenerator } from "./tools/activateSpecGenerator.js"
 import { activateLighttask } from "./tools/activateLighttask.js"
+import { activateResearcher } from "./tools/activateResearcher.js"
 import { activateSpecMan } from "./tools/activateSpecMan.js"
 import { activateDocMan } from "./tools/activateDocMan.js"
 import { previewDiagram } from "./tools/previewDiagram.js"
@@ -40,7 +41,7 @@ import {
 } from "./types.js"
 import { renderShape } from "./lib/schemaDoc.js"
 import { formatSchemaError, isZodError } from "./lib/schemaError.js"
-import { readJournal, initSession, declareModel, logEvent, endSession } from "./lib/journal.js"
+import { readJournal, initSession, declareModel, logEvent, endSession, rehydrateRank } from "./lib/journal.js"
 import { resolveModelRank, type ModelRank } from "./lib/modelRank.js"
 import { invokeAdvisor, advisorRunMeta, formatAdvisorResult, GEMINI_ADVISOR_MODEL, CODEX_ADVISOR_MODEL } from "./tools/invokeAdvisor.js"
 import { appendReceipt, receiptsPathFor, receiptFailure, sha256Hex, CLI_PROVIDER } from "./lib/seatReceipts.js"
@@ -93,8 +94,11 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   const docsDir = config?.docsDir ?? DEFAULT_PATHS.docsDir
   const journalPath = config?.journalPath ?? DEFAULT_PATHS.journalPath
   const host: HostId = config?.host ?? "claude-code"
-  // Never inherit the previous host's declaration from the durable journal.
-  let activeModelRank: ModelRank = resolveModelRank()
+  // A declaration made under ANOTHER host describes another host, so it is never inherited.
+  // 0.6.27: one made under THIS host, in a session still open, is read back — a mid-session
+  // Foreman restart used to drop the operator to weight 0 with no way back but init_session.
+  // rehydrateRank enforces same-host, still-open, rank-present; anything else stays unknown.
+  let activeModelRank: ModelRank = (await rehydrateRank(journalPath, host)) ?? resolveModelRank()
 
   // Stack profile resolves once per process, like host: env wins, then the
   // project override file <docsDir>/foreman-stack-profile.md, then bundled reference.
@@ -592,12 +596,12 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       const input = { operation: args.operation, data: args.data } as any
       try {
         if (args.operation === "init_session") {
-          const journal = await initSession(journalPath, input)
+          const journal = await initSession(journalPath, input, host)
           const session = journal.sessions[journal.sessions.length - 1]
           activeModelRank = session.env!.model_rank!
           return textResult(JSON.stringify({ ok: true, session_id: session.id, model_rank: activeModelRank }))
         } else if (args.operation === "declare_model") {
-          const journal = await declareModel(journalPath, input, activeModelRank.session_id ?? "")
+          const journal = await declareModel(journalPath, input, activeModelRank.session_id ?? "", host)
           activeModelRank = journal.sessions[journal.sessions.length - 1].env!.model_rank!
           return textResult(JSON.stringify({ ok: true, session_id: activeModelRank.session_id, model_rank: activeModelRank }))
         } else if (args.operation === "log_event") {
@@ -1048,6 +1052,44 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     },
     async (args, _extra) => {
       const text = await activateLighttask(skillsDir, args.context, host)
+      return textResult(text)
+    }
+  )
+
+  server.registerTool(
+    "researcher",
+    {
+      title: "Researcher Protocol",
+      description: [
+        "Activates the Foreman researcher protocol: question -> hypothesis -> bounded variant ->",
+        "evidence -> decision -> checkpoint, for iterative work whose answer is measured rather than",
+        "specified (tuning a prompt until a model reads video or images correctly; bringing a",
+        "deterministic engine to a correctness and latency bar).",
+        "Enforces by protocol, not by gate: one change per variant; the evaluation set and verdict",
+        "method declared BEFORE the run; the same evaluation set across compared variants; negative",
+        "results kept; recorded results never rewritten, only superseded with a reason; decisions cited",
+        "with alternatives and remaining uncertainty; a checkpoint carrying the exact next action and",
+        "verified against live artifacts before it is trusted on resume.",
+        "Tracks one Docs/research.md thread — no ledger, no delegation, no verdict.",
+        "Promotion to shipped code LEAVES this protocol for lighttask (its own grounding, adversarial review",
+        "and verification, direct implementation permitted for a small unit) or the full pipeline (spec,",
+        "worker delegation, repository guard, verdicts, gate review — all ledger-enforced). A measurement is",
+        "not a gate in either case.",
+        "The LLM MUST follow the returned instructions to run the research session.",
+        "Pass optional context to describe the question being investigated.",
+      ].join(" "),
+      inputSchema: z.strictObject({
+        context: z.string().max(10000).optional(),
+      }),
+      outputSchema: TextOutputSchema,
+      annotations: {
+        title: "Researcher Protocol",
+        readOnlyHint: true,
+        destructiveHint: false,
+      },
+    },
+    async (args, _extra) => {
+      const text = await activateResearcher(skillsDir, args.context, host)
       return textResult(text)
     }
   )

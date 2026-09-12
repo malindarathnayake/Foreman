@@ -16,6 +16,12 @@ export interface ModelRank {
   permissions: ModelRankPermissions
   /** Current journal session; absent until this server receives init_session. */
   session_id?: string
+  /**
+   * 0.6.27: this rank was read back from the journal after a restart rather than declared to
+   * this process. Present only on a rehydrated rank, and always reported, because the operator
+   * may have changed model during the restart and Foreman cannot tell.
+   */
+  rehydrated?: { session_id: string; session_ts: string }
 }
 
 // Explicit policy aliases only. A new provider version requires an intentional mapping.
@@ -72,6 +78,9 @@ export function modelRankSummary(modelRank: ModelRank): Record<string, string | 
     model_weight: modelRank.weight,
     model_rank_policy: modelRank.policy_version,
     model_rank_session: modelRank.session_id ?? "none",
+    model_rank_source: modelRank.rehydrated
+      ? `rehydrated from session ${modelRank.rehydrated.session_id} (declared ${modelRank.rehydrated.session_ts}) — orientation only, NO workflow permissions until write_journal declare_model confirms the current model`
+      : "declared",
     workflow_permissions: Object.entries(modelRank.permissions).filter(([, allowed]) => allowed).map(([name]) => name).join(",") || "none",
   }
 }

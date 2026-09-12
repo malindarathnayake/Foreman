@@ -455,9 +455,21 @@ async function applyOperation(
           )
         }
         if (ledger.window && ledger.window.unit_id === unit_id) delete ledger.window
-        if (!data.brief || data.brief.trim().length < 20) {
+        // 0.6.27 (field report): the brief was pasted twice — once to preflight_check to be
+        // checked, once here to be kept — roughly 4k tokens each, per unit. preflight_check now
+        // stores the text beside the hash it already computed, so a delegation may send the
+        // RECEIPT ALONE and Foreman reads the text back. The hash is re-derived from the stored
+        // text and must equal the receipt, so a tampered sidecar cannot smuggle a different brief.
+        let briefText = data.brief
+        if ((!briefText || briefText.trim().length < 20) && data.preflight?.receipt && receipts?.preflightFile) {
+          const stored = await findPreflight(receipts.preflightFile, data.preflight.receipt, unit_id, phase)
+          if (stored?.brief && briefHash(stored.brief) === data.preflight.receipt) briefText = stored.brief
+        }
+        if (!briefText || briefText.trim().length < 20) {
           throw new Error(
-            "DELEGATION REQUIRED: set_unit_status with s:'delegated' requires a 'brief' field (min 20 chars) " +
+            "DELEGATION REQUIRED: set_unit_status with s:'delegated' needs the brief — either a 'brief' field (min 20 chars), " +
+            "or data.preflight.receipt naming a preflight record that stored one (preflight_check keeps the text it hashed, " +
+            "so the brief need not be sent twice). " +
             "containing the worker brief summary. The pitboss must build a brief and delegate to a worker — " +
             "do NOT write implementation code directly. Call mcp__foreman__pitboss_implementor to load the full protocol."
           )
@@ -479,7 +491,7 @@ async function applyOperation(
         // hash it returned for a PASSING record of this exact brief. Before that first run
         // the attestation still stands, with a note naming the tool.
         if (receipts?.preflightFile) {
-          const hash = briefHash(data.brief)
+          const hash = briefHash(briefText)
           let adopted = false
           try {
             await fs.access(receipts.preflightFile)
@@ -638,7 +650,7 @@ async function applyOperation(
           bindTarget.worker_id_bound = { at: "correction", ts: new Date().toISOString(), by_attempt: attempt }
         }
         // `w` is the latest brief (the pass-gate reads it). tier/route_reason are audit evidence.
-        unit.w = data.brief
+        unit.w = briefText
         if (data.tier !== undefined) unit.tier = data.tier
         if (data.route_reason !== undefined) unit.route_reason = data.route_reason
         // Append-only history — survives the `w` overwrite when a fix worker re-delegates.
@@ -646,7 +658,7 @@ async function applyOperation(
         // on-disk units (which bypass the new-unit initializer) are handled here.
         unit.delegations ??= []
         unit.delegations.push({
-          brief: data.brief,
+          brief: briefText,
           tier: data.tier,
           route_reason: data.route_reason,
           ts: now,

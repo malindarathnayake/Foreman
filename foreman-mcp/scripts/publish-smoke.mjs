@@ -63,6 +63,7 @@ export const EXPECTED_TOOLS = [
   "design_partner",
   "spec_generator",
   "lighttask",
+  "researcher",
   "spec_man",
   "doc_man",
   "run_tests",

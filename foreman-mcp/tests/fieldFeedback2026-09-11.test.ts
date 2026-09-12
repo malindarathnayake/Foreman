@@ -16,7 +16,7 @@ import { handleReadLedger } from "../src/tools/readLedger.js"
 import { normalizeReview } from "../src/tools/normalizeReview.js"
 import { runOracle, testsObserved } from "../src/tools/verifyOracle.js"
 import { reconstruct } from "../src/lib/reconstruct.js"
-import { appendPreflight, briefHash, preflightPathFor } from "../src/lib/preflight.js"
+import { appendPreflight, briefHash, checkCitations, extractCitations, preflightPathFor } from "../src/lib/preflight.js"
 import type { WriteLedgerInput } from "../src/types.js"
 
 let dir: string
@@ -303,5 +303,73 @@ describe("the guard on a real tree", () => {
     } finally {
       await fs.rm(plain, { recursive: true, force: true })
     }
+  })
+})
+
+// ─── Second field report, same day: three collisions between rules that are each right ───
+
+describe("the brief is sent to Foreman once, not twice", () => {
+  it("stores the text beside the hash so a delegation can carry the receipt alone", async () => {
+    const brief = "Implement the rows change in src/a.ts with its specified tests and keep the boundary."
+    const file = preflightPathFor(ledgerPath)
+    const hash = briefHash(brief)
+    await appendPreflight(file, {
+      v: 1, ts: "2026-09-11T21:00:00Z", phase: "p1", unit_id: "u1", brief_hash: hash, status: "pass",
+      symbols: 1, coverage_ratio: 1, uncovered: 0, flags: 0, dead_citations: 0, ownership_outside: 0, brief,
+    })
+    // No `brief` field on the delegation at all.
+    await write({ operation: "set_unit_status", phase: "p1", unit_id: "u1", data: {
+      s: "delegated", preflight: { symbols_grepped: ["rows"], self_consistent: true, receipt: hash },
+    } })
+    const unit = (await readLedger(ledgerPath)).phases.p1.units.u1
+    expect(unit.w).toBe(brief)
+    expect(unit.delegations![0].brief).toBe(brief)
+  })
+
+  it("refuses a receipt whose stored text does not hash to it", async () => {
+    const file = preflightPathFor(ledgerPath)
+    const hash = briefHash("the brief that was actually checked, long enough to pass the minimum")
+    await appendPreflight(file, {
+      v: 1, ts: "2026-09-11T21:00:00Z", phase: "p1", unit_id: "u2", brief_hash: hash, status: "pass",
+      symbols: 1, coverage_ratio: 1, uncovered: 0, flags: 0, dead_citations: 0, ownership_outside: 0,
+      brief: "a DIFFERENT brief smuggled into the sidecar, also long enough to pass",
+    })
+    await expect(write({ operation: "set_unit_status", phase: "p1", unit_id: "u2", data: {
+      s: "delegated", preflight: { symbols_grepped: ["x"], self_consistent: true, receipt: hash },
+    } })).rejects.toThrow(/DELEGATION REQUIRED/)
+  })
+})
+
+describe("the citation parser stops reading prose as citations", () => {
+  it("counts -run only when quoted or inside a code span", () => {
+    const kinds = (t: string) => extractCitations(t).map((c) => c.kind + ":" + c.raw)
+    expect(kinds("rename it so -run TestMapNormalises matches nothing")).toEqual([])
+    expect(kinds("the checkpoint is go test ./x -run '^TestFoo$'")).toEqual(["test_selector:-run '^TestFoo$'"])
+    expect(kinds("run `go test ./x -run TestFoo` for this unit")).toEqual(["test_selector:-run TestFoo"])
+  })
+
+  it("resolves a short path against the unit's own declared directories, and stays dead when ambiguous", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "ff0911c-"))
+    try {
+      await fs.mkdir(path.join(root, "internal", "web", "cases"), { recursive: true })
+      await fs.writeFile(path.join(root, "internal", "web", "cases", "list.html"), Array.from({ length: 90 }, (_, i) => "row " + i).join("\n"))
+      await fs.writeFile(path.join(root, "internal", "web", "handler.go"), "package web\n")
+      const cited = "Fix the row rendering in cases/list.html:73 before handing the unit back."
+
+      const ok = await checkCitations(root, cited, [], ["internal/web/handler.go"])
+      expect(ok[0].status).toBe("ok")
+      expect(ok[0].detail).toContain("internal/web/cases/list.html")
+
+      // Without the unit's files there is nothing to resolve against: dead, as before.
+      expect((await checkCitations(root, cited, [], []))[0].status).toBe("dead")
+
+      // Two candidates inside the declared set is ambiguous, never a guess.
+      await fs.mkdir(path.join(root, "internal", "admin", "cases"), { recursive: true })
+      await fs.writeFile(path.join(root, "internal", "admin", "cases", "list.html"), "x\n")
+      await fs.writeFile(path.join(root, "internal", "admin", "page.go"), "package admin\n")
+      const amb = await checkCitations(root, cited, [], ["internal/web/handler.go", "internal/admin/page.go"])
+      expect(amb[0].status).toBe("dead")
+      expect(amb[0].detail).toContain("ambiguous")
+    } finally { await fs.rm(root, { recursive: true, force: true }) }
   })
 })

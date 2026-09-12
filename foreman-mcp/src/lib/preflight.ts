@@ -280,7 +280,7 @@ export interface CitationCheck {
 const FILE_REF = /(?<![\w/.-])((?:[\w.-]+\/)+[\w.-]+\.[A-Za-z]{1,10})(?::(\d+)(?:-(\d+))?)?(?![\w/])/g
 const TEST_NAME = /\b(Test[A-Z][A-Za-z0-9_]{3,}|test_[a-z0-9_]{4,})\b/g
 /** `-run X`, `-run=X`, `-test.run X`, quoted or bare. The operand is a Go regex, not an identifier. */
-const RUN_SELECTOR = /(?:^|\s)(?:-run|-test\.run)(?:=|\s+)(?:'([^']+)'|"([^"]+)"|([^\s'";,)]+))/g
+const RUN_SELECTOR = /(?:^|[\s`])(?:-run|-test\.run)(?:=|\s+)(?:'([^']+)'|"([^"]+)"|([^\s'";,)`]+))/g
 
 export function extractCitations(brief: string): Array<{ raw: string; kind: CitationCheck["kind"]; file?: string; line?: number; name?: string }> {
   const out: Array<{ raw: string; kind: CitationCheck["kind"]; file?: string; line?: number; name?: string }> = []
@@ -294,11 +294,23 @@ export function extractCitations(brief: string): Array<{ raw: string; kind: Cita
   // 0.6.24 (field report): the spec's own checkpoint rows say `-run TestMapNormalises`, a
   // prefix regex, which the identifier scan below read as an unknown test. Selectors are
   // lifted out first and their span is blanked so the identifier scan does not see them.
+  // 0.6.27 (field report): `-run` written in PROSE — "rename it so -run TestFoo matches nothing" —
+  // was read as a selector and refused the preflight as a dead citation. A brief is prose; the
+  // real checkpoint comes from the spec's Test line (lib/checkpoint.ts), parsed separately. So a
+  // bare operand counts only inside a code span, where the author marked it as a command; a
+  // QUOTED operand counts anywhere, because quoting is itself the mark. Either way the span is
+  // blanked before the identifier scan, so a prose mention does not come back as a dead test name.
+  const codeRanges: Array<[number, number]> = []
+  for (const m of brief.matchAll(/`[^`\n]+`/g)) codeRanges.push([m.index!, m.index! + m[0].length])
+  const inCodeSpan = (i: number) => codeRanges.some(([a, b]) => i >= a && i < b)
+
   let scan = brief
   for (const m of brief.matchAll(RUN_SELECTOR)) {
     const operand = m[1] ?? m[2] ?? m[3]
-    const raw = m[0].trim()
+    const raw = m[0].trim().replace(/^`/, "")
+    const quoted = m[1] !== undefined || m[2] !== undefined
     scan = scan.slice(0, m.index!) + " ".repeat(m[0].length) + scan.slice(m.index! + m[0].length)
+    if (!quoted && !inCodeSpan(m.index!)) continue
     if (seen.has(raw)) continue
     seen.add(raw)
     out.push({ raw, kind: "test_selector", name: operand })
@@ -383,7 +395,26 @@ export async function forwardUnmet(repoRoot: string, obligations: ForwardObligat
   return unmet
 }
 
-export async function checkCitations(repoRoot: string, brief: string, creates: ForwardObligation[] = []): Promise<CitationCheck[]> {
+/**
+ * 0.6.27 (field report): a correct-but-abbreviated citation — `cases/list.html:73` when the file
+ * is `internal/web/cases/list.html` — resolved only against the repository root, so it was dead
+ * and the preflight refused. Repo-wide suffix matching was rejected in deliberation (uniqueness is
+ * not correctness: an `archive/` copy would satisfy it), but the unit's OWN declared directories
+ * are bounded and meaningful — they are the territory the unit is authorized in. Exactly one
+ * candidate resolves; two or more is ambiguous and stays dead, naming them.
+ */
+function unitDirs(files: string[]): string[] {
+  const dirs = new Set<string>()
+  for (const f of files) {
+    const d = path.posix.dirname(normalizePath(f))
+    if (d && d !== ".") dirs.add(d)
+  }
+  return [...dirs]
+}
+
+export async function checkCitations(
+  repoRoot: string, brief: string, creates: ForwardObligation[] = [], files: string[] = []
+): Promise<CitationCheck[]> {
   const cites = extractCitations(brief)
   const results: CitationCheck[] = []
   const forwardFiles = new Set(creates.map((c) => c.file))
@@ -460,6 +491,29 @@ export async function checkCitations(repoRoot: string, brief: string, creates: F
     try {
       text = await fs.readFile(abs, "utf-8")
     } catch {
+      // 0.6.27 (field report): before calling it dead, try the unit's OWN declared directories.
+      const candidates: string[] = []
+      for (const d of unitDirs(files)) {
+        const cand = path.resolve(repoRoot, d, c.file!)
+        if (path.relative(repoRoot, cand).startsWith('..')) continue
+        try { await fs.access(cand); if (!candidates.includes(cand)) candidates.push(cand) } catch { /* not under this one */ }
+      }
+      if (candidates.length > 1) {
+        const shown = candidates.map((x) => normalizePath(path.relative(repoRoot, x))).join(', ')
+        results.push({ raw: c.raw, kind: c.kind, status: 'dead', detail: `ambiguous inside the unit's declared files (${shown}); cite the full path` })
+        continue
+      }
+      if (candidates.length === 1) {
+        const rel1 = normalizePath(path.relative(repoRoot, candidates[0]))
+        const n = (await fs.readFile(candidates[0], 'utf-8')).split(/\r?\n/).length
+        const note = ` (resolved to ${rel1} inside the unit's declared files)`
+        results.push(c.kind === 'file'
+          ? { raw: c.raw, kind: c.kind, status: 'ok', detail: `file exists${note}` }
+          : c.line! >= 1 && c.line! <= n
+            ? { raw: c.raw, kind: c.kind, status: 'ok', detail: `line ${c.line} of ${n}${note}` }
+            : { raw: c.raw, kind: c.kind, status: 'drifted', detail: `line ${c.line} is out of range (file has ${n} lines)${note}; re-cite before the worker reads it` })
+        continue
+      }
       results.push(forwardFiles.has(c.file!.replace(/\\/g, "/"))
         ? { raw: c.raw, kind: c.kind, status: "forward", detail: c.kind === "file_line" ? "promised under creates; a line number on a file that does not exist yet is not checked" : "promised under creates; the pass verdict requires it to exist" }
         : { raw: c.raw, kind: c.kind, status: "dead", detail: `file not found; if the unit creates it, pass it in the preflight_check CREATES PARAMETER: creates: [{ file: "${c.raw.split(":")[0].slice(0, 120)}", tests: [] }] — a parameter of the call, not a section of the brief` })
@@ -503,6 +557,14 @@ export interface PreflightRecord {
   contract_sha256?: string
   /** 0.6.24: files and tests the brief orders into existence; frozen onto the delegation, checked at the pass verdict. */
   forward?: ForwardObligation[]
+  /**
+   * 0.6.27: the brief text this record hashed, stored so the delegation can send the HASH ALONE.
+   * The brief used to be pasted twice — once here to be checked, once to the ledger to be kept —
+   * about 4k tokens each, per unit. The record is Foreman-owned and already excluded from the
+   * repository guard, so keeping the text here costs a sidecar line and no new input surface.
+   * Scrubbed on write like every other Foreman record.
+   */
+  brief?: string
   /** 0.6.25: checkpoint reach over the unit's spec Files: ok | omitted | unknown | none. */
   reach?: "ok" | "omitted" | "unknown" | "none"
   /** 0.6.25: true when reach was the ONLY failure; a delegation may consume such a record with user_override. */

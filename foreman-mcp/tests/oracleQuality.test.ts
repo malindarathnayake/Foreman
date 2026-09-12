@@ -250,7 +250,7 @@ describe("forward declarations and -run selectors", () => {
   const GO_SPEC = "#### u1 — map\n- Emit the map; test with `go test -run TestMapNormalises ./internal/...` and `TestMapRejectsUnknown`.\n"
   it("citations of promised files and tests are forward, a test in a comment is not a declaration, and the verdict checks the promise", async () => {
     await fs.writeFile(specPath, GO_SPEC)
-    const brief = "Create internal/map_test.go with TestMapNormalises and TestMapRejectsUnknown; run go test -run TestMapNormalises ./internal/..."
+    const brief = "Create internal/map_test.go with TestMapNormalises and TestMapRejectsUnknown; run `go test -run TestMapNormalises ./internal/...`"
     const args = { phase: "p1", unit_id: "u1", brief, symbols: ["map"], repo_root: dir, spec_path: "Docs/spec.md", files: ["internal/map.go", "internal/map_test.go"] }
     const dead = await preflightCheck(args, preflightPathFor(ledgerPath), ledgerPath, specPath)
     expect(dead).toContain("status: fail")
@@ -293,11 +293,11 @@ describe("forward declarations and -run selectors", () => {
   })
   it("-run operands resolve as Go regexes against declarations; anchored forms stay anchored; matches are reported", async () => {
     await fs.writeFile(path.join(dir, "internal", "map_test.go"), "package internal\nfunc TestMapNormalisesCountry(t *testing.T) {}\nfunc TestMapNormalisesRegion(t *testing.T) {}\n")
-    const cites = extractCitations("run go test -run TestMapNormalises ./internal/... then -run '^TestMapNormalisesCountry$' and -run=TestOther/sub; also TestMapNormalisesRegion is cited plainly")
+    const cites = extractCitations("run `go test -run TestMapNormalises ./internal/...` then -run '^TestMapNormalisesCountry$' and `-run=TestOther/sub`; also TestMapNormalisesRegion is cited plainly")
     expect(cites.map((c) => [c.kind, c.raw])).toEqual([
       ["test_selector", "-run TestMapNormalises"], ["test_selector", "-run '^TestMapNormalisesCountry$'"], ["test_selector", "-run=TestOther/sub"], ["test_name", "TestMapNormalisesRegion"],
     ])
-    const checked = await checkCitations(dir, "go test -run TestMapNormalises ./internal/... and -run '^TestMapNormalises$' and -run TestOther and -run '(' plus TestMapNormalisesRegion")
+    const checked = await checkCitations(dir, "`go test -run TestMapNormalises ./internal/...` and -run '^TestMapNormalises$' and `-run TestOther` and -run '(' plus TestMapNormalisesRegion")
     expect(checked.map((c) => [c.raw, c.status, c.detail])).toEqual([
       ["-run TestMapNormalises", "ok", "matches TestMapNormalisesCountry, TestMapNormalisesRegion"],
       ["-run '^TestMapNormalises$'", "dead", DEAD_SELECTOR_HINT],
@@ -305,7 +305,7 @@ describe("forward declarations and -run selectors", () => {
       ["-run '('", "dead", "'(' is not a valid regular expression"],
       ["TestMapNormalisesRegion", "ok", "defined or referenced in internal/map_test.go"],
     ])
-    const promised = await checkCitations(dir, "-run TestOther", [{ file: "internal/other_test.go", tests: ["TestOtherThing"] }])
+    const promised = await checkCitations(dir, "`-run TestOther`", [{ file: "internal/other_test.go", tests: ["TestOtherThing"] }])
     expect(promised[0].status).toBe("forward")
     expect(testDeclared("func TestX(t *testing.T) {}", "TestX", "a_test.go")).toBe(true)
     expect(testDeclared("// func TestX(t *testing.T) {}", "TestX", "a_test.go")).toBe(false)

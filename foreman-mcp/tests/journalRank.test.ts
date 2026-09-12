@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import { Client } from "@modelcontextprotocol/client"
 import { InMemoryTransport, type McpServer } from "@modelcontextprotocol/server"
 import { createServer } from "../src/server.js"
-import { declareModel, initSession, readJournal } from "../src/lib/journal.js"
+import { declareModel, endSession, initSession, readJournal, rehydrateRank } from "../src/lib/journal.js"
 import type { WriteJournalInput } from "../src/types.js"
 
 const init = (model?: string, effort?: string): WriteJournalInput => ({
@@ -135,5 +135,110 @@ describe("journal model declarations and active MCP policy", () => {
     })
     expect(denied.error).toBe(true)
     expect(denied.text).toContain("normal Foreman protocol")
+  })
+})
+
+// 0.6.27: a mid-session Foreman restart (/mcp) dropped the operator to weight 0 with no
+// workflow permissions, because the rank lived only in process memory — and declare_model
+// compared the journal's session id against an empty string, so it could never recover it.
+// init_session, which appends a whole spurious session, was the only way back. The
+// declaration was durable the entire time; nothing read it back.
+describe("rank survives a mid-session Foreman restart", () => {
+  let dir: string
+  let jp: string
+  const ENV = { agent: "frontier-pitboss", worker: "w", codex: null, gemini: null, model: "claude-opus-5", effort: "high" }
+  const initInput = { operation: "init_session", data: { target_version: "t", branch: "main", phase: "p1", units: ["u1"], env: ENV } } as WriteJournalInput
+  const ended = { operation: "end_session", data: { dur_min: 1, ctx_used_pct: 1, summary: { units_ok: 1, units_rej: 0, w_spawned: 0, w_wasted: 0, tok_wasted: 0, delay_min: 0, blockers: [], friction: 1 } } } as WriteJournalInput
+
+  beforeEach(async () => {
+    dir = await fs.mkdtemp(path.join(os.tmpdir(), "foreman-rehydrate-"))
+    jp = path.join(dir, "journal.json")
+  })
+  afterEach(async () => { await fs.rm(dir, { recursive: true, force: true }) })
+
+  it("reads the rank back for the same host while the session is still open", async () => {
+    await initSession(jp, initInput, "claude-code")
+    const rank = await rehydrateRank(jp, "claude-code")
+    expect(rank).toMatchObject({ rank: "middle", weight: 2, model: "claude-opus-5" })
+    // Codex review: orientation is restored, authorization is NOT. The operator may have changed
+    // model during the restart and Foreman cannot tell, so granting relaxations on that guess is
+    // the wrongly-allowed failure the rank policy exists to avoid. One declare_model turns them on.
+    expect(Object.values(rank!.permissions).filter(Boolean)).toHaveLength(0)
+    expect(rank!.rehydrated).toMatchObject({ session_id: "s1" })
+  })
+
+  it("never inherits a declaration made under another host", async () => {
+    await initSession(jp, initInput, "claude-code")
+    expect(await rehydrateRank(jp, "codex")).toBeUndefined()
+    expect(await rehydrateRank(jp, "cursor")).toBeUndefined()
+  })
+
+  it("never rehydrates from an ended session, a rankless journal, or a pre-0.6.27 journal with no host", async () => {
+    await initSession(jp, initInput, "claude-code")
+    await endSession(jp, ended)
+    expect(await rehydrateRank(jp, "claude-code")).toBeUndefined()
+
+    // A journal written before 0.6.27 records no host, so it cannot prove same-host: fail closed.
+    const legacy = path.join(dir, "legacy.json")
+    await initSession(legacy, initInput)   // no host argument
+    expect(await rehydrateRank(legacy, "claude-code")).toBeUndefined()
+
+    expect(await rehydrateRank(path.join(dir, "absent.json"), "claude-code")).toBeUndefined()
+  })
+
+  it("lets declare_model adopt the open same-host session when the process holds no session id", async () => {
+    await initSession(jp, initInput, "claude-code")
+    const journal = await declareModel(
+      jp, { operation: "declare_model", data: { model: "claude-fable-5-1", effort: "max" } } as WriteJournalInput, "", "claude-code"
+    )
+    const env = journal.sessions.at(-1)!.env!
+    expect(env.model_rank).toMatchObject({ rank: "top", weight: 3 })
+    // The supersession is recorded, not overwritten: both declarations survive.
+    expect(journal.sessions.at(-1)!.model_declarations).toHaveLength(2)
+  })
+
+  it("refuses adoption across hosts and after the session ended", async () => {
+    await initSession(jp, initInput, "claude-code")
+    const declare = { operation: "declare_model", data: { model: "claude-opus-5", effort: "high" } } as WriteJournalInput
+    await expect(declareModel(jp, declare, "", "codex")).rejects.toThrow(/no current active session/)
+    await endSession(jp, ended)
+    await expect(declareModel(jp, declare, "", "claude-code")).rejects.toThrow(/no current active session/)
+  })
+
+  it("recomputes rank from the declared model — a forged weight in the journal grants nothing", async () => {
+    // A hand-edited or corrupted journal must never be an authorization grant: the persisted rank
+    // carries DERIVED fields (weight, the permission booleans the ledger consumes directly).
+    await fs.writeFile(jp, JSON.stringify({
+      v: 1, project: "p", target_version: "t", next_sid: 2,
+      sessions: [{
+        id: "s1", ts: new Date().toISOString(), branch: "m", phase: "p1", units: ["u1"], events: [],
+        env: {
+          model: "luna", effort: "low", host: "claude-code", os: "x", node: "y", foreman: "z",
+          agent: "a", worker: "w", codex: null, gemini: null,
+          model_rank: {
+            model: "luna", effort: "low", rank: "top", weight: 3, policy_version: 1, session_id: "s1",
+            permissions: { reuse_worker_mechanical: true, reuse_worker_bounded: true, compact_followup: true, focused_validation: true, delta_review: true },
+          },
+        },
+      }],
+    }))
+    const rank = await rehydrateRank(jp, "claude-code")
+    expect(rank).toMatchObject({ rank: "standard", weight: 1 })
+    expect(Object.values(rank!.permissions).filter(Boolean)).toHaveLength(0)
+  })
+
+  it("survives a structurally invalid journal instead of refusing to start", async () => {
+    for (const body of ["{}", '{"sessions":null}', "not json at all"]) {
+      await fs.writeFile(jp, body)
+      await expect(rehydrateRank(jp, "claude-code")).resolves.toBeUndefined()
+    }
+  })
+
+  it("refuses a cross-host declaration even when the session id matches", async () => {
+    // Two servers racing init_session over one journal can both hold "s1"; a matching id used to
+    // bypass the host check entirely and rewrite another host's declaration.
+    await initSession(jp, initInput, "claude-code")
+    const declare = { operation: "declare_model", data: { model: "astra", effort: "high" } } as WriteJournalInput
+    await expect(declareModel(jp, declare, "s1", "codex")).rejects.toThrow(/declared under host 'claude-code'/)
   })
 })

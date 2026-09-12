@@ -8,7 +8,7 @@ or routing policy. It orchestrates protocols, records state, and refuses invalid
 transitions (a unit cannot pass without a recorded delegation; a phase cannot
 pass while any unit is not `pass`).
 
-Package: `@malindarathnayake/foreman-mcp` · Version: `0.6.26` · Runtime: Node.js `>=22`
+Package: `@malindarathnayake/foreman-mcp` · Version: `0.6.27` · Runtime: Node.js `>=22`
 
 This file is written for an AI agent that just connected to the server. It is
 an operating packet, not a feature list — read the whole thing before your
@@ -16,7 +16,7 @@ first tool call.
 
 ## 1. Public tool surface (contract)
 
-Tool count: 34
+Tool count: 35
 
 - bundle_status — Returns the Foreman bundle version and override info.
 - host_status — Returns the active Foreman host and the model slugs used for worker/advisor invocation.
@@ -48,6 +48,7 @@ Tool count: 34
 - pitboss_implementor — Activates the pitboss-implementor protocol for multi-phase implementation from prepared specs (worker fan-out, gates, retries, resume).
 - design_partner — Activates the design-partner protocol: a collaborative design session that produces `Docs/design-summary.md`.
 - spec_generator — Activates the spec-generator protocol: turns an approved design summary into spec/handoff/progress/testing docs.
+- researcher — Activates the Foreman researcher protocol: question -> hypothesis -> bounded variant -> evidence -> decision -> checkpoint, for iterative work whose answer is measured rather than specified (tuning a prompt until a model reads video or images correctly; bringing a deterministic engine to a correctness and latency bar). Enforces by protocol, not by gate: one change per variant, the evaluation set and verdict method declared BEFORE the run, negative results kept, recorded results superseded rather than rewritten. Tracks a thin Docs/research.md index with one line per run pointing at per-run detail files. Promotion to shipped code leaves this protocol for the normal gates.
 - lighttask — Activates the lighttask protocol for small surgical work that still needs grounding and review.
 - spec_man — Activates the spec-man protocol: produces intended-behavior specs from existing repos, tickets, or plans.
 - doc_man — Activates the doc-man protocol: generates grounded technical documentation (README, architecture, data-flow, Confluence, machine docs).

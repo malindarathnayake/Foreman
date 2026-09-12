@@ -192,6 +192,54 @@ async function stagedFingerprints(dir: string, paths: string[]): Promise<{ ok: b
   return { ok: true, map }
 }
 
+/**
+ * Is a HEAD move attributable to Foreman? (0.6.27, field report.)
+ *
+ * The protocol says commit the ledger at every verdict, and the guard says nothing moves HEAD
+ * between snapshot and compare. Both are right and they collide: committing your own ledger made
+ * the guard report a violation on work nobody did wrong.
+ *
+ * 0.6.21 vetoed `pitboss_paths` because "content cannot attribute a write to an actor" — and that
+ * holds for content. A COMMIT is not content: it carries a manifest of the paths it touched, so
+ * attribution is by construction rather than by inference, and the veto's reason does not reach it.
+ * The guard already excuses Foreman's own writes in the WORKING TREE (isForemanStateFile); this
+ * makes the identical writes excusable once committed, which is the inconsistency the field hit.
+ *
+ * Fail closed on anything that is not a plain advance: `after` must be a DESCENDANT of `before`,
+ * so a reset, an amend, a rebase or a checkout still fails — none of them has an ancestry path.
+ * Every path in the range must be Foreman-owned; one source file and the whole move is a violation.
+ */
+export type HeadAttribution =
+  | { attributable: true; commits: number }
+  | { attributable: false; reason: string }
+
+export async function attributeHeadMove(
+  dir: string, before: string, after: string, rel: RelativeScope
+): Promise<HeadAttribution> {
+  if (before === "none" || after === "none") {
+    return { attributable: false, reason: "a repository with no commits on one side of the comparison" }
+  }
+  // exit 0 = ancestor. A non-zero exit OR a failed probe is "not a plain advance": fail closed.
+  const ancestor = await git(dir, ["merge-base", "--is-ancestor", before, after])
+  if (!ancestor.ok) {
+    return { attributable: false, reason: `${after.slice(0, 12)} does not descend from ${before.slice(0, 12)} (a reset, amend, rebase or checkout, not a commit)` }
+  }
+  const names = await git(dir, ["diff", "--name-only", `${before}..${after}`], outputBudget(MAX_ENTRIES))
+  if (!names.ok || names.truncated) {
+    return { attributable: false, reason: "the commit range could not be read completely" }
+  }
+  const paths = names.out.split(/\r?\n/).map((l) => normalizePath(l.trim())).filter(Boolean)
+  const outside = paths.filter((p) => !isForemanStateFile(p, rel))
+  if (outside.length > 0) {
+    return {
+      attributable: false,
+      reason: `the commit range touches ${outside.length} path(s) Foreman does not write: ${outside.slice(0, 5).join(", ")}${outside.length > 5 ? ", …" : ""}`,
+    }
+  }
+  const count = await git(dir, ["rev-list", "--count", `${before}..${after}`])
+  return { attributable: true, commits: count.ok ? Number(count.out.trim()) || paths.length : paths.length }
+}
+
 export function snapshotHash(s: Omit<RepoSnapshot, "hash">): string {
   return createHash("sha256").update(JSON.stringify(s)).digest("hex").slice(0, 16)
 }
@@ -404,7 +452,11 @@ export async function takeSnapshot(
  * its staged blob changed, which is how a worker overwriting the user's uncommitted work
  * is caught.
  */
-export function compareSnapshots(before: RepoSnapshot, after: RepoSnapshot, rel: RelativeScope = EMPTY_RELATIVE_SCOPE): string[] {
+export function compareSnapshots(
+  before: RepoSnapshot, after: RepoSnapshot, rel: RelativeScope = EMPTY_RELATIVE_SCOPE,
+  /** 0.6.27: resolved by the caller, which has git; absent means "treat any HEAD move as a violation". */
+  head: HeadAttribution | undefined = undefined
+): string[] {
   const violations: string[] = []
   const allowed = new Set((before.allowed ?? []).map(normalizePath))
 
@@ -415,8 +467,11 @@ export function compareSnapshots(before: RepoSnapshot, after: RepoSnapshot, rel:
   if (before.branch !== after.branch) {
     violations.push(`branch changed: '${before.branch}' -> '${after.branch}'`)
   }
-  if (before.head !== after.head) {
-    violations.push(`HEAD moved: ${before.head.slice(0, 12)} -> ${after.head.slice(0, 12)} (a worker must not commit, reset, or checkout)`)
+  if (before.head !== after.head && !head?.attributable) {
+    violations.push(
+      `HEAD moved: ${before.head.slice(0, 12)} -> ${after.head.slice(0, 12)} (a worker must not commit, reset, or checkout)` +
+      (head && !head.attributable ? ` — not attributable to Foreman: ${head.reason}` : "")
+    )
   }
   if (before.stash_ref !== after.stash_ref || before.stash_count !== after.stash_count) {
     violations.push(`stash changed: ${before.stash_ref.slice(0, 12)}/${before.stash_count} entries -> ${after.stash_ref.slice(0, 12)}/${after.stash_count}`)

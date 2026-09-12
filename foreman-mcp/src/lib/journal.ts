@@ -2,11 +2,13 @@ import fs from "fs/promises"
 import path from "path"
 import { fileURLToPath } from "url"
 import type { JournalFile, JournalSession, JournalRollup, WriteJournalInput } from "../types.js"
+import type { ModelRank } from "./modelRank.js"
 import { WriteJournalInputSchema, JournalSoftLimits } from "../types.js"
 import { atomicWriteFile } from "./atomicWrite.js"
 import { scrub } from "./redaction.js"
 import { softLimitWarning } from "./softLimits.js"
 import { resolveModelRank } from "./modelRank.js"
+import type { HostId } from "./hostProfiles.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -54,7 +56,7 @@ export async function readJournal(filePath: string): Promise<JournalFile> {
 }
 
 // ─── initSession ──────────────────────────────────────────────────────────────
-export async function initSession(filePath: string, input: WriteJournalInput): Promise<JournalFile> {
+export async function initSession(filePath: string, input: WriteJournalInput, host?: HostId): Promise<JournalFile> {
   return withJournalLock(filePath, async () => {
     const parsed = WriteJournalInputSchema.parse(input)
     if (parsed.operation !== "init_session") {
@@ -102,6 +104,8 @@ export async function initSession(filePath: string, input: WriteJournalInput): P
       os: osStr,
       node: nodeStr,
       foreman: foremanVersion,
+      // Server-authored, never from input: rank rehydration compares against it.
+      ...(host !== undefined ? { host } : {}),
       agent: data.env.agent,
       worker: data.env.worker,
       ...(data.env.claude !== undefined ? { claude: data.env.claude } : {}),
@@ -127,14 +131,35 @@ export async function initSession(filePath: string, input: WriteJournalInput): P
 }
 
 /** Replace the declaration only on the current live session; historical ranks are evidence. */
-export async function declareModel(filePath: string, input: WriteJournalInput, sessionId: string): Promise<JournalFile> {
+export async function declareModel(
+  filePath: string, input: WriteJournalInput, sessionId: string, host?: HostId
+): Promise<JournalFile> {
   return withJournalLock(filePath, async () => {
     const parsed = WriteJournalInputSchema.parse(input)
     if (parsed.operation !== "declare_model") throw new Error(`Expected operation "declare_model", got "${parsed.operation}"`)
     const journal = await readJournal(filePath)
     const session = journal.sessions.at(-1)
-    if (!session || session.id !== sessionId || session.summary || !session.env) {
+    // 0.6.27: after a mid-session Foreman restart this process holds no session id, so the old
+    // equality check could never match and declare_model threw — leaving init_session, which
+    // appends a spurious session, as the ONLY way to recover a rank the journal already holds.
+    // With no session id, adopt the newest still-open session declared under the SAME host.
+    const adoptable = sessionId === "" && session !== undefined && !session.summary &&
+      session.env !== undefined && session.env.host !== undefined && session.env.host === host
+    if (!session || (!adoptable && session.id !== sessionId) || session.summary || !session.env) {
       throw new Error("error: no current active session; call init_session before declare_model")
+    }
+    // Codex review: a MATCHING session id used to bypass the host check entirely, so a process on
+    // one host could rewrite the declaration of a session stamped with another — and two servers
+    // racing init_session over one journal can both hold "s1". Host is checked on every path.
+    // `host === undefined` is a caller that did not declare one, which cannot prove same-host.
+    // A session carrying NO host stamp predates 0.6.27; the id match governs it as it always did.
+    // Once a session IS stamped, the caller must prove the same host — including a caller that
+    // names none, which cannot prove it.
+    if (session.env.host !== undefined && session.env.host !== host) {
+      throw new Error(
+        `error: session '${session.id}' was declared under host '${session.env.host}', not ` +
+        `'${host ?? "none declared"}'; a declaration made under another host describes another host`
+      )
     }
     const modelRank = { ...resolveModelRank(parsed.data.model, parsed.data.effort), session_id: session.id }
     const history = session.model_declarations ?? []
@@ -147,6 +172,56 @@ export async function declareModel(filePath: string, input: WriteJournalInput, s
     await atomicWriteFile(filePath, JSON.stringify(journal), { scrub })
     return journal
   })
+}
+
+/**
+ * The rank to resume with after a mid-session Foreman restart (0.6.27).
+ *
+ * The declaration was always durable — `env.model_rank` is written by init_session and
+ * declare_model — but the process held it only in memory, so a `/mcp` restart dropped every
+ * operator to weight 0 and no workflow permissions, with init_session (which appends a whole
+ * spurious session) as the only recovery. Nothing read the record back; this does.
+ *
+ * Fail closed on every doubt: the session must still be OPEN (no summary), must carry a rank,
+ * and must name the SAME host. A journal written before 0.6.27 records no host, so it never
+ * rehydrates — the original rule this preserves is that a declaration made under another host
+ * describes another host, and an absent host cannot prove otherwise.
+ */
+export async function rehydrateRank(filePath: string, host: HostId): Promise<ModelRank | undefined> {
+  let session: JournalSession | undefined
+  try {
+    const journal = await readJournal(filePath)
+    // Codex review: readJournal parses JSON without validating shape, so '{}' or
+    // '{"sessions":null}' reached `.at(-1)` and threw INSIDE createServer — a hand-edited or
+    // truncated journal would stop the whole MCP server from starting, taking every unrelated
+    // tool with it. The shape check belongs inside the guard.
+    if (!Array.isArray(journal?.sessions)) return undefined
+    session = journal.sessions.at(-1)
+  } catch {
+    return undefined   // an unreadable journal is never a reason to fail startup
+  }
+  if (!session || session.summary || !session.env) return undefined
+  if (session.env.host === undefined || session.env.host !== host) return undefined
+  if (typeof session.id !== "string" || typeof session.ts !== "string") return undefined
+
+  // Codex review: the persisted rank carries DERIVED fields — weight and the permission
+  // booleans the ledger consumes directly. Adopting them verbatim would make a hand-edited
+  // journal an authorization grant. Recompute from the declared model and effort, which are the
+  // only things the operator actually declared, and take session_id from the enclosing session
+  // rather than from the blob that claims it.
+  const declared = resolveModelRank(session.env.model, session.env.effort)
+  if (declared.weight === 0) return undefined
+
+  return {
+    ...declared,
+    session_id: session.id,
+    // A rehydrated rank restores ORIENTATION, never authorization. The operator may have changed
+    // model during the restart and Foreman cannot tell; granting relaxations on that guess is the
+    // wrongly-allowed failure the whole policy is built to avoid. One declare_model — which this
+    // release also repairs — turns the permissions back on, and no longer costs a spurious session.
+    permissions: { reuse_worker_mechanical: false, reuse_worker_bounded: false, compact_followup: false, focused_validation: false, delta_review: false },
+    rehydrated: { session_id: session.id, session_ts: session.ts },
+  }
 }
 
 // ─── logEvent ─────────────────────────────────────────────────────────────────

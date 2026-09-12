@@ -926,6 +926,12 @@ export interface JournalEnv {
   os: string
   node: string
   foreman: string
+  /**
+   * 0.6.27: the host this session was declared under, server-authored like os/node/foreman
+   * and never taken from tool input. Rank rehydration after a mid-session restart compares
+   * against it — a declaration made under another host describes another host.
+   */
+  host?: import("./lib/hostProfiles.js").HostId
   agent: string
   worker: string
   claude?: string | null

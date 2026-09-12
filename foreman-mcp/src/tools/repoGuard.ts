@@ -15,7 +15,7 @@
  */
 
 import path from "path"
-import { compareSnapshots, takeSnapshot } from "../lib/repoGuard.js"
+import { attributeHeadMove, compareSnapshots, takeSnapshot } from "../lib/repoGuard.js"
 import { JOURNAL_FILE, PROGRESS_STATE_FILE, foremanFileScope } from "../lib/foremanFiles.js"
 import { readLedger, recordRepoGuard } from "../lib/ledger.js"
 import { scrub } from "../lib/redaction.js"
@@ -207,7 +207,13 @@ export async function handleRepoGuard(
     }))
   }
 
-  const violations = compareSnapshots(before.snapshot, outcome.snapshot, outcome.scope)
+  // 0.6.27 (field report): committing the ledger at every verdict is the protocol, and a HEAD move
+  // between snapshot and compare is a violation — both rules are right and they collided. A commit
+  // carries the paths it touched, so a move whose whole range is Foreman-owned is attributable.
+  const headMove = before.snapshot.head !== outcome.snapshot.head
+    ? await attributeHeadMove(dir, before.snapshot.head, outcome.snapshot.head, outcome.scope)
+    : undefined
+  const violations = compareSnapshots(before.snapshot, outcome.snapshot, outcome.scope, headMove)
   // 0.6.26: a zeroed authorized file is invisible to the ownership diff — the path IS
   // authorized, so a destroyed file clears exactly like an edited one. It carries the
   // violation weight (the pass verdict stays blocked) under its own name and its own cause.
@@ -232,6 +238,7 @@ export async function handleRepoGuard(
     current_hash: outcome.snapshot.hash,
     violations: violations.length,
     ...(outcome.damaged.length ? { zeroed_files: outcome.damaged.join(", ") } : {}),
+    ...(headMove?.attributable ? { head_advanced: `${headMove.commits} commit(s), Foreman files only — attributed, not a violation` } : {}),
   })
   if (result === "ok") {
     return scrub(head + "\nThe worker touched nothing outside the frozen authorized set. The pass verdict is clear to proceed.")

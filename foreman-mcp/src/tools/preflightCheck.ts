@@ -25,6 +25,7 @@ import { absenceMessage, checkpointReach, lookupCheckpoint, reachMessage } from 
 export { extractDirective }
 import { toKeyValue, toTable } from "../lib/toon.js"
 import { readLedgerWithStatus } from "../lib/ledger.js"
+import { scrub } from "../lib/redaction.js"
 import { unitContract } from "../lib/specContract.js"
 
 export const PreflightCheckInputSchema = z.object({
@@ -142,7 +143,7 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
   const coverage = directiveCoverage(directive, input.brief)
   const flags = consistencyFlags(input.brief)
   const forward = normalizeObligations(input.creates)
-  const cites = await checkCitations(root, input.brief, forward)
+  const cites = await checkCitations(root, input.brief, forward, input.files)
   const dead = cites.filter((c) => c.status === "dead")
   const drifted = cites.filter((c) => c.status === "drifted")
   const promised = cites.filter((c) => c.status === "forward")
@@ -162,7 +163,8 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
     ...(reachOmitted && !otherFailure ? { reach_only: true } : {}),
     ...(checkpointSha !== undefined ? { checkpoint_sha256: checkpointSha } : {}),
   }
-  await appendPreflight(preflightFile, record)
+  // 0.6.27: keep the text beside the hash so set_unit_status can send the receipt alone.
+  await appendPreflight(preflightFile, { ...record, brief: scrub(input.brief) })
 
   const head = toKeyValue({
     status,

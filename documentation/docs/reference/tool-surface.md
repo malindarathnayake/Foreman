@@ -20,7 +20,7 @@ Where the shapes are. Hosts clip tool descriptions at about 2,000 characters, so
 
 | Tool | Input that matters | Returns |
 |---|---|---|
-| `design_partner`, `spec_generator`, `pitboss_implementor`, `lighttask`, `spec_man`, `doc_man` | `context` string | The procedure for that protocol, rendered for the active host |
+| `design_partner`, `spec_generator`, `pitboss_implementor`, `lighttask`, `researcher`, `spec_man`, `doc_man` | `context` string | The procedure for that protocol, rendered for the active host. `researcher` is the iterative-experiment loop — question, hypothesis, bounded variant, evidence, decision, checkpoint — keeping a thin `Docs/research.md` index with one file per run; it records and disciplines, and gates nothing |
 | `session_orient` | none | The resume state. See [Resuming a session](../how-it-works/resuming.md) |
 | `read_ledger` | `query`: `verdicts`, `rejections`, `phase_gates`, `reviews`, `delegation_metrics`, `review_outcomes`, `facts`, `reconstruct`, `full`; `phase`, `unit_id`, `verdict`, `include_notes`, `cursor`, `limit` up to 100 | A paged table, or one unit, or the full JSON. `full` on a large ledger returns guidance instead of flooding the context. `reconstruct` builds a read-only recovery worksheet from the append-only sidecars after a ledger loss |
 | `read_progress` | `last_n_completed` | Ledger progress and resume state shared with `session_orient`, followed by descriptive checklist notes |

@@ -22,14 +22,14 @@ afterEach(async () => {
   await server?.close()
 })
 
-describe("list tools — verify all 34 present, update_bundle absent", () => {
+describe("list tools — verify all 35 present, update_bundle absent", () => {
   beforeEach(async () => {
     await setupServer()
   })
 
-  it("lists exactly 34 tools", async () => {
+  it("lists exactly 35 tools", async () => {
     const result = await client.listTools()
-    expect(result.tools).toHaveLength(34)
+    expect(result.tools).toHaveLength(35)
   })
 
   it("includes all required tool names", async () => {
@@ -182,7 +182,7 @@ describe("Codex-only tool registration", () => {
   it("registers codex_agents_init only for the codex host", async () => {
     const result = await client.listTools()
     const tool = result.tools.find((entry) => entry.name === "codex_agents_init")
-    expect(result.tools).toHaveLength(34)
+    expect(result.tools).toHaveLength(35)
     expect(tool).toBeDefined()
     expect(tool?.annotations?.title).toBe("Init Codex Agent Roles")
     expect(tool?.annotations?.readOnlyHint).toBe(false)
@@ -209,9 +209,9 @@ describe("list resources — verify skill URIs", () => {
     await setupServer()
   })
 
-  it("lists exactly 6 skill resources", async () => {
+  it("lists exactly 7 skill resources", async () => {
     const result = await client.listResources()
-    expect(result.resources).toHaveLength(6)
+    expect(result.resources).toHaveLength(7)
     for (const r of result.resources) {
       expect(r.uri).not.toContain("_common-protocol")
       expect(r.uri).not.toMatch(/\/_[^/]+$/)

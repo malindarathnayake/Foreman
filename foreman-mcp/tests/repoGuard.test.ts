@@ -13,6 +13,7 @@ import path from "path"
 import { execFileSync } from "child_process"
 import { readLedger, writeLedger } from "../src/lib/ledger.js"
 import { compareSnapshots, invalidPathReason, normalizePath, parsePorcelainZ, takeSnapshot, ENTRY_CEILING, MAX_ENTRIES } from "../src/lib/repoGuard.js"
+import { attributeHeadMove } from "../src/lib/repoGuard.js"
 import { handleRepoGuard } from "../src/tools/repoGuard.js"
 import { handleWriteProgress, FENCE_START, FENCE_END } from "../src/tools/writeProgress.js"
 import { preflightCheck } from "../src/tools/preflightCheck.js"
@@ -714,5 +715,54 @@ describe("Foreman's own writes are excluded from one shared list", () => {
       if (written.status !== "ok") throw new Error("expected ok")
       expect(compareSnapshots(legacy, written.snapshot, rel)[0]).toMatch(/^pre-existing uncommitted change overwritten outside the brief: Docs\/PROGRESS\.md \(baseline predates/)
     })
+  })
+})
+
+// 0.6.27 (field report): committing the ledger every verdict and "nothing moves HEAD" are both
+// right and they collided. A commit carries the paths it touched, so Foreman's own is attributable.
+describe("a HEAD move Foreman itself made is attributable", () => {
+  let repo: string
+  const g = (a: string[]) => execFileSync("git", ["-C", repo, ...a], { encoding: "utf-8", stdio: ["ignore", "pipe", "ignore"] }).trim()
+  const rel = async () => relativeScope(foremanFileScope({
+    ledgerPath: path.join(repo, "Docs", ".foreman-ledger.json"),
+    progressPath: path.join(repo, "Docs", ".foreman-progress.json"),
+    journalPath: path.join(repo, "Docs", ".foreman-journal.json"),
+    docsDir: path.join(repo, "Docs"),
+  }), repo)
+
+  beforeEach(async () => {
+    repo = await fs.mkdtemp(path.join(os.tmpdir(), "ff0911b-"))
+    g(["init", "-q", "-b", "main"]); g(["config", "user.email", "t@e.com"]); g(["config", "user.name", "T"])
+    g(["config", "commit.gpgsign", "false"]); g(["config", "core.autocrlf", "false"])
+    await fs.mkdir(path.join(repo, "Docs"), { recursive: true })
+    await fs.writeFile(path.join(repo, "app.ts"), "export const a = 1\n")
+    await fs.writeFile(path.join(repo, "Docs", ".foreman-ledger.json"), '{"v":1,"ts":"t","phases":{}}')
+    g(["add", "."]); g(["commit", "-q", "-m", "init"])
+  })
+  afterEach(async () => { await fs.rm(repo, { recursive: true, force: true }) })
+
+  it("clears a commit whose whole range is Foreman-owned, and refuses one that touches source", async () => {
+    const base = g(["rev-parse", "HEAD"])
+    await fs.writeFile(path.join(repo, "Docs", ".foreman-ledger.json"), '{"v":1,"ts":"t2","phases":{}}')
+    g(["add", "-A"]); g(["commit", "-q", "-m", "ledger"])
+    expect(await attributeHeadMove(repo, base, g(["rev-parse", "HEAD"]), await rel())).toMatchObject({ attributable: true, commits: 1 })
+
+    const mid = g(["rev-parse", "HEAD"])
+    await fs.writeFile(path.join(repo, "app.ts"), "export const a = 2\n")
+    g(["add", "-A"]); g(["commit", "-q", "-m", "src"])
+    const r = await attributeHeadMove(repo, mid, g(["rev-parse", "HEAD"]), await rel())
+    expect(r.attributable).toBe(false)
+    expect((r as { reason: string }).reason).toContain("app.ts")
+  })
+
+  it("refuses anything that is not a plain advance — a reset has no ancestry path", async () => {
+    const base = g(["rev-parse", "HEAD"])
+    await fs.writeFile(path.join(repo, "Docs", ".foreman-ledger.json"), '{"v":1,"ts":"t3","phases":{}}')
+    g(["add", "-A"]); g(["commit", "-q", "-m", "ledger"])
+    const ahead = g(["rev-parse", "HEAD"])
+    g(["reset", "-q", "--hard", base])
+    const r = await attributeHeadMove(repo, ahead, g(["rev-parse", "HEAD"]), await rel())
+    expect(r.attributable).toBe(false)
+    expect((r as { reason: string }).reason).toMatch(/does not descend from/)
   })
 })

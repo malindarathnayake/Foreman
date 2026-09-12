@@ -8,7 +8,9 @@ description: An MCP server that gives Claude Code, Cursor, or Codex a spec-to-im
 
 # What Foreman is
 
-Foreman is an MCP server. It exposes 26 tools to Claude Code, Cursor, and Codex: six protocol tools that return a working procedure to the model, and the state, test, worker, and review tools that procedure tells the model to call. Project state lives in `Docs/.foreman-ledger.json` inside your repo. The server validates every write to that file and refuses the ones that skip a step.
+Foreman is an MCP server. It exposes 35 tools to Claude Code, Cursor, and Codex: seven protocol tools that return a working procedure to the model, and the state, test, worker, guard, and review tools that procedure tells the model to call. Project state lives in `Docs/.foreman-ledger.json` inside your repo. The server validates every write to that file and refuses the ones that skip a step.
+
+The point is that "done" is a recorded, gated claim on disk rather than something a model says in chat. Where a rule could be talked past as prose, Foreman replaces it with a check: "don't touch the shared tree" became a before/after content diff with a frozen allow-list; "we tested it" became a run receipt bound to input and output digests; "this endpoint works" became a probe bound to a claim in the spec.
 
 ## Who does what
 
