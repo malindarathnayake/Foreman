@@ -87,7 +87,7 @@ export function modelRankSummary(modelRank: ModelRank): Record<string, string | 
     // decides workflow permissions; it should also say what the WORKER seat defaults to. Rank-keyed,
     // not model-keyed, so Astra at xhigh gets the same reminder Fable does.
     seat_guidance: modelRank.weight === 3
-      ? "you are a frontier orchestrator — do not spawn frontier workers by default: implementation goes to foreman-worker (standard), foreman-worker-light for a fully specified edit, and foreman-worker-heavy only for concurrency, migrations, error-handling semantics, public contracts or security paths, or a unit a lower seat already failed"
+      ? "you are a frontier orchestrator — do not spawn frontier workers by default: implementation goes to foreman-worker (standard), foreman-worker-light for a fully specified edit, and foreman-worker-heavy only for concurrency, migrations, error-handling semantics, public contracts or security paths, or a unit a lower seat already failed. Each seat carries its own model AND reasoning effort; spawn by subagent_type and pass neither"
       : "seat per unit: foreman-worker-light (cheap) / foreman-worker (standard) / foreman-worker-heavy (premium); escalate only on evidence cited in route_reason",
   }
 }

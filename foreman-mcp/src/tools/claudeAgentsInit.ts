@@ -11,7 +11,7 @@
  *
  * Claude Code has the same mechanism Codex does: an agent definition in `.claude/agents/*.md`
  * carries its model in frontmatter. This writes the three implementation seats there, so the
- * tier resolves to a model the same way on both hosts.
+ * tier resolves to a model AND a reasoning effort the same way on both hosts.
  *
  * What this does NOT do: lock the model. The Agent tool's `model` argument takes precedence
  * over the definition's frontmatter, so a pit-boss can still pass something else. This makes
@@ -28,6 +28,15 @@ import { toKeyValue } from "../lib/toon.js"
 export const CLAUDE_AGENT_ROLES = ["foreman-worker-light", "foreman-worker", "foreman-worker-heavy"] as const
 export type ClaudeAgentRole = (typeof CLAUDE_AGENT_ROLES)[number]
 
+/**
+ * Named reasoning-effort levels the host accepts in agent frontmatter, verified against the
+ * installed CLI's own validator (`["low","medium","high","xhigh","max"]`) and its docs. An
+ * integer is also accepted by the host; this tool takes the named levels only, because a
+ * number here would be a magic constant nobody can read back.
+ */
+export const CLAUDE_EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const
+export type ClaudeEffort = (typeof CLAUDE_EFFORT_LEVELS)[number]
+
 export const ClaudeAgentsInitInputSchema = z.strictObject({
   project_dir: z.string().max(4096).optional(),
   roles: z.array(z.enum(CLAUDE_AGENT_ROLES)).min(1).optional(),
@@ -39,21 +48,36 @@ export const ClaudeAgentsInitInputSchema = z.strictObject({
       "foreman-worker-heavy": z.string().min(1).max(100).optional(),
     })
     .optional(),
+  /** Override the reasoning effort per role. Named levels only; the host refuses anything else. */
+  effort: z
+    .object({
+      "foreman-worker-light": z.enum(CLAUDE_EFFORT_LEVELS).optional(),
+      "foreman-worker": z.enum(CLAUDE_EFFORT_LEVELS).optional(),
+      "foreman-worker-heavy": z.enum(CLAUDE_EFFORT_LEVELS).optional(),
+    })
+    .optional(),
   overwrite: z.boolean().optional(),
 })
 export type ClaudeAgentsInitInput = z.infer<typeof ClaudeAgentsInitInputSchema>
 
 /**
- * Default model per implementation seat, mapped onto Foreman's existing cost tiers.
- * `cheap` is a mechanical, fully-specified edit, which is what Haiku is for; `premium` is the
- * unit a smaller seat could not carry. Override with `models` — an operator who wants no Haiku
- * in the loop pins `foreman-worker-light` to sonnet and keeps the three seats distinct by
- * instruction rather than by model.
+ * Default seat per Foreman cost tier: a MODEL and a reasoning EFFORT.
+ *
+ * The three seats differ by effort rather than by dropping to a weaker model. A Foreman worker
+ * implements code against a binding brief, and a wrong "mechanical" edit costs a whole attempt
+ * plus its guard cycle — more than the tokens a cheaper model saves. So `cheap` is the same
+ * model thinking less, not a lesser model. Override either axis per role.
  */
 export const CLAUDE_SEAT_MODELS: Record<ClaudeAgentRole, string> = {
-  "foreman-worker-light": "haiku",
+  "foreman-worker-light": "sonnet",
   "foreman-worker": "sonnet",
   "foreman-worker-heavy": "opus",
+}
+
+export const CLAUDE_SEAT_EFFORT: Record<ClaudeAgentRole, ClaudeEffort> = {
+  "foreman-worker-light": "low",
+  "foreman-worker": "medium",
+  "foreman-worker-heavy": "high",
 }
 
 const SHARED = `Implement only the bounded worker brief you are given.
@@ -104,14 +128,26 @@ ${SHARED}`,
   },
 }
 
-/** A `.claude/agents/<name>.md` definition: YAML frontmatter, then the instructions. */
-export function agentMarkdown(name: string, description: string, model: string, instructions: string): string {
+/**
+ * A `.claude/agents/<name>.md` definition: YAML frontmatter, then the instructions.
+ *
+ * The host parses this frontmatter with a STRICT schema — an unknown key is an error, not an
+ * ignored line — so this emits only keys that schema accepts: name, description, model, effort.
+ * (The full accepted set also includes tools, disallowedTools, color, permissionMode, mcpServers,
+ * hooks, maxTurns, skills, initialPrompt, memory, background, isolation, observer,
+ * observerMessage, observeSubagents, experimental. Foreman sets none of those: a worker's tool
+ * access is the operator's call, not the ledger's.)
+ */
+export function agentMarkdown(
+  name: string, description: string, model: string, effort: string, instructions: string
+): string {
   // Quoted scalars so a description containing ':' cannot break the frontmatter.
   const esc = (v: string) => `"${v.replace(/\\/g, "\\\\").replace(/"/g, '\\"')}"`
   return `---
 name: ${name}
 description: ${esc(description)}
 model: ${model}
+effort: ${effort}
 ---
 
 ${instructions}
@@ -145,11 +181,14 @@ export async function claudeAgentsInit(raw: ClaudeAgentsInitInput): Promise<stri
     }
     const spec = SPECS[role]
     const model = input.models?.[role] ?? CLAUDE_SEAT_MODELS[role]
-    await atomicWriteFile(abs, agentMarkdown(role, spec.description, model, spec.instructions))
+    const effort = input.effort?.[role] ?? CLAUDE_SEAT_EFFORT[role]
+    await atomicWriteFile(abs, agentMarkdown(role, spec.description, model, effort, spec.instructions))
     written.push(rel)
   }
 
-  const seats = roles.map((r) => `${r}=${input.models?.[r] ?? CLAUDE_SEAT_MODELS[r]}`).join(", ")
+  const seats = roles
+    .map((r) => `${r}=${input.models?.[r] ?? CLAUDE_SEAT_MODELS[r]}/${input.effort?.[r] ?? CLAUDE_SEAT_EFFORT[r]}`)
+    .join(", ")
   return toKeyValue({
     status: "ok",
     project_dir: projectDir,

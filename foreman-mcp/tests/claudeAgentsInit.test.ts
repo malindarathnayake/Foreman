@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { claudeAgentsInit, agentMarkdown, CLAUDE_SEAT_MODELS, CLAUDE_AGENT_ROLES } from "../src/tools/claudeAgentsInit.js"
+import { claudeAgentsInit, agentMarkdown, CLAUDE_SEAT_MODELS, CLAUDE_SEAT_EFFORT, CLAUDE_AGENT_ROLES } from "../src/tools/claudeAgentsInit.js"
 import { resolveModelRank, modelRankSummary } from "../src/lib/modelRank.js"
 
 let dir: string
@@ -24,13 +24,18 @@ describe("claude_agents_init pins a model per implementation seat", () => {
       const body = await read(role)
       expect(body).toMatch(new RegExp(`^name: ${role}$`, "m"))
       expect(body).toMatch(new RegExp(`^model: ${CLAUDE_SEAT_MODELS[role]}$`, "m"))
+      expect(body).toMatch(new RegExp(`^effort: ${CLAUDE_SEAT_EFFORT[role]}$`, "m"))
       // Every seat carries the shared-tree rule: a worker must never mutate repository state.
       expect(body).toContain("NEVER run git stash, reset, checkout")
       expect(body).toContain("Do not spawn further subagents")
     }
-    expect(await read("foreman-worker-light")).toMatch(/^model: haiku$/m)
-    expect(await read("foreman-worker")).toMatch(/^model: sonnet$/m)
+    // The seats differ by EFFORT, not by dropping to a weaker model: a wrong "mechanical" edit
+    // costs an attempt plus its guard cycle, which is dearer than the tokens a lesser model saves.
+    expect(await read("foreman-worker-light")).toMatch(/^model: sonnet$/m)
+    expect(await read("foreman-worker-light")).toMatch(/^effort: low$/m)
+    expect(await read("foreman-worker")).toMatch(/^effort: medium$/m)
     expect(await read("foreman-worker-heavy")).toMatch(/^model: opus$/m)
+    expect(await read("foreman-worker-heavy")).toMatch(/^effort: high$/m)
   })
 
   it("leaves an existing definition alone unless overwrite is asked for", async () => {
@@ -48,11 +53,33 @@ describe("claude_agents_init pins a model per implementation seat", () => {
     expect(await read("foreman-worker")).toMatch(/^model: sonnet$/m)
   })
 
-  it("takes a per-role model override — an operator who wants no haiku in the loop", async () => {
-    await claudeAgentsInit({ project_dir: dir, models: { "foreman-worker-light": "sonnet" } })
-    expect(await read("foreman-worker-light")).toMatch(/^model: sonnet$/m)
-    // the other seats keep their defaults
-    expect(await read("foreman-worker-heavy")).toMatch(/^model: opus$/m)
+  it("takes per-role overrides on both axes independently", async () => {
+    await claudeAgentsInit({
+      project_dir: dir,
+      models: { "foreman-worker-light": "haiku" },
+      effort: { "foreman-worker-heavy": "max" },
+    })
+    expect(await read("foreman-worker-light")).toMatch(/^model: haiku$/m)
+    expect(await read("foreman-worker-light")).toMatch(/^effort: low$/m)      // untouched axis keeps its default
+    expect(await read("foreman-worker-heavy")).toMatch(/^model: opus$/m)      // untouched axis keeps its default
+    expect(await read("foreman-worker-heavy")).toMatch(/^effort: max$/m)
+  })
+
+  it("refuses an effort level the host's own validator would reject", async () => {
+    await expect(claudeAgentsInit({ project_dir: dir, effort: { "foreman-worker": "ultra" } } as never))
+      .rejects.toThrow()
+  })
+
+  it("emits only keys the host's STRICT frontmatter schema accepts", async () => {
+    await claudeAgentsInit({ project_dir: dir })
+    const fm = (await read("foreman-worker")).split("---")[1]
+    const keys = fm.trim().split("\n").map((l) => l.split(":")[0].trim())
+    // An unknown key is an ERROR to the host, not an ignored line.
+    const ACCEPTED = new Set(["name", "description", "model", "effort", "tools", "disallowedTools",
+      "color", "permissionMode", "mcpServers", "hooks", "maxTurns", "skills", "initialPrompt",
+      "memory", "background", "isolation", "observer", "observerMessage", "observeSubagents", "experimental"])
+    for (const k of keys) expect(ACCEPTED.has(k), k).toBe(true)
+    expect(keys).toEqual(["name", "description", "model", "effort"])
   })
 
   it("writes only the roles asked for", async () => {
@@ -62,7 +89,7 @@ describe("claude_agents_init pins a model per implementation seat", () => {
   })
 
   it("quotes the description so a colon cannot break the frontmatter", () => {
-    const md = agentMarkdown("x", 'tier: premium, and a "quoted" word', "opus", "body")
+    const md = agentMarkdown("x", 'tier: premium, and a "quoted" word', "opus", "high", "body")
     expect(md).toContain('description: "tier: premium, and a \\"quoted\\" word"')
     expect(md.split("---")[1]).toContain("model: opus")
   })
