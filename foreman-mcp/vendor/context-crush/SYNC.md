@@ -15,6 +15,7 @@ Source of truth: `vendor/context-crush/NOTICE`.
 | # | Date | File | Change | Origin | Adaptations | Guard test |
 |---|------------|------|--------|--------|--------------|------------|
 | 1 | 2026-07-06 | `dist/compressors/logCompressor.js` | Must-keep token guard: force-selection pass + adaptive-cap exemption in `_selectLines` | Line-level adaptation of upstream `_KOMPRESS_MUST_KEEP_RE` from `headroom/transforms/kompress_compressor.py` (word-level, Kompress ML compressor — upstream's own line-based `log_compressor.py` has NO such guard at HEAD, so this is an adaptation, not a cherry-pick) | Bare hex ids >=8 chars (upstream: 0x-prefixed); left-guarded CLI-flag class; ALLCAPS requires a digit or underscore; upstream's "standalone number" and bare dotted-name classes are omitted from the force set (measured 83-99.9% line-match on real log fixtures — force-keeping them disables compression entirely) | `tests/compression.test.ts` must-keep suite |
+| 2 | 2026-09-27 | `dist/compressors/adaptiveSizer.js` | `_hammingDistance` counts bits arithmetically (SWAR popcount on two 32-bit halves) instead of `toString(2).split().filter()`; `countUniqueSimhash` compares pre-split halves | Foreman performance fix, not upstream: ~11.6M calls on a 5,000-line log made one compression take ~5 s standalone and ~24 s under load | None: identical cluster count and output (byte-compared on the synthetic fixture) | `tests/compression.test.ts` timing guard |
 
 ## Review-on-sync procedure
 

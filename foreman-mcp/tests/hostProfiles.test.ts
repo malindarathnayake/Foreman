@@ -128,7 +128,7 @@ describe("hostProfiles — getProfile", () => {
     expect(codex.placeholders.worker_invoke).not.toContain("Agent tool")
     expect(codex.placeholders.advisor_checks).toContain('cli: "claude"')
     expect(codex.placeholders.advisor_a).toContain('cli: "claude"')
-    expect(codex.placeholders.advisor_a).toContain('model: "claude-fable-5"')
+    expect(codex.placeholders.advisor_a).toContain('model: "claude-fable-5-1"')
     expect(codex.placeholders.advisor_a).toContain("max")
     expect(codex.placeholders.advisor_b).toContain('cli: "gemini"')
     // Native review is now the default, while external advisors remain optional.

@@ -1,6 +1,6 @@
 import { spawn } from 'child_process'
 import { existsSync } from 'fs'
-import { runExternalCli, RESOLVE_CMD, parseResolutionOutput, type SpawnPlan } from '../lib/externalCli.js'
+import { runExternalCli, RESOLVE_CMD, parseResolutionOutput, killTree, type SpawnPlan } from '../lib/externalCli.js'
 import path from 'path'
 
 export const DEFAULT_ALLOWED_RUNNERS = ["npm", "pytest", "go", "cargo", "dotnet", "make", "gradle", "gradlew", "gofmt", "golangci-lint"]
@@ -315,8 +315,13 @@ export async function runTests(
     let settled = false
     let timedOut = false
 
+    // 0.6.39: vitest/npm run through .cmd shims on Windows; killing cmd.exe alone left the
+    // runner holding the pipes and the call hung past its timeout. Kill the whole tree
+    // (killTree) and, once the child exits, stop waiting for pipes a grandchild still holds.
     const child = spawn(resolution.plan.command, [...resolution.plan.args, ...args], {
       stdio: ['pipe', 'pipe', 'pipe'],
+      windowsHide: true,
+      detached: process.platform !== 'win32',
       ...(cwd !== undefined ? { cwd } : {}),
       ...(env !== undefined ? { env: { ...process.env, ...env } } : {}),
     })
@@ -332,8 +337,8 @@ export async function runTests(
         if (!settled) {
           settled = true
           clearTimeout(timer)
-          child.kill('SIGTERM')
-          setTimeout(() => { try { child.kill('SIGKILL') } catch {} }, 2000)
+          killTree(child, 'SIGTERM')
+          setTimeout(() => { killTree(child, 'SIGKILL') }, 2000)
           const out = finalize(stdoutBuf)
           const errOut = finalize(stderrBuf)
           resolve(
@@ -351,8 +356,8 @@ export async function runTests(
         if (!settled) {
           settled = true
           clearTimeout(timer)
-          child.kill('SIGTERM')
-          setTimeout(() => { try { child.kill('SIGKILL') } catch {} }, 2000)
+          killTree(child, 'SIGTERM')
+          setTimeout(() => { killTree(child, 'SIGKILL') }, 2000)
           const out = finalize(stdoutBuf)
           const errOut = finalize(stderrBuf)
           resolve(
@@ -367,14 +372,10 @@ export async function runTests(
     const timer = setTimeout(() => {
       if (settled) return
       timedOut = true
-      child.kill('SIGTERM')
+      killTree(child, 'SIGTERM')
 
       killTimer = setTimeout(() => {
-        try {
-          child.kill('SIGKILL')
-        } catch {
-          // Process may have already exited
-        }
+        killTree(child, 'SIGKILL')
       }, 5000)
     }, timeoutMs)
 
@@ -393,6 +394,19 @@ export async function runTests(
         `\n\nSTDERR\n` +
         err.message
       resolve(output)
+    })
+
+    child.on('exit', (code: number | null) => {
+      // A grandchild holding the pipes can keep 'close' from firing; stop waiting 2 s after exit.
+      // 0.6.39 (Codex review): that is NOT a clean run — output may be missing — so it reports
+      // as timed out (never passed) and the tree is killed.
+      setTimeout(() => {
+        if (settled) return
+        timedOut = true
+        stderrBuf += '\n[foreman] output incomplete: a process still held the output pipes 2 s after the runner exited'
+        killTree(child, 'SIGKILL')
+        child.emit('close', code)
+      }, 2_000).unref()
     })
 
     child.on('close', (code: number | null) => {

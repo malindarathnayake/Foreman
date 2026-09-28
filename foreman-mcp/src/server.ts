@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/server"
 import { trustSystemCa } from "./lib/systemCa.js"
+import { pinUnits } from "./lib/reviewPins.js"
+import { readLedger as readLedgerForPins } from "./lib/ledger.js"
 import { serveStdio, StdioServerTransport } from "@modelcontextprotocol/server/stdio"
 import { z } from "zod"
 import fs from "fs/promises"
@@ -44,7 +46,7 @@ import { renderShape } from "./lib/schemaDoc.js"
 import { formatSchemaError, isZodError } from "./lib/schemaError.js"
 import { readJournal, initSession, declareModel, logEvent, endSession, rehydrateRank } from "./lib/journal.js"
 import { resolveModelRank, type ModelRank } from "./lib/modelRank.js"
-import { invokeAdvisor, advisorRunMeta, classifyAdvisorFailure, formatAdvisorResult, GEMINI_ADVISOR_MODEL, CODEX_ADVISOR_MODEL } from "./tools/invokeAdvisor.js"
+import { invokeAdvisor, advisorRunMeta, classifyAdvisorFailure, CLAUDE_ADVISOR_MODEL, formatAdvisorResult, GEMINI_ADVISOR_MODEL, CODEX_ADVISOR_MODEL } from "./tools/invokeAdvisor.js"
 import { withReportBudget, REPORT_MAX_LINES_CEILING } from "./lib/outputBudget.js"
 import { appendReceipt, receiptsPathFor, receiptFailure, sha256Hex, CLI_PROVIDER } from "./lib/seatReceipts.js"
 import { DEFAULT_PATHS } from "./lib/foremanFiles.js"
@@ -100,6 +102,24 @@ export interface ServerConfig {
  * reviewer seats into orchestration state. Kept under 512 characters; Codex recommends
  * that prefix be self-contained.
  */
+/**
+ * 0.6.39: the host's cancel signal and progress token, mapped onto Foreman's long calls.
+ * Cancellation fires on notifications/cancelled AND when the transport closes (a host
+ * disconnect or restart), so a seat or worker call no longer outlives the request. Progress
+ * is sent only when the host asked for it (a progressToken); it is best-effort.
+ */
+function callControls(ctx: unknown, label: string): { signal?: AbortSignal; onTick?: (elapsedMs: number) => void } {
+  const req = (ctx as { mcpReq?: { signal?: AbortSignal; notify?: (n: unknown) => Promise<void>; _meta?: { progressToken?: string | number } } } | undefined)?.mcpReq
+  const token = req?._meta?.progressToken
+  const notify = req?.notify
+  return {
+    ...(req?.signal ? { signal: req.signal } : {}),
+    ...(token !== undefined && notify
+      ? { onTick: (ms: number) => { void notify({ method: "notifications/progress", params: { progressToken: token, progress: Math.round(ms / 1000), message: `${label}: running ${Math.round(ms / 1000)} s` } }).catch(() => undefined) } }
+      : {}),
+  }
+}
+
 export const SERVER_INSTRUCTIONS =
   "Foreman is a spec-driven workflow harness. Use it only when the user asks for Foreman work or the repository " +
   "already has a Foreman ledger (.foreman-ledger.json); a missing ledger is not a reason to start one. " +
@@ -345,8 +365,8 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       title: "Invoke Advisor",
       description:
         host === "cursor"
-          ? "Invoke claude|codex|gemini|cursor CLI. Resolves binaries cross-platform and wraps .cmd/.ps1 shims on win32. Claude runs headless with Fable 5 at max effort and no tools; Codex runs gpt-6-astra at xhigh reasoning (codex-cli 0.153.4 or newer) and the meta block echoes model_served and reasoning_effort from its header. Cursor runs agent -p --mode=ask --trust (never --approve-mcps, never a pinned --model); receipts are provider unknown. Exit 0 with empty stdout, or stdout equal to the prompt, is reported as completion: failed with the stderr tail — not a clean seat; record it as failed and retry once. Gemini runs with JSON output: the meta block names model_requested and model_served, and a served model other than the pinned one is completion: failed (model_substituted). Failed calls may be compressed; if a failed call's summary is insufficient, call retrieve_original with the <<ccr:HASH>> marker for the full diagnostic."
-          : "Invoke claude|codex|gemini CLI via stdin. Resolves binaries cross-platform and wraps .cmd shims on win32. Claude runs headless with Fable 5 at max effort and no tools; Codex runs gpt-6-astra at xhigh reasoning (codex-cli 0.153.4 or newer) and the meta block echoes model_served and reasoning_effort from its header. Exit 0 with empty stdout, or stdout equal to the prompt, is reported as completion: failed with the stderr tail — not a clean seat; record it as failed and retry once. Gemini runs with JSON output: the meta block names model_requested and model_served, and a served model other than the pinned one is completion: failed (model_substituted). Failed calls may be compressed; if a failed call's summary is insufficient, call retrieve_original with the <<ccr:HASH>> marker for the full diagnostic.",
+          ? "Invoke claude|codex|gemini|cursor CLI. Resolves binaries cross-platform and wraps .cmd/.ps1 shims on win32. Claude runs headless with Fable 5.1 (Opus if Fable is unavailable) at max effort and no tools; Codex runs gpt-6-astra at xhigh reasoning (codex-cli 0.153.4 or newer) and the meta block echoes model_served and reasoning_effort from its header. Cursor runs agent -p --mode=ask --trust (never --approve-mcps, never a pinned --model); receipts are provider unknown. Exit 0 with empty stdout, or stdout equal to the prompt, is reported as completion: failed with the stderr tail — not a clean seat; record it as failed and retry once. Gemini runs with JSON output: the meta block names model_requested and model_served, and a served model other than the pinned one is completion: failed (model_substituted). Failed calls may be compressed; if a failed call's summary is insufficient, call retrieve_original with the <<ccr:HASH>> marker for the full diagnostic."
+          : "Invoke claude|codex|gemini CLI via stdin. Resolves binaries cross-platform and wraps .cmd shims on win32. Claude runs headless with Fable 5.1 (Opus if Fable is unavailable) at max effort and no tools; Codex runs gpt-6-astra at xhigh reasoning (codex-cli 0.153.4 or newer) and the meta block echoes model_served and reasoning_effort from its header. Exit 0 with empty stdout, or stdout equal to the prompt, is reported as completion: failed with the stderr tail — not a clean seat; record it as failed and retry once. Gemini runs with JSON output: the meta block names model_requested and model_served, and a served model other than the pinned one is completion: failed (model_substituted). Failed calls may be compressed; if a failed call's summary is insufficient, call retrieve_original with the <<ccr:HASH>> marker for the full diagnostic.",
       inputSchema: z.strictObject({
         cli: z.enum(advisorClisForHost(host)),
         prompt: z.string().max(100000),
@@ -357,6 +377,11 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         // budget, never asked to pick one. Omitted -> FOREMAN_REPORT_MAX_LINES, then
         // the built-in default. Raise it for a review that genuinely needs the room.
         report_max_lines: z.number().int().min(1).max(REPORT_MAX_LINES_CEILING).optional(),
+        // 0.6.39: the phase and units this seat reviews. Foreman pins those units' authorized
+        // files on the receipt, so a record_review with data.units inside them stays valid while
+        // OTHER units are delegated during the seat. Omitted: the phase-wide freshness rule.
+        phase: z.string().max(10000).optional(),
+        units: z.array(z.string().min(1).max(200)).min(1).max(50).optional(),
       }),
       outputSchema: TextOutputSchema,
       annotations: {
@@ -369,21 +394,40 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       // The budget is appended BEFORE anything hashes, measures or echo-checks the
       // prompt, so the receipt attests to what actually left the machine.
       const sentPrompt = withReportBudget(args.prompt, args.report_max_lines)
+      // 0.6.39: hash the reviewed units' files BEFORE stamping the start, so a change made
+      // after the stamp can never be inside the pinned bytes.
+      const reviewPins = args.phase && args.units
+        ? await pinUnits(await readLedgerForPins(ledgerPath, { readOnly: true }), args.phase, args.units, process.cwd())
+        : null
       const startedTs = new Date().toISOString()
-      const result = await invokeAdvisor(args.cli, sentPrompt, args.timeout_ms)
+      const result = await invokeAdvisor(args.cli, sentPrompt, args.timeout_ms, callControls(_extra, `invoke_advisor ${args.cli}`))
       const pinned = args.cli === "gemini" ? GEMINI_ADVISOR_MODEL : args.cli === "codex" ? CODEX_ADVISOR_MODEL : undefined
       // 0.6.19: every run gets a receipt, failed ones included, so a failed seat can never
       // be re-described as clean. The pit-boss copies seat_receipt and packet_sha256 into
       // record_review; the ledger checks them against this file, never against the text.
       const meta = advisorRunMeta(args.cli, result, sentPrompt, pinned)
       const extra: string[] = []
+      if (result.modelFallback) extra.push(`model_fallback: ${result.modelFallback.from} -> ${result.modelFallback.to} (${result.modelFallback.reason})`)
+      // 0.6.39 (Codex review): the Claude seat records the model it asked for, and a fallback
+      // leaves a receipt for the refused Fable attempt too, so the switch is durable.
+      const claudeRequested = args.cli === "claude" ? (result.modelFallback?.to ?? CLAUDE_ADVISOR_MODEL) : undefined
       try {
         const cli = args.cli as keyof typeof CLI_PROVIDER
+        if (result.modelFallback) {
+          const first = result.modelFallback.first
+          const refused = await appendReceipt(receiptsPathFor(ledgerPath), {
+            started_ts: startedTs, cli, provider: CLI_PROVIDER[cli], model_requested: result.modelFallback.from, model_served: "unknown",
+            exit_code: first.exitCode, failure_reason: "model_rejected", prompt_sha256: sha256Hex(sentPrompt),
+            bytes_in: Buffer.byteLength(sentPrompt, "utf-8"), bytes_out: 0,
+          })
+          extra.push(`fallback_receipt: ${refused.id} (refused ${result.modelFallback.from})`)
+        }
         const receipt = await appendReceipt(receiptsPathFor(ledgerPath), {
           started_ts: startedTs,
+          ...(reviewPins ? { pin_phase: reviewPins.phase, pin_units: reviewPins.units, pin_attempts: reviewPins.attempts, pins: reviewPins.pins } : {}),
           cli,
           provider: CLI_PROVIDER[cli],
-          ...(pinned !== undefined ? { model_requested: pinned } : {}),
+          ...(pinned !== undefined ? { model_requested: pinned } : claudeRequested !== undefined ? { model_requested: claudeRequested } : {}),
           model_served: meta.modelServed ?? "unknown",
           ...(meta.reasoningEffort !== undefined ? { reasoning_effort: meta.reasoningEffort } : {}),
           exit_code: result.exitCode,
@@ -487,7 +531,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
     },
     async (args, _extra) => {
-      const text = await handleInvokeWorker(args, { docsDir, ledgerPath, journalPath })
+      const text = await handleInvokeWorker(args, { docsDir, ledgerPath, journalPath, controls: callControls(_extra, "invoke_worker") })
       return textResult(text)
     }
   )
@@ -559,7 +603,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
     },
     async (args, _extra) => {
-      const text = await handleInvokeCouncil(args, { journalPath, receiptsPath: receiptsPathFor(ledgerPath), host })
+      const text = await handleInvokeCouncil(args, { journalPath, receiptsPath: receiptsPathFor(ledgerPath), host, controls: callControls(_extra, "invoke_council"), ledgerPath, projectRoot: process.cwd() })
       return textResult(text)
     }
   )

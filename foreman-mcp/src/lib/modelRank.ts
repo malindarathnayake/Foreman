@@ -30,7 +30,7 @@ const MODELS = new Map<string, "astra" | 1 | 2 | 3>([
   // Host-emitted ids first (what a pitboss actually reports), display names after.
   ["claude-fable-5-1", 3], ["claude-fable-5", 3], ["claude-fable-5.1", 3],
   ["fable 5.1", 3], ["fable5.1", 3], ["fable-5.1", 3],
-  ["claude-opus-5", 2], ["opus", 2], ["terra", 2], ["gpt-5.6-terra", 2],
+  ["claude-opus-5-5", 2], ["claude-opus-5", 2], ["opus", 2], ["terra", 2], ["gpt-5.6-terra", 2],
   ["claude-sonnet-5", 1], ["sonnet", 1], ["claude-4.6-sonnet-medium-thinking", 1],
   ["luna", 1], ["gpt-5.6-luna", 1],
 ])

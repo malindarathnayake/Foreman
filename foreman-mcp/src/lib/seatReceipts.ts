@@ -30,7 +30,7 @@ export { RECEIPTS_FILE, receiptsPathFor } from "./foremanFiles.js"
 export type ReceiptCli = "claude" | "codex" | "gemini" | "cursor" | "council"
 export type ReceiptFailure = "empty_stdout" | "echoed_prompt" | "model_substituted" | "resolution_failed" | "nonzero_exit"
   // 0.6.35: classified causes, so a receipt says why a seat failed rather than only that it did.
-  | "timed_out" | "auth_failed" | "budget_exceeded" | "model_rejected"
+  | "timed_out" | "auth_failed" | "budget_exceeded" | "model_rejected" | "cancelled"
 
 /** Vendor from the CLI Foreman launched. Never parsed from output. Cursor is a router. */
 export const CLI_PROVIDER: Readonly<Record<Exclude<ReceiptCli, "council">, Provider>> = {
@@ -65,6 +65,12 @@ export interface SeatReceipt {
    * on receipts written before 0.6.35; freshness falls back to `ts` for those.
    */
   started_ts?: string
+  /** 0.6.39: the units the seat was called for, and the digests of their authorized files (lib/reviewPins.ts). */
+  pin_units?: string[]
+  pins?: { path: string; sha256: string }[]
+  /** 0.6.39 (Codex review): the phase and each unit's attempt the pins were taken for. */
+  pin_phase?: string
+  pin_attempts?: Record<string, number>
   cli: ReceiptCli
   provider: Provider
   model_requested?: string
@@ -206,7 +212,7 @@ export async function appendConsumed(
 export function receiptFailure(
   exitCode: number,
   formatFailure: "empty_stdout" | "echoed_prompt" | "model_substituted" | null,
-  classified: "timed_out" | "auth_failed" | "budget_exceeded" | "model_rejected" | null = null
+  classified: "timed_out" | "auth_failed" | "budget_exceeded" | "model_rejected" | "cancelled" | null = null
 ): ReceiptFailure | null {
   if (formatFailure !== null) return formatFailure
   if (classified !== null) return classified

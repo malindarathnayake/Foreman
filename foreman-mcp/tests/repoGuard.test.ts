@@ -547,6 +547,152 @@ describe("set_verdict enforces the guard", () => {
     })
   })
 
+  // 0.6.39 (field data): preflight_check preceded the delegation within 60 s in 86/94 cases and
+  // compare preceded the pass verdict in 36/38. Both can now ride the write they precede.
+  describe("fewer calls per unit", () => {
+    const spec = () => fs.writeFile(path.join(repoDir, "spec.md"), "#### u1 — a\n- Change `exportedA` in a.ts to return 2.\n")
+    const write = async (op: Record<string, unknown>) => {
+      const { handleWriteLedger } = await import("../src/tools/writeLedger.js")
+      return handleWriteLedger(ledgerPath, op, "claude-code", undefined,
+        { projectRoot: repoDir, specPath: path.join(repoDir, "spec.md"), guardPaths: { ledgerPath } })
+    }
+    const delegateInline = (symbols: string[]) => write({ operation: "set_unit_status", phase: "p1", unit_id: "u1", data: {
+      s: "delegated", brief: "Change exportedA in a.ts to return 2, with its test.", preflight_check: { symbols, files: ["a.ts"] },
+      guard: { allowed_files: ["a.ts"] } } })
+
+    it("a delegation runs its preflight inline and records the receipt", async () => {
+      await spec()
+      await delegateInline(["exportedA"])
+      const d = (await unitOf()).delegations!.at(-1)!
+      expect(d.preflight?.receipt).toMatch(/^[0-9a-f]{16}$/)
+      expect(d.guard?.snapshot).toBeDefined()
+    })
+
+    it("a failing inline preflight refuses the delegation with its report and records nothing", async () => {
+      await spec()
+      await expect(delegateInline(["notInTheSpec"])).rejects.toThrow(/PREFLIGHT FAILED[\s\S]*notInTheSpec/)
+      expect((await readLedger(ledgerPath)).phases.p1?.units.u1?.attempt_seq ?? 0).toBe(0)
+    })
+
+    it("a pass verdict compares first when the attempt has no comparison; a stray edit still blocks", async () => {
+      await spec()
+      await delegateInline(["exportedA"])
+      await fs.writeFile(path.join(repoDir, "b.ts"), "touched\n")
+      await expect(write({ operation: "set_verdict", phase: "p1", unit_id: "u1", data: { v: "pass" } })).rejects.toThrow(/REPOSITORY GUARD/)
+      expect((await guardOf())?.result).toBe("violation")
+    })
+
+    // Codex review of 0.6.39: the verdict-time compare ran in the server's directory, not the
+    // baseline's, and recorded a "different repository" violation on an untouched tree.
+    it("the verdict-time compare runs in the baseline's own repository", async () => {
+      await spec()
+      await delegateInline(["exportedA"])
+      const { handleWriteLedger } = await import("../src/tools/writeLedger.js")
+      const out = await handleWriteLedger(ledgerPath, { operation: "set_verdict", phase: "p1", unit_id: "u1", data: { v: "pass" } },
+        "claude-code", undefined, { projectRoot: os.tmpdir(), specPath: path.join(repoDir, "spec.md"), guardPaths: { ledgerPath } })
+      expect(out).toContain("guard compared at verdict: ok")
+    })
+
+    it("a clean attempt passes with the comparison done at the verdict", async () => {
+      await spec()
+      await delegateInline(["exportedA"])
+      await fs.writeFile(path.join(repoDir, "a.ts"), "export const a = 2\n")
+      const out = await write({ operation: "set_verdict", phase: "p1", unit_id: "u1", data: { v: "pass" } })
+      expect(out).toContain("guard compared at verdict: ok")
+      expect((await unitOf()).v).toBe("pass")
+    })
+  })
+
+  // 0.6.39 (field report 2026-09-27): a 10–12 min seat was staled by ANY delegation in the
+  // phase. A receipt pinned to its units' authorized files is judged per unit.
+  describe("review pins", () => {
+    async function passUnit(unit: string, file: string) {
+      const { handleWriteLedger } = await import("../src/tools/writeLedger.js")
+      await handleWriteLedger(ledgerPath, { operation: "set_unit_status", phase: "p1", unit_id: unit, data: { s: "delegated", brief: BRIEF, preflight: PREFLIGHT, guard: { allowed_files: [file] } } },
+        "claude-code", undefined, { projectRoot: repoDir, guardPaths: { ledgerPath } })
+      await handleRepoGuard({ operation: "compare", phase: "p1", unit_id: unit, project_dir: repoDir } as never, { ledgerPath })
+      await writeLedger(ledgerPath, { operation: "set_verdict", phase: "p1", unit_id: unit, data: { v: "pass" } } as never)
+    }
+    async function pinnedReceipt(units: string[]) {
+      const { pinUnits } = await import("../src/lib/reviewPins.js")
+      const { appendReceipt, receiptsPathFor, sha256Hex } = await import("../src/lib/seatReceipts.js")
+      const pins = await pinUnits(await readLedger(ledgerPath), "p1", units, repoDir)
+      const prompt = "review packet " + "x".repeat(1200)
+      return appendReceipt(receiptsPathFor(ledgerPath), {
+        started_ts: new Date().toISOString(), ...(pins ? { pin_phase: pins.phase, pin_units: pins.units, pin_attempts: pins.attempts, pins: pins.pins } : {}),
+        cli: "gemini", provider: "google", model_served: "gemini-3.1-pro-preview", exit_code: 0, failure_reason: null,
+        prompt_sha256: sha256Hex(prompt), bytes_in: prompt.length, bytes_out: 900,
+      })
+    }
+    const recordFor = (receipt: { id: string; prompt_sha256: string }, units: string[]) =>
+      writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: {
+        advisor: "gemini", stage: "independent", completion: "complete", findings: [], checked: ["a.ts"], units,
+        seat_receipt: receipt.id, packet_hash: receipt.prompt_sha256 } } as never,
+        undefined, undefined, "claude-code", undefined, undefined, { projectRoot: repoDir })
+
+    it("another unit moving during the seat does not stale a pinned, scoped review", async () => {
+      await passUnit("u1", "a.ts")
+      await passUnit("u2", "b.ts")
+      const r = await pinnedReceipt(["u1"])
+      expect(r.pins?.map((p) => p.path)).toEqual(["a.ts"])
+      await new Promise((res) => setTimeout(res, 20))
+      await passUnit("u2", "b.ts")
+      await recordFor(r, ["u1"])
+    })
+
+    it("a pinned file changed after the seat started refuses the record", async () => {
+      await passUnit("u1", "a.ts")
+      const r = await pinnedReceipt(["u1"])
+      await fs.writeFile(path.join(repoDir, "a.ts"), "export const a = 42\n")
+      await expect(recordFor(r, ["u1"])).rejects.toThrow(/pinned file\(s\) changed since the seat started: a\.ts/)
+    })
+
+    // Codex review of 0.6.39: pins bind their phase and attempts, come from the current attempt,
+    // and never follow a link outside the root.
+    it("a pinned receipt bound in another phase is refused", async () => {
+      await passUnit("u1", "a.ts")
+      const r = await pinnedReceipt(["u1"])
+      const { appendReceipt, receiptsPathFor } = await import("../src/lib/seatReceipts.js")
+      const moved = await appendReceipt(receiptsPathFor(ledgerPath), { ...r, pin_phase: "p9" } as never)
+      await expect(recordFor(moved, ["u1"])).rejects.toThrow(/pinned for phase 'p9'/)
+    })
+
+    it("a unit that moved between hashing and recording is refused, not waved through", async () => {
+      await passUnit("u1", "a.ts")
+      const r = await pinnedReceipt(["u1"])
+      const { appendReceipt, receiptsPathFor } = await import("../src/lib/seatReceipts.js")
+      const early = await appendReceipt(receiptsPathFor(ledgerPath), { ...r, pin_attempts: { u1: 0 } } as never)
+      await expect(recordFor(early, ["u1"])).rejects.toThrow(/pinned unit\(s\) u1 at an earlier attempt/)
+    })
+
+    it("pins come only from the current attempt's baseline", async () => {
+      await passUnit("u1", "a.ts")
+      await writeLedger(ledgerPath, { operation: "set_unit_status", phase: "p1", unit_id: "u1", data: { s: "delegated", brief: BRIEF, preflight: PREFLIGHT } } as never)
+      const { pinUnits } = await import("../src/lib/reviewPins.js")
+      expect(await pinUnits(await readLedger(ledgerPath), "p1", ["u1"], repoDir)).toBeNull()
+    })
+
+    it("a link that leaves the project root is never pinned [CWE-22]", async () => {
+      const outside = await fs.mkdtemp(path.join(os.tmpdir(), "outside-"))
+      try {
+        await fs.writeFile(path.join(outside, "secret.txt"), "not yours\n")
+        await fs.symlink(outside, path.join(repoDir, "link"), process.platform === "win32" ? "junction" : "dir")
+        await passUnit("u1", "link/secret.txt")
+        const { pinUnits } = await import("../src/lib/reviewPins.js")
+        expect(await pinUnits(await readLedger(ledgerPath), "p1", ["u1"], repoDir)).toBeNull()
+      } finally { await fs.rm(outside, { recursive: true, force: true }) }
+    })
+
+    it("a record covering a unit the seat was not pinned to falls back to the phase-wide rule", async () => {
+      await passUnit("u1", "a.ts")
+      await passUnit("u2", "b.ts")
+      const r = await pinnedReceipt(["u1"])
+      await new Promise((res) => setTimeout(res, 20))
+      await passUnit("u2", "b.ts")
+      await expect(recordFor(r, ["u1", "u2"])).rejects.toThrow(/reviewed old code/)
+    })
+  })
+
   // 0.6.36 (field report 2026-09-27): after a restart orientation said implement_unit while an
   // attempt still held the window; re-delegating would replace it under a live worker.
   it("session_orient names an open attempt and says not to re-delegate", async () => {

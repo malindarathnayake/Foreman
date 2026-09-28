@@ -48,7 +48,7 @@ const CLAUDE_CODE_PROFILE: HostProfile = {
     advisor_b:
       '**Gemini:** `mcp__foreman__invoke_advisor({ cli: "gemini", prompt: "<PROMPT>" })`',
     advisor_fallback:
-      "**Opus agent fallback (last rung):** With no council seats AND no CLI advisor, seat BOTH reviewers on Opus — two separate Agent-tool calls with `model: \"opus\"`, each given a DIFFERENT adversarial critic prompt (e.g. one contract/correctness, one security/data-integrity), run independently and never shown each other's output. Record in the ledger note that independent review was unavailable: two seats on one model is perspective, NOT independence.",
+      "**Fable agent fallback (last rung):** With no council seats AND no CLI advisor, seat BOTH reviewers on Fable — two separate Agent-tool calls with `model: \"fable\"` (`model: \"opus\"` when the host cannot run Fable), each given a DIFFERENT adversarial critic prompt (e.g. one contract/correctness, one security/data-integrity), run independently and never shown each other's output. Record in the ledger note that independent review was unavailable: two seats on one model is perspective, NOT independence.",
     autonomy:
       "**/goal contract:** run autonomously only under a user-issued goal with budgets/scopes declared up front; every claim in the goal report must be evidenced in-transcript (file:line, command output); the goal ends at the phase gate — never roll into the next phase autonomously.",
   },
@@ -101,7 +101,7 @@ const CODEX_PROFILE: HostProfile = {
     advisor_checks:
       'At major checkpoints or on request, probe optional advisors: `mcp__foreman__capability_check({ cli: "claude" })` and `mcp__foreman__capability_check({ cli: "gemini" })`. Missing providers do not block native review.',
     advisor_a:
-      '**Optional external Advisor A (Claude Fable 5, max; headless):** `mcp__foreman__invoke_advisor({ cli: "claude", prompt: "<PROMPT>" })` (configured `model: "claude-fable-5"`, effort `max`, tools disabled).',
+      '**Optional external Advisor A (Claude Fable 5.1, max; headless; Opus when Fable is unavailable):** `mcp__foreman__invoke_advisor({ cli: "claude", prompt: "<PROMPT>" })` (configured `model: "claude-fable-5-1"`, effort `max`, tools disabled; the output names any model_fallback).',
     advisor_b:
       '**Optional external Advisor B (Gemini):** `mcp__foreman__invoke_advisor({ cli: "gemini", prompt: "<PROMPT>" })`',
     advisor_fallback: CODEX_NATIVE_REVIEW,

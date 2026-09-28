@@ -3,6 +3,7 @@ import os from "os"
 import path from "path"
 import {
   type ExternalCliResult,
+  type SpawnControls,
   resolveFirst,
   resolveInvocation,
   runExternalCli,
@@ -115,33 +116,43 @@ export function claudeAdvisorBudgetUsd(env: NodeJS.ProcessEnv = process.env): nu
  * from the TAIL of stderr only — Codex echoes the prompt at the top of stderr, so a prompt
  * that mentions a 401 must not read as an auth failure. Unknown stays unknown.
  */
-export type AdvisorFailureClass = "timed_out" | "auth_failed" | "budget_exceeded" | "model_rejected"
+export type AdvisorFailureClass = "cancelled" | "timed_out" | "auth_failed" | "budget_exceeded" | "model_rejected"
 const FAILURE_TAIL_LINES = 25
 export function classifyAdvisorFailure(result: ExternalCliResult): AdvisorFailureClass | null {
+  if (result.cancelled) return "cancelled"
   if (result.timedOut) return "timed_out"
   if (result.exitCode === 0) return null
   const tail = result.stderr.split("\n").slice(-FAILURE_TAIL_LINES).join("\n")
   if (/Exceeded USD budget/i.test(tail)) return "budget_exceeded"
   if (/\b401 Unauthorized\b|\b403 Forbidden\b|Incorrect API key|invalid[_ ]api[_ ]key|not logged in|please (run )?\S*\s*login/i.test(tail)) return "auth_failed"
-  if (/model is not supported|requires a newer version of Codex|model[_ ]not[_ ]found|unknown model/i.test(tail)) return "model_rejected"
+  if (/model is not supported|requires a newer version of Codex|model[_ ]not[_ ]found|unknown model|issue with the selected model|unrecognized_model|not have access to it/i.test(tail)) return "model_rejected"
   return null
 }
 export const ADVISOR_FAILURE_HINT: Readonly<Record<AdvisorFailureClass, string>> = {
+  cancelled: "the host cancelled the call (or disconnected); the seat's output is incomplete and cannot be bound as a review — re-run it",
   timed_out: "the seat ran out of time; narrow the packet or raise timeout_ms (and the host's tool timeout, see host_status)",
   auth_failed: "the CLI's credential was rejected; re-authenticate it (codex: codex logout && codex login; claude: /login). capability_check reports local login state only, not whether the service accepts it",
   budget_exceeded: "the Claude seat hit its USD cap; set FOREMAN_CLAUDE_ADVISOR_BUDGET_USD (max 25) or shrink the packet",
   model_rejected: "the CLI refused the pinned model; upgrade the CLI or pick a model the account tier allows",
 }
 
-const ADVISOR_CONFIGS: Record<AdvisorCli, { binaries: readonly string[]; buildArgs: () => string[]; prompt: "stdin" | "tempfile" }> = {
+/**
+ * 0.6.39: the Claude seat runs Fable 5.1 (probe 2026-09-27: the CLI reported serving
+ * claude-fable-5-1). When the CLI refuses it — not on this account or CLI version — the seat
+ * retries once on Opus, same CLI and vendor, and says so; provenance is unchanged.
+ */
+export const CLAUDE_ADVISOR_MODEL = "claude-fable-5-1"
+export const CLAUDE_FALLBACK_MODEL = "claude-opus-5-5"
+
+const ADVISOR_CONFIGS: Record<AdvisorCli, { binaries: readonly string[]; buildArgs: (model?: string) => string[]; prompt: "stdin" | "tempfile" }> = {
   claude: {
     binaries: ["claude"],
     prompt: "stdin",
-    buildArgs: () => [
+    buildArgs: (model = CLAUDE_ADVISOR_MODEL) => [
       "-p",
       "--no-session-persistence",
       "--permission-mode", "dontAsk",
-      "--model", "claude-fable-5",
+      "--model", model,
       "--effort", "max",
       "--tools=",
       "--max-budget-usd", String(claudeAdvisorBudgetUsd()),
@@ -192,6 +203,7 @@ export async function invokeAdvisor(
   cli: AdvisorCli,
   prompt: string,
   timeoutMs: number,
+  controls?: SpawnControls,
 ): Promise<ExternalCliResult> {
   const config = ADVISOR_CONFIGS[cli]
   if (!config) {
@@ -210,11 +222,14 @@ export async function invokeAdvisor(
 
   if (config.prompt === "tempfile") {
     return withTempPrompt(prompt, (filePath) =>
-      runExternalCli(plan.command, [...plan.args, ...built, cursorPromptArg(filePath)], timeoutMs)
+      runExternalCli(plan.command, [...plan.args, ...built, cursorPromptArg(filePath)], timeoutMs, controls)
     )
   }
 
-  return runWithStdin(plan.command, [...plan.args, ...built], prompt, timeoutMs)
+  const first = await runWithStdin(plan.command, [...plan.args, ...built], prompt, timeoutMs, undefined, controls)
+  if (cli !== "claude" || classifyAdvisorFailure(first) !== "model_rejected") return first
+  const retry = await runWithStdin(plan.command, [...plan.args, ...config.buildArgs(CLAUDE_FALLBACK_MODEL)], prompt, timeoutMs, undefined, controls)
+  return { ...retry, modelFallback: { from: CLAUDE_ADVISOR_MODEL, to: CLAUDE_FALLBACK_MODEL, reason: "model_rejected", first } }
 }
 
 /** Prefix runWithStdin puts on a stream it cut (lib/externalCli.ts). Stripped before the emptiness test. */

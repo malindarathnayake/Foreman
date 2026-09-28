@@ -129,6 +129,20 @@ describe("invoke_advisor writes a receipt and names it in the meta block", () =>
   }
   const codexStderr = (model: string) => `OpenAI Codex v0.153.4\n--------\nmodel: ${model}\nreasoning effort: xhigh\n--------\ntokens used\n12,345`
 
+  // Codex review of 0.6.39: a Fable→Opus fallback kept only the Opus receipt, with no requested
+  // model. Both attempts are now durable.
+  it("a Claude model fallback leaves a receipt for the refused attempt and records the model used", async () => {
+    await connect("codex")
+    const refused = { stdout: "", stderr: "There's an issue with the selected model", exitCode: 1, timedOut: false, truncated: false }
+    vi.mocked(invokeAdvisor).mockResolvedValue({ stdout: "Review.\n" + "y".repeat(400), stderr: "", exitCode: 0, timedOut: false, truncated: false,
+      modelFallback: { from: "claude-fable-5-1", to: "claude-opus-5-5", reason: "model_rejected", first: refused } })
+    const text = ((await client!.callTool({ name: "invoke_advisor", arguments: { cli: "claude", prompt: PROMPT, timeout_ms: 5000 } })).content as Array<{ text: string }>)[0].text
+    expect(text).toContain("model_fallback: claude-fable-5-1 -> claude-opus-5-5 (model_rejected)")
+    const all = [...(await readReceipts(receiptsPath)).receipts.values()]
+    expect(all.find((r) => r.failure_reason === "model_rejected")).toMatchObject({ model_requested: "claude-fable-5-1", exit_code: 1 })
+    expect(all.find((r) => r.failure_reason === null)).toMatchObject({ model_requested: "claude-opus-5-5", exit_code: 0 })
+  })
+
   it("a clean run: receipt with provider, served model, hash, bytes and tokens; meta carries seat_receipt and packet_sha256", async () => {
     await connect()
     vi.mocked(invokeAdvisor).mockResolvedValue({ stdout: "Here is my review.\n" + "y".repeat(400), stderr: codexStderr("gpt-6-astra"), exitCode: 0, timedOut: false, truncated: false })

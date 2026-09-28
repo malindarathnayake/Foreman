@@ -49,6 +49,8 @@ describe("invokeAdvisor", () => {
       ],
       "review this",
       12_345,
+      undefined,
+      undefined,
     )
   })
 
@@ -70,7 +72,7 @@ describe("invokeAdvisor", () => {
         "--permission-mode",
         "dontAsk",
         "--model",
-        "claude-fable-5",
+        "claude-fable-5-1",
         "--effort",
         "max",
         "--tools=",
@@ -81,6 +83,8 @@ describe("invokeAdvisor", () => {
       ],
       "review this adversarially",
       300_000,
+      undefined,
+      undefined,
     )
   })
 
@@ -106,5 +110,32 @@ describe("invokeAdvisor", () => {
     expect(promptArg).toContain("File:")
     expect(promptArg).toContain("prompt.txt")
     expect(promptArg).toBe(cursorPromptArg(promptArg.slice(promptArg.indexOf("File: ") + "File: ".length)))
+  })
+})
+
+// 0.6.39: the Claude seat runs Fable 5.1 and falls back to Opus once when the CLI refuses it.
+describe("Claude seat model fallback", () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(resolveInvocation).mockResolvedValue({ ok: true, plan: { command: "claude", args: [] } })
+  })
+
+  it("retries on Opus when Fable is not available, and says so", async () => {
+    vi.mocked(runWithStdin)
+      .mockResolvedValueOnce({ stdout: "", stderr: "There's an issue with the selected model (claude-fable-5-1). It may not exist or you may not have access to it.", timedOut: false, exitCode: 1, truncated: false })
+      .mockResolvedValueOnce(SUCCESS)
+    const r = await invokeAdvisor("claude", "review this", 60_000)
+    expect(vi.mocked(runWithStdin)).toHaveBeenCalledTimes(2)
+    expect(vi.mocked(runWithStdin).mock.calls[0][1]).toContain("claude-fable-5-1")
+    expect(vi.mocked(runWithStdin).mock.calls[1][1]).toContain("claude-opus-5-5")
+    expect(r.modelFallback).toMatchObject({ from: "claude-fable-5-1", to: "claude-opus-5-5", reason: "model_rejected", first: { exitCode: 1 } })
+    expect(r.exitCode).toBe(0)
+  })
+
+  it("does not fall back on any other failure", async () => {
+    vi.mocked(runWithStdin).mockResolvedValueOnce({ stdout: "", stderr: "Error: Exceeded USD budget (1)", timedOut: false, exitCode: 1, truncated: false })
+    const r = await invokeAdvisor("claude", "review this", 60_000)
+    expect(vi.mocked(runWithStdin)).toHaveBeenCalledTimes(1)
+    expect(r.modelFallback).toBeUndefined()
   })
 })

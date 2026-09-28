@@ -9,7 +9,9 @@ import type { HostId } from "../lib/hostProfiles.js"
 import { resolveModelRank, type ModelRank } from "../lib/modelRank.js"
 import { softLimitWarning } from "../lib/softLimits.js"
 import { applySessionHygiene, hygieneAfterLedgerWrite } from "../lib/sessionHygiene.js"
-import { delegationBaseline, type RepoGuardPaths } from "./repoGuard.js"
+import { delegationBaseline, handleRepoGuard, type RepoGuardPaths } from "./repoGuard.js"
+import { preflightCheck } from "./preflightCheck.js"
+import { readLedger } from "../lib/ledger.js"
 import { findPreflight, preflightPathFor } from "../lib/preflight.js"
 import type { RepoSnapshot } from "../types.js"
 
@@ -27,6 +29,42 @@ export async function handleWriteLedger(filePath: string, rawInput: unknown, hos
   }
   // 0.6.20: soft-limited fields the schema cut are reported, never refused.
   const truncated = softLimitWarning(rawInput, parsed, LedgerSoftLimits[parsed.operation] ?? [])
+  // 0.6.39: data.preflight_check runs preflight_check in this write (86 of 94 delegations in the
+  // field followed it within 60 s). A failing preflight refuses the delegation with its report.
+  if (parsed.operation === "set_unit_status" && parsed.data.s === "delegated" && parsed.data.preflight_check) {
+    if (!parsed.data.brief || parsed.data.brief.trim().length < 20) {
+      throw new Error("PREFLIGHT REQUIRED: data.preflight_check needs the brief in data.brief (min 20 chars) — the check runs against the text the worker will get.")
+    }
+    const pc = parsed.data.preflight_check
+    const report = await preflightCheck({
+      phase: parsed.phase, unit_id: parsed.unit_id, brief: parsed.data.brief, symbols: pc.symbols,
+      files: pc.files ?? [], type_names: pc.type_names ?? [], introduces: pc.introduces ?? [], creates: pc.creates ?? [],
+      ...(pc.correcting_attempt !== undefined ? { correcting_attempt: pc.correcting_attempt } : {}),
+      ...(context?.projectRoot ? { repo_root: context.projectRoot } : {}),
+      // The same spec the server checks contracts against, relative to the project root.
+      ...(context?.specPath ? { spec_path: path.relative(context.projectRoot ?? process.cwd(), context.specPath).split(path.sep).join("/") } : {}),
+    } as never, preflightPathFor(filePath), filePath, context?.specPath)
+    const status = /^status: (\S+)/m.exec(report)?.[1]
+    const hash = /^brief_hash: ([0-9a-f]{16})/m.exec(report)?.[1]
+    if (status !== "pass" || !hash) {
+      throw new Error(`PREFLIGHT FAILED: nothing was recorded; fix what the preflight reports and delegate again.\n${report}`)
+    }
+    parsed.data.preflight = { ...(parsed.data.preflight ?? {}), symbols_grepped: pc.symbols, self_consistent: true, receipt: hash }
+  }
+  // 0.6.39 (field data: compare was followed by the pass verdict within 60 s in 36 of 38 cases):
+  // a pass verdict on an attempt whose baseline has no comparison yet runs the comparison
+  // first. The protocol still compares BEFORE the tests; this closes the gap when it was not.
+  let compareNote: string | undefined
+  if (parsed.operation === "set_verdict" && parsed.data.v === "pass" && context?.guardPaths) {
+    const current = await readLedger(filePath, { readOnly: true })
+    const latest = current.phases[parsed.phase]?.units[parsed.unit_id]?.delegations?.at(-1)
+    if (latest?.guard?.snapshot && latest.guard.result === undefined) {
+      // The baseline's own root (0.6.39, Codex review): a guard taken with project_dir elsewhere
+      // must be compared there, not in the server's directory.
+      const out = await handleRepoGuard({ operation: "compare", phase: parsed.phase, unit_id: parsed.unit_id, project_dir: latest.guard.snapshot.root } as never, context.guardPaths)
+      compareNote = `guard compared at verdict: ${/^status: (\S+)/m.exec(out)?.[1] ?? "unknown"}`
+    }
+  }
   // 0.6.36: data.guard takes the repository baseline with the delegation. Computed before the
   // write (a git read, no lock) and attached inside it; a refused baseline refuses the delegation.
   let guardSnapshot: RepoSnapshot | undefined
@@ -53,7 +91,7 @@ export async function handleWriteLedger(filePath: string, rawInput: unknown, hos
     timestamp: ledger.ts,
     status: "ok",
   }
-  const combined = [warning, truncated, guardNote].filter(Boolean).join(" | ")
+  const combined = [warning, truncated, guardNote, compareNote].filter(Boolean).join(" | ")
   if (combined) result.warning = combined
   // 0.6.21: a delegation's attempt id is what the worker's heartbeat and close_attempt name.
   if (parsed.operation === "set_unit_status" && parsed.data.s === "delegated") {

@@ -927,3 +927,14 @@ describe("CCR stats evidence (5b)", () => {
     expect(drainCcrStats()).toEqual({})
   })
 })
+
+// 0.6.39: one compression of this fixture took ~5 s standalone and ~24 s under full-suite
+// load (a string-based popcount in the vendored clusterer, SYNC.md divergence #2). ~0.8 s now.
+describe("compression speed", () => {
+  it("compresses the 5,000-line fixture well inside the per-test budget", () => {
+    const t = Date.now()
+    const out = maybeCompress("run_tests", SYNTHETIC_LOG)
+    expect(out).toContain("<<ccr:")
+    expect(Date.now() - t).toBeLessThan(4000)
+  })
+})

@@ -545,6 +545,20 @@ const SetUnitStatusInput = z.object({
     // delegation — one call instead of delegation + repo_guard snapshot. Same fields and rules
     // as repo_guard snapshot; a correction inherits its from_attempt set when allowed_files is
     // omitted. Outside a git work tree it records nothing, exactly as the explicit call.
+    // 0.6.39 (field data: preflight_check was followed by the delegation within 60 s in 86 of
+    // 94 cases): run preflight_check in this write. Same checks; a failing preflight refuses the
+    // delegation with its full report, and a passing one supplies data.preflight.
+    preflight_check: z.strictObject({
+      symbols: z.array(z.string().trim().min(1).max(200)).min(1).max(100),
+      files: z.array(z.string().max(4096)).max(100).optional(),
+      type_names: z.array(z.string().trim().min(2).max(200)).max(20).optional(),
+      introduces: z.array(z.string().trim().min(2).max(200)).max(50).optional(),
+      creates: z.array(z.strictObject({
+        file: z.string().min(1).max(4096),
+        tests: z.array(z.string().trim().regex(/^[A-Za-z_][A-Za-z0-9_ .'-]{1,199}$/)).max(50).default([]),
+      })).max(50).optional(),
+      correcting_attempt: z.number().int().min(1).optional(),
+    }).optional(),
     guard: z.strictObject({
       allowed_files: z.array(z.string().max(4096)).max(100).optional(),
       files: z.array(z.string().max(4096)).max(100).optional(),

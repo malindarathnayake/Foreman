@@ -145,3 +145,27 @@ describe("correction briefs and directive coverage", () => {
     } finally { await fsp.rm(root, { recursive: true, force: true }) }
   })
 })
+
+// 0.6.39 (field report 2026-09-27, item 5): the refusal named the rank while the phase's
+// security_boundary would have refused any correction; and claude-opus-5-5 resolved to unknown.
+import { resolveModelRank } from "../src/lib/modelRank.js"
+
+describe("correction refusals name the real cause", () => {
+  it("claude-opus-5-5 is middle rank", () => {
+    expect(resolveModelRank("claude-opus-5-5").weight).toBe(2)
+  })
+
+  it("a security_boundary phase refuses a correction before the rank check", async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "fr-sec-"))
+    try {
+      const ledger = path.join(root, "ledger.json")
+      const w = (op: Record<string, unknown>, rank = resolveModelRank("sonnet")) =>
+        writeLedger(ledger, op as never, undefined, undefined, "claude-code", rank)
+      await w({ operation: "set_phase_scope", phase: "p1", data: { has_tests: true, has_api: false, has_build: true, security_boundary: true } })
+      await w({ operation: "set_unit_status", phase: "p1", unit_id: "u1", data: { s: "delegated", brief: "Implement the unit as the spec says.", preflight: { symbols_grepped: 1, self_consistent: true } } })
+      await expect(w({ operation: "set_unit_status", phase: "p1", unit_id: "u1", data: {
+        s: "delegated", brief: "Fix the assertion in the unit test.", preflight: { symbols_grepped: 1, self_consistent: true },
+        correction: { kind: "bounded", from_attempt: 1, files: ["a.ts"] } } })).rejects.toThrow(/security_boundary phases require the normal workflow/)
+    } finally { await fsp.rm(root, { recursive: true, force: true }) }
+  })
+})

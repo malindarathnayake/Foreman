@@ -120,7 +120,7 @@ When preflight or validation shows the SPEC is wrong and an accepted decision or
 
 The worker brief MUST contain the Shared-Tree Safety paragraph above verbatim. If accepted uncommitted work is present and the host cannot prevent Git mutations, use a patch-only worker path or stop for owner direction. Never stash, commit, reset, checkout, clean, or move the user's work to make delegation convenient.
 
-Record the delegation in the ledger BEFORE spawning. This is mechanically enforced — a `pass` verdict is rejected unless the unit was first set to `delegated` with a brief. Also record the cost `tier` the worker runs at and a short `route_reason` — audit evidence, not a gate:
+Record the delegation in the ledger BEFORE spawning. One write can carry the whole preamble: `data.brief` plus `preflight_check: { symbols, files, creates }` runs the preflight inside the delegation (a failing preflight refuses it with the full report, nothing recorded), and `guard: { files, allowed_files }` takes the baseline. At the pass verdict, an attempt with no comparison yet is compared first — still compare BEFORE running the tests, so a tampered test config never runs. This is mechanically enforced — a `pass` verdict is rejected unless the unit was first set to `delegated` with a brief. Also record the cost `tier` the worker runs at and a short `route_reason` — audit evidence, not a gate:
 ```
 mcp__foreman__write_ledger({ operation: "set_unit_status", phase, unit_id, data: { s: "delegated", tier: "standard", route_reason: "<why this tier fits this unit>", preflight: { symbols_grepped: <N from Step 4.5>, self_consistent: true, telemetry: "checked" | "n/a" } } })
 ```

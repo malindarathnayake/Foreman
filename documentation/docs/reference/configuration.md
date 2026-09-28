@@ -32,6 +32,7 @@ Any other flag prints usage. With no flag the process serves MCP on stdin and st
 | `FOREMAN_TEST_ALLOWLIST` | Extra `run_tests` runners, comma separated | none |
 | `FOREMAN_BRIEF_MAX_BYTES` | `invoke_worker` brief plus file payload cap | 262144 |
 | `FOREMAN_WORKER_RESPONSE_MAX_BYTES` | `invoke_worker` response cap | see tool description |
+| `FOREMAN_WORKER_TOTAL_TIMEOUT_MS` | Whole-call deadline for `invoke_worker` and `invoke_council` HTTP calls, besides the connect and gap-between-chunks budgets | 1800000 (30 min) |
 | `FOREMAN_WORKER_CONNECT_TIMEOUT_MS`, `FOREMAN_WORKER_ACTIVITY_TIMEOUT_MS` | `invoke_worker` two-phase timeouts | see tool description |
 | `FOREMAN_COUNCIL_MAX_CALLS` | Cap on seats times lenses per `invoke_council` call | see tool description |
 | `FOREMAN_COUNCIL_EFFORT_MAX_TOKENS`, `FOREMAN_COUNCIL_PACKET_MAX_BYTES`, `FOREMAN_COUNCIL_RESPONSE_MAX_BYTES` | Council budgets | see tool description |

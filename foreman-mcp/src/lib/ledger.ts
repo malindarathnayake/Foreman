@@ -1,5 +1,6 @@
 import fs from "fs/promises"
 import path from "path"
+import { changedPins, unitMovedAfter } from "./reviewPins.js"
 import { createHash } from "crypto"
 import type { RepoSnapshot, CapGrant, Delegation, DelegationGuard, EscapeClass, ForwardObligation, FrozenCheckpoint, GateEvidence, LedgerFile, Phase, PhaseReview, ReviewFinding, Unit, WriteLedgerInput } from "../types.js"
 import type { HostId } from "./hostProfiles.js"
@@ -591,6 +592,11 @@ async function applyOperation(
         // The correction checks read delegations, the guard and the phase scope — never
         // rej[], the counters or v — so they run before the inline rejection mutates those.
         if (data.correction) {
+          // 0.6.39 (field report 2026-09-27): checked FIRST. It refuses every correction whatever
+          // the rank, and running the rank check before it named the wrong cause.
+          if (ledger.phases[phase].scope?.hot_path || ledger.phases[phase].scope?.security_boundary) {
+            throw new Error("RANK CORRECTION: hot_path or security_boundary phases require the normal workflow (a fresh worker per attempt), whatever the rank.")
+          }
           const permission = data.correction.kind === "mechanical" ? "reuse_worker_mechanical" : "reuse_worker_bounded"
           if (!modelRank.permissions[permission]) {
             // 0.6.38 (field report 2026-09-27): the refusal named only the rank, so a rank
@@ -620,9 +626,6 @@ async function applyOperation(
           if (events.some((event) => event.phase === boundIdentifier(phase) && event.unit_id === boundIdentifier(unit_id) &&
             event.attempt === previous.attempt)) {
             throw new Error("RANK CORRECTION: invoke_worker attempts cannot be resumed as native workers; use the normal workflow.")
-          }
-          if (ledger.phases[phase].scope?.hot_path || ledger.phases[phase].scope?.security_boundary) {
-            throw new Error("RANK CORRECTION: hot_path or security_boundary phases require the normal workflow.")
           }
           if (previous.guard?.result !== "ok" || previous.guard.override || unit.delegations?.some((d) => d.guard?.result === "violation" && !d.guard.resolved)) {
             throw new Error("RANK CORRECTION: the previous worker attempt needs a cleared ownership guard.")
@@ -1593,7 +1596,37 @@ async function applyOperation(
         // 0.6.35 (Codex review of the 2026-09-25 field report): judged from when the seat
         // STARTED. The completion time let a unit changed mid-run pass as reviewed.
         const seatStart = receipt.started_ts ?? receipt.ts
-        if (seatStart < newest) {
+        // 0.6.39 (field report 2026-09-27): a pinned receipt whose units cover this record's
+        // data.units is judged per unit — other units may move during the seat — and every
+        // pinned file must still hash the same. Needs the project root to re-hash; without it,
+        // or without pins or data.units, the phase-wide rule below applies unchanged.
+        // 0.6.39 (Codex review): the pins must be for THIS phase, and each covered unit must still
+        // be on the attempt it was pinned at — a delegation during hashing is movement too.
+        const pinScoped = receipt.pins !== undefined && receipt.pin_units !== undefined && scope !== undefined &&
+          receipts?.projectRoot !== undefined && receipt.pin_phase === phase && receipt.pin_attempts !== undefined &&
+          scope.every((u) => receipt.pin_units!.includes(u) && receipt.pin_attempts![u] === p.units[u]?.attempt_seq)
+        // A pinned receipt describes one phase and one attempt per unit. Bound anywhere else it
+        // reviewed something else: refuse, never fall back to the phase-wide rule (which would
+        // accept an attempt delegated between hashing and the start stamp).
+        if (receipt.pins !== undefined && scope !== undefined) {
+          if (receipt.pin_phase !== undefined && receipt.pin_phase !== phase) {
+            throw new Error(`SEAT RECEIPT: '${receipt.id}' was pinned for phase '${receipt.pin_phase}', not '${phase}'; it reviewed other files. Run the seat again.`)
+          }
+          const drift = scope.filter((u) => receipt.pin_units?.includes(u) && receipt.pin_attempts !== undefined && receipt.pin_attempts[u] !== p.units[u]?.attempt_seq)
+          if (drift.length > 0) {
+            throw new Error(`SEAT RECEIPT: '${receipt.id}' pinned unit(s) ${drift.join(", ")} at an earlier attempt; they moved before the review was recorded. Run the seat again.`)
+          }
+        }
+        if (pinScoped) {
+          const moved = scope!.filter((u) => unitMovedAfter(p.units[u], seatStart))
+          if (moved.length > 0) {
+            throw new Error(`SEAT RECEIPT: '${receipt.id}' started at ${seatStart}, and unit(s) ${moved.join(", ")} it covers moved after that (a delegation, direct fix or verdict); it reviewed old code. Run the seat again.`)
+          }
+          const changed = await changedPins(receipt.pins!, receipts!.projectRoot!)
+          if (changed.length > 0) {
+            throw new Error(`SEAT RECEIPT: '${receipt.id}' pinned file(s) changed since the seat started: ${changed.slice(0, 5).join(", ")}${changed.length > 5 ? ` (+${changed.length - 5} more)` : ""}; it reviewed different bytes. Run the seat again.`)
+          }
+        } else if (seatStart < newest) {
           throw new Error(`SEAT RECEIPT: '${receipt.id}' started at ${seatStart}, before the newest verdict or attempt in phase '${phase}' (${newest}); it reviewed old code. Run the seat again.`)
         }
         provenance = {

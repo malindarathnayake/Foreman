@@ -94,7 +94,9 @@ describe("invokeAdvisor — gemini arguments", () => {
       "gemini",
       ["-p", "", "-m", "gemini-3.1-pro-preview", "--approval-mode", "plan", "--output-format", "json"],
       "review this",
-      1_000
+      1_000,
+      undefined,
+      undefined,
     )
   })
 })
