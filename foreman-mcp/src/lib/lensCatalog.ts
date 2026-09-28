@@ -14,6 +14,7 @@
 // Bump LENS_CATALOG_VERSION on any card edit — recorded reviews cite it, so a silent card change
 // would make two differently-prompted reviews look identical in the ledger.
 
+import { reportEconomyInstruction, resolveReportMaxLines } from "./outputBudget.js"
 export const LENS_CATALOG_VERSION = "1"
 
 export const LENS_IDS = [
@@ -225,7 +226,7 @@ export const SEAT_RESPONSE_SCHEMA = {
 } as const
 
 /** Builds the full system prompt for one seat. Pure — same inputs give byte-identical output. */
-export function buildSeatPrompt(lens: LensCard): string {
+export function buildSeatPrompt(lens: LensCard, maxLines?: number): string {
   return [
     SEAT_OUTPUT_CONTRACT,
     "",
@@ -235,6 +236,7 @@ export function buildSeatPrompt(lens: LensCard): string {
     lens.card,
     "",
     "Answer only your lens question. Findings that belong to another lens are noise here.",
+    reportEconomyInstruction(resolveReportMaxLines(maxLines)),
   ].join("\n")
 }
 

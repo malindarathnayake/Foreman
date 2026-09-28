@@ -8,12 +8,16 @@ import { drainCcrStats } from "../lib/compression.js"
 import type { HostId } from "../lib/hostProfiles.js"
 import { resolveModelRank, type ModelRank } from "../lib/modelRank.js"
 import { softLimitWarning } from "../lib/softLimits.js"
+import { applySessionHygiene, hygieneAfterLedgerWrite } from "../lib/sessionHygiene.js"
+import { delegationBaseline, type RepoGuardPaths } from "./repoGuard.js"
+import { findPreflight, preflightPathFor } from "../lib/preflight.js"
+import type { RepoSnapshot } from "../types.js"
 
 /**
  * Validates input with Zod schema, delegates to lib/ledger.ts,
  * returns TOON key/value confirmation.
  */
-export async function handleWriteLedger(filePath: string, rawInput: unknown, host: HostId = "claude-code", modelRank: ModelRank = resolveModelRank(), context?: { specPath?: string; projectRoot?: string }): Promise<string> {
+export async function handleWriteLedger(filePath: string, rawInput: unknown, host: HostId = "claude-code", modelRank: ModelRank = resolveModelRank(), context?: { specPath?: string; projectRoot?: string; guardPaths?: RepoGuardPaths }): Promise<string> {
   let parsed: WriteLedgerInput
   try {
     parsed = WriteLedgerInputSchema.parse(rawInput)
@@ -23,7 +27,23 @@ export async function handleWriteLedger(filePath: string, rawInput: unknown, hos
   }
   // 0.6.20: soft-limited fields the schema cut are reported, never refused.
   const truncated = softLimitWarning(rawInput, parsed, LedgerSoftLimits[parsed.operation] ?? [])
-  const { ledger, warning } = await writeLedger(filePath, parsed, foldCcrStats, undefined, host, modelRank, undefined, context)
+  // 0.6.36: data.guard takes the repository baseline with the delegation. Computed before the
+  // write (a git read, no lock) and attached inside it; a refused baseline refuses the delegation.
+  let guardSnapshot: RepoSnapshot | undefined
+  let guardNote: string | undefined
+  if (parsed.operation === "set_unit_status" && parsed.data.s === "delegated" && parsed.data.guard) {
+    // 0.6.38: files promised in the preflight record's creates join the authorized set.
+    const receipt = parsed.data.preflight?.receipt
+    const record = receipt ? await findPreflight(preflightPathFor(filePath), receipt, parsed.unit_id, parsed.phase) : null
+    const promised = (record?.forward ?? []).map((f) => f.file)
+    const prep = await delegationBaseline(context?.guardPaths ?? { ledgerPath: filePath }, parsed.phase, parsed.unit_id, parsed.data.guard, parsed.data.correction?.from_attempt, context?.projectRoot, promised)
+    if (prep.status === "refused") throw new Error(`GUARD BLOCKED: the delegation's baseline was refused, so nothing was recorded.\n${prep.text}`)
+    if (prep.status === "n/a") guardNote = "no guard recorded (not a git work tree); the verdict is not gated on one"
+    else if (prep.status === "ok") guardSnapshot = prep.snapshot
+  }
+  const { guardPaths: _paths, ...ledgerContext } = context ?? {}
+  const { ledger, warning } = await writeLedger(filePath, parsed, foldCcrStats, undefined, host, modelRank, undefined,
+    context || guardSnapshot ? { ...ledgerContext, ...(guardSnapshot ? { guardSnapshot } : {}) } : undefined)
 
   // Return confirmation with key details
   const result: Record<string, string> = {
@@ -33,11 +53,14 @@ export async function handleWriteLedger(filePath: string, rawInput: unknown, hos
     timestamp: ledger.ts,
     status: "ok",
   }
-  const combined = [warning, truncated].filter(Boolean).join(" | ")
+  const combined = [warning, truncated, guardNote].filter(Boolean).join(" | ")
   if (combined) result.warning = combined
   // 0.6.21: a delegation's attempt id is what the worker's heartbeat and close_attempt name.
   if (parsed.operation === "set_unit_status" && parsed.data.s === "delegated") {
     result.attempt = String(ledger.phases[parsed.phase]?.units[parsed.unit_id]?.attempt_seq ?? 0)
+    if (guardSnapshot) {
+      result.guard = `baseline recorded (${guardSnapshot.allowed.length} authorized file(s), hash ${guardSnapshot.hash}); spawn the worker, then repo_guard compare`
+    }
   }
 
   // ─── R3 sidecar hook (Unit 4g) ────────────────────────────────────────────
@@ -47,7 +70,8 @@ export async function handleWriteLedger(filePath: string, rawInput: unknown, hos
   // ledger write's own confirmation.
   await appendTerminalSidecarEvent(filePath, parsed, result)
 
-  return toKeyValue(result)
+  const hygiene = hygieneAfterLedgerWrite(parsed.operation, parsed.data, ledger)
+  return applySessionHygiene(toKeyValue(result), hygiene.action, host, hygiene.reason)
 }
 
 // ─── S6 CCR evidence fold (Unit 5b) ────────────────────────────────────────────

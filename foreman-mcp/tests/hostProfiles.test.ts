@@ -6,6 +6,7 @@ import {
   KNOWN_HOSTS,
   type HostId,
 } from "../src/lib/hostProfiles.js"
+import { advisorClisForHost, EXTERNAL_ADVISOR_CLIS, ADVISOR_CLIS } from "../src/lib/advisorCli.js"
 
 describe("hostProfiles — resolveHost precedence", () => {
   it("returns claude-code when neither flag nor env is set", () => {
@@ -82,15 +83,36 @@ describe("hostProfiles — getProfile", () => {
     expect(profile.placeholders.advisor_b).toContain('cli: "gemini"')
   })
 
-  it("returns cursor profile with Task subagent placeholders", () => {
+  it("returns cursor profile with Agent CLI primary and Task fallback", () => {
     const profile = getProfile("cursor")
     expect(profile.id).toBe("cursor")
     expect(profile.displayName).toBe("Cursor")
+    expect(profile.placeholders.worker_invoke).toContain("agent")
+    expect(profile.placeholders.worker_invoke).toContain("cursor-agent")
+    expect(profile.placeholders.worker_invoke).toContain("--force")
+    expect(profile.placeholders.worker_invoke).toContain("approve-mcps")
     expect(profile.placeholders.worker_invoke).toContain("Task")
-    expect(profile.placeholders.worker_invoke).toContain("claude-4.6-sonnet-medium-thinking")
-    expect(profile.placeholders.advisor_a).toContain("gpt-5.6-sol-ultra")
-    expect(profile.placeholders.advisor_b).toContain("gemini-3.1-pro")
-    expect(profile.placeholders.advisor_b).toContain("composer-2-fast")
+    expect(profile.placeholders.worker_invoke).toContain("cursor_agents_init")
+    expect(profile.placeholders.worker_invoke).toContain("foreman-worker-light")
+    expect(profile.placeholders.worker_invoke).toContain("foreman-worker-heavy")
+    expect(profile.placeholders.worker_invoke).not.toContain("claude-4.6-sonnet-medium-thinking")
+    expect(profile.placeholders.worker_fanout).toContain("cursor_agents_init")
+    expect(profile.placeholders.advisor_a).toContain('cli: "cursor"')
+    expect(profile.placeholders.advisor_a).not.toContain("gpt-5.6-sol-ultra")
+    expect(profile.placeholders.advisor_b).toContain("independent vendor")
+    expect(profile.placeholders.advisor_b).not.toContain("gemini-3.1-pro")
+    expect(profile.placeholders.advisor_checks).toContain('cli: "cursor"')
+  })
+
+  it("claude-code and codex profiles do not mention the Cursor Agent CLI", () => {
+    for (const id of ["claude-code", "codex"] as const) {
+      const blob = Object.values(getProfile(id).placeholders).join("\n")
+      expect(blob, id).not.toContain("cursor-agent")
+      expect(blob, id).not.toContain('cli: "cursor"')
+      expect(blob, id).not.toContain("agent -p")
+    }
+    expect(getProfile("claude-code").placeholders.advisor_a).toContain('cli: "codex"')
+    expect(getProfile("codex").placeholders.advisor_a).toContain('cli: "claude"')
   })
 
   it("codex profile uses native subagents and Claude/Gemini advisors", () => {
@@ -125,6 +147,8 @@ describe("hostProfiles — getProfile", () => {
       "advisor_b",
       "advisor_fallback",
       "autonomy",
+      "session_compact",
+      "session_clear",
     ]
     for (const id of KNOWN_HOSTS) {
       const profile = getProfile(id as HostId)
@@ -202,5 +226,15 @@ describe("hostProfiles — getProfile", () => {
     } finally {
       spy.mockRestore()
     }
+  })
+})
+
+describe("advisorClisForHost — Cursor CLI is not on Claude Code or Codex", () => {
+  it("keeps claude|codex|gemini on every host except cursor", () => {
+    expect([...advisorClisForHost("claude-code")]).toEqual([...EXTERNAL_ADVISOR_CLIS])
+    expect([...advisorClisForHost("codex")]).toEqual([...EXTERNAL_ADVISOR_CLIS])
+    expect([...advisorClisForHost("generic")]).toEqual([...EXTERNAL_ADVISOR_CLIS])
+    expect([...advisorClisForHost("cursor")]).toEqual([...ADVISOR_CLIS])
+    expect(EXTERNAL_ADVISOR_CLIS).not.toContain("cursor")
   })
 })

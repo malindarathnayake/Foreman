@@ -106,6 +106,10 @@ export interface DelegationGuard {
   checked_ts?: string
   /** A pass verdict taken past an uncleared guard by explicit user approval. */
   override?: { ts: string }
+  /** 0.6.34: repo-relative paths the violation named, so a later attempt can check they were restored. */
+  violation_paths?: string[]
+  /** 0.6.34: a later attempt's comparison found this violation's paths back at this baseline. */
+  resolved?: { ts: string; by_attempt: number }
 }
 
 /** One delegation attempt. Appended per (re-)delegation so retry history survives the `w` overwrite. */
@@ -311,6 +315,13 @@ export interface ReviewFinding {
   line: string
   description: string
   classification?: "confirmed" | "rejected" | "unverified"
+  /**
+   * 0.6.36: the registered units this finding is about (every unit that owns an affected
+   * file, for a shared-file or cross-unit finding). With it, the finding blocks only while
+   * its record still carries one of these units; without it, it blocks while the record
+   * carries any unit, as before.
+   */
+  units?: string[]
 }
 
 /** A durable record of an advisor review at a phase checkpoint. */
@@ -368,7 +379,7 @@ export type Provider = "anthropic" | "openai" | "google" | "unknown"
 /** Server-authored provenance copied from a seat receipt at record_review (slice 4). */
 export interface SeatProvenance {
   receipt: string
-  cli: "claude" | "codex" | "gemini" | "council"
+  cli: "claude" | "codex" | "gemini" | "cursor" | "council"
   provider: Provider
   model_served: string
   reasoning_effort?: string
@@ -468,6 +479,8 @@ export interface Phase {
   review_override?: { ts: string }
   /** Gate passed via data.user_override while the current reviews carried `findings` confirmed findings (durable, auditable). Absent when no confirmed finding was waived. */
   confirmed_override?: { ts: string; findings: number }
+  /** 0.6.36: confirmed LOW findings the gate passed over — advisory, not resolved. */
+  advisory_findings?: { ts: string; findings: string[] }
   /** Gate passed via data.user_override while `reviews` current reviews were partial, failed, or silent without an examined list (durable, auditable). */
   incomplete_override?: { ts: string; reviews: number }
   /** Counted gate passes, newest last, ≤ GATE_HISTORY (0.6.19). An idempotent re-pass stamps nothing. */
@@ -528,6 +541,15 @@ const SetUnitStatusInput = z.object({
       files: z.array(z.string().trim().min(1).max(4096)).min(1).max(50),
     }).optional(),
     user_override: z.boolean().optional(),
+    // 0.6.36 (field report 2026-09-27): the repository baseline taken in the same write as the
+    // delegation — one call instead of delegation + repo_guard snapshot. Same fields and rules
+    // as repo_guard snapshot; a correction inherits its from_attempt set when allowed_files is
+    // omitted. Outside a git work tree it records nothing, exactly as the explicit call.
+    guard: z.strictObject({
+      allowed_files: z.array(z.string().max(4096)).max(100).optional(),
+      files: z.array(z.string().max(4096)).max(100).optional(),
+      max_entries: z.number().int().min(1).max(5000).optional(),
+    }).optional(),
     // Optional at the schema so non-delegating statuses need nothing; the ledger
     // refuses s:'delegated' without it (see PREFLIGHT REQUIRED in lib/ledger.ts).
     preflight: z.object({
@@ -654,6 +676,10 @@ const ReviewFindingSchema = z.object({
 // required on every recorded finding; the parser's output (above) stays unclassified.
 const ClassifiedFindingSchema = ReviewFindingSchema.extend({
   classification: z.enum(["confirmed", "rejected", "unverified"]),
+  // 0.6.36 (field report 2026-09-27): an old whole-phase record kept blocking on a finding
+  // about u1 because it still carried unchanged u2. Naming the affected units ties the
+  // finding's life to those units' coverage.
+  units: z.array(DeclaredUnitId).min(1).max(50).optional(),
 })
 
 // v0.6.5 (Codex, field feedback round 5): a pit-boss re-verification of direct fixes,

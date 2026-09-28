@@ -47,7 +47,9 @@ import {
   buildSeatPrompt,
   type LensId,
 } from "../lib/lensCatalog.js"
+import { reportEconomyInstruction, resolveReportMaxLines } from "../lib/outputBudget.js"
 import { councilTracer } from "../lib/councilTrace.js"
+import type { HostId } from "../lib/hostProfiles.js"
 
 const DEFAULT_PACKET_MAX_BYTES = 262144
 const DEFAULT_MAX_CALLS = 12
@@ -88,6 +90,8 @@ export interface InvokeCouncilDeps {
   envDir?: string
   /** Override for the home credential store. Test seam. */
   credentialsPath?: string
+  /** Host slash-command names for the post-council compact yield. */
+  host?: HostId
 }
 
 // ─── Seat reply schema (mirrors SEAT_RESPONSE_SCHEMA) ────────────────────────────
@@ -455,6 +459,7 @@ async function runCrossExam(
     "",
     "Default to \"uncertain\" over \"stands\" when you cannot locate the defect yourself.",
     "Agreement without independent confirmation is worthless here — do not rubber-stamp.",
+    reportEconomyInstruction(resolveReportMaxLines()),
   ].join("\n")
 
   const body = JSON.stringify({
@@ -499,6 +504,9 @@ export async function handleInvokeCouncil(rawInput: unknown, deps: InvokeCouncil
     return `status: error\n\ninvalid invoke_council input: ${parsedInput.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`
   }
   const input = parsedInput.data
+  // 0.6.35: every seat's receipt carries the run start, so freshness is judged from when the
+  // seats read the packet, not from when they finished.
+  const startedTs = new Date().toISOString()
 
   const envDir = deps.envDir ?? process.cwd()
   const councilResult = await loadCouncilConfig({
@@ -686,6 +694,7 @@ export async function handleInvokeCouncil(rawInput: unknown, deps: InvokeCouncil
       const tokens = mine.reduce((a, x) => a + (x.tokensIn ?? 0) + (x.tokensOut ?? 0), 0)
       try {
         const receipt = await appendReceipt(deps.receiptsPath, {
+          started_ts: startedTs,
           cli: "council", provider: providerFromModelId(seatCfg.model), model_requested: seatCfg.model, model_served: seatCfg.model,
           ...(seatCfg.reasoningEffort !== undefined ? { reasoning_effort: seatCfg.reasoningEffort } : {}),
           exit_code: failed.length === 0 ? 0 : 1, failure_reason: failed.length === 0 ? null : "nonzero_exit",

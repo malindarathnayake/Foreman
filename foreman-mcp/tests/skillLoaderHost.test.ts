@@ -32,8 +32,10 @@ describe("renderHostPlaceholders — direct unit", () => {
 
   it("substitutes worker_invoke for cursor", () => {
     const out = renderHostPlaceholders("before {{worker_invoke}} after", "cursor")
+    expect(out).toContain("agent")
     expect(out).toContain("Task")
-    expect(out).toContain("claude-4.6-sonnet-medium-thinking")
+    expect(out).toContain("foreman-worker")
+    expect(out).toContain("cursor_agents_init")
     expect(out).not.toContain("{{worker_invoke}}")
   })
 
@@ -62,14 +64,16 @@ describe("renderHostPlaceholders — direct unit", () => {
     expect(out).toContain("max_threads")
   })
 
-  it("substitutes advisor_a / advisor_b for cursor with model slugs", () => {
+  it("substitutes advisor_a / advisor_b for cursor with Agent CLI, not Task slugs", () => {
     const out = renderHostPlaceholders(
       "A: {{advisor_a}}\nB: {{advisor_b}}",
       "cursor"
     )
-    expect(out).toContain("gpt-5.6-sol-ultra")
-    expect(out).toContain("gemini-3.1-pro")
-    expect(out).toContain("composer-2-fast")
+    expect(out).toContain('cli: "cursor"')
+    expect(out).toContain("independent vendor")
+    expect(out).not.toContain("gpt-5.6-sol-ultra")
+    expect(out).not.toContain("gemini-3.1-pro")
+    expect(out).not.toContain("composer-2-fast")
   })
 
   it("substitutes Claude Fable and Gemini advisors for codex", () => {
@@ -138,7 +142,8 @@ describe("loadSkill — host placeholder integration", () => {
 
     const result = await loadSkill("test-skill", bundledDir, "cursor")
     expect(result.content).toContain("Task")
-    expect(result.content).toContain("claude-4.6-sonnet-medium-thinking")
+    expect(result.content).toContain("foreman-worker")
+    expect(result.content).toContain("cursor_agents_init")
     expect(result.content).not.toContain("{{worker_invoke}}")
   })
 
@@ -160,7 +165,7 @@ describe("loadSkill — host placeholder integration", () => {
 
     const cursorResult = await loadSkill("test-skill", bundledDir, "cursor")
     expect(cursorResult.content).toContain("INSIDE")
-    expect(cursorResult.content).toContain("gpt-5.6-sol-ultra")
+    expect(cursorResult.content).toContain('cli: "cursor"')
     expect(cursorResult.content).not.toContain("{{advisor_a}}")
   })
 })
@@ -175,10 +180,13 @@ describe("loadSkill — bundled skills render correctly under both hosts", () =>
     expect(result.content).not.toContain("{{worker_invoke}}")
   })
 
-  it("implementor renders worker_invoke under cursor (Task / claude-4.6-sonnet)", async () => {
+  it("implementor renders worker_invoke under cursor (Agent CLI / Task fallback)", async () => {
     const result = await loadSkill("implementor", SKILLS_DIR, "cursor")
+    expect(result.content).toContain("agent")
     expect(result.content).toContain("Task")
-    expect(result.content).toContain("claude-4.6-sonnet-medium-thinking")
+    expect(result.content).toContain("foreman-worker-light")
+    expect(result.content).toContain("cursor_agents_init")
+    expect(result.content).not.toContain("claude-4.6-sonnet-medium-thinking")
     expect(result.content).not.toContain("{{worker_invoke}}")
   })
 
@@ -208,16 +216,16 @@ describe("loadSkill — bundled skills render correctly under both hosts", () =>
 
   it("design-partner renders advisor_a / advisor_b via deliberation include — cursor", async () => {
     const result = await loadSkill("design-partner", SKILLS_DIR, "cursor")
-    expect(result.content).toContain("gpt-5.6-sol-ultra")
-    expect(result.content).toContain("gemini-3.1-pro")
+    expect(result.content).toContain('cli: "cursor"')
+    expect(result.content).not.toContain("gpt-5.6-sol-ultra")
     expect(result.content).not.toContain("{{advisor_a}}")
     expect(result.content).not.toContain("{{advisor_b}}")
   })
 
   it("spec-generator renders advisor placeholders under cursor", async () => {
     const result = await loadSkill("spec-generator", SKILLS_DIR, "cursor")
-    expect(result.content).toContain("gpt-5.6-sol-ultra")
-    expect(result.content).toContain("gemini-3.1-pro")
+    expect(result.content).toContain('cli: "cursor"')
+    expect(result.content).not.toContain("gpt-5.6-sol-ultra")
     expect(result.content).not.toContain("{{advisor_a}}")
   })
 

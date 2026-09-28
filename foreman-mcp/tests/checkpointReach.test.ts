@@ -122,7 +122,11 @@ describe("preflight_check reports reach from the server's spec", () => {
     const wider = await pf({ files: ["internal/cfsource/graphql/client.go"] })
     expect(wider).toContain("checkpoint_reach: REACH: internal/cfsource/graphql/client.go maps to package internal/cfsource/graphql")
     await fs.writeFile(specPath, SPEC("make test"))
-    expect(await pf()).toContain("checkpoint_reach: unknown: make test")
+    expect(await pf()).toContain("checkpoint_reach: not checked: make test selection is not parsed (make test)")
+    await fs.writeFile(specPath, SPEC("dotnet test --filter OracleCheck"))
+    const dn = await pf()
+    expect(dn).toContain("checkpoint_reach: not checked: dotnet test selection is not parsed")
+    expect(dn).not.toContain("not classified")
   })
 })
 

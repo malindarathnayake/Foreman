@@ -423,7 +423,7 @@ describe("portable worker-delta verification", () => {
     await delta(ts)
     await write({ operation: "record_review", phase: "p1", data: { advisor: "another-seat", stage: "independent",
       completion: kind === "partial" ? "partial" : "complete", checked: FILES,
-      findings: kind === "confirmed" ? [{ severity: "low", file: "src/a.ts", line: "1", description: "still wrong", classification: "confirmed" }] : [],
+      findings: kind === "confirmed" ? [{ severity: "medium", file: "src/a.ts", line: "1", description: "still wrong", classification: "confirmed" }] : [],
     } })
     await expect(gate()).rejects.toThrow(kind === "confirmed" ? /CONFIRMED FINDINGS/ : /INCOMPLETE REVIEW/)
   })

@@ -12,21 +12,24 @@ Two statuses matter and they are not the same. **Profile rendered** means the pr
 | Host | Profile | Run end to end | Worker | Reviewers |
 |---|---|---|---|---|
 | Claude Code | rendered, default | Yes. Foreman's own releases from 0.5.x through 0.6.x, Windows 11, 2026 | `Agent` tool, model `sonnet` | Codex CLI and Gemini CLI |
-| Cursor | rendered; capability path covered by tests | Not recorded in this repo | `Task` tool, `generalPurpose` | Cursor read-only `Task` seats on GPT-5.6 Sol and Gemini 3.1 Pro |
+| Cursor | rendered; capability path covered by tests | Not recorded in this repo | Cursor Agent CLI (`agent` / `cursor-agent`) print mode; `Task` + `cursor_agents_init` `foreman-worker*` seats as IDE fallback (default model `inherit`) | `invoke_advisor({cli:"cursor"})`; a second seat needs a different vendor CLI (claude/codex/gemini) |
 | Codex | native protocol rendering and MCP review-to-gate path tested | Full project run not recorded in this repo | Native `spawn_agent`; configured worker tiers, actual model reported by the host | Native reviewers + verifier; available Claude/Gemini CLIs supplement major checkpoints |
 | Generic | rendered as a six-capability contract | No | Whatever the host declares; see `HOST-CONTRACT.md` | Host-neutral advisor calls, else adversarial self-review recorded as non-independent |
 
 ## What differs per host
 
-- **The worker call.** Each profile names the host's own subagent tool and the model slug to pass. `host_status` prints the slugs in effect.
+- **The worker call.** Each profile names the host's own subagent tool and the model slug to pass. `host_status` prints the slugs in effect. On Cursor, the primary spawn is the Cursor Agent CLI (`agent` / `cursor-agent`, print mode). `cursor_agents_init` writes `.cursor/agents/foreman-worker*.md` for the IDE `Task` fallback; without those files the Task fallback is `generalPurpose` inheriting the pit-boss. The editor UI CLI is `cursor` (`--add-mcp`) and is not the agent.
 - **Editing concurrency.** Under every profile, editing workers run one at a time unless each has a proven isolated worktree or sandbox. Claude Code's profile spells out the parallel procedure: `isolation: "worktree"`, disjoint file sets, full `git diff` in each report, serial application with a verdict per unit. Codex explorers, which are read-only, may run in parallel up to `agents.max_threads`.
-- **Reviewer seats.** Claude Code reviews with Codex and Gemini. Codex defaults to native reviewers plus a verifier, and adds available Claude/Gemini advisors at major checkpoints. Native review is recorded as same-provider review; it is not described as cross-vendor independence.
+- **Reviewer seats.** Claude Code reviews with Codex and Gemini. Cursor reviews with the Agent CLI (`invoke_advisor({cli:"cursor"})`); a second seat needs a different vendor CLI. Two Cursor Agent CLI calls are the same router. Codex defaults to native reviewers plus a verifier, and adds available Claude/Gemini advisors at major checkpoints. Native review is recorded as same-provider review; it is not described as cross-vendor independence.
 - **Autonomy.** Cursor declares no autonomy capability, so phase progression stays interactive there. Claude Code and Codex profiles carry an autonomy clause; the generic profile fails closed and points at the contract.
+- **Tool timeout.** Codex documents a 60-second default MCP tool timeout, shorter than an advisor, council, or worker call. Set `tool_timeout_sec = 1200` under `[mcp_servers.foreman]`; `host_status` on Codex reports the value in effect and advises when it is unset or shorter. See [Register your host](../getting-started/configure-mcp-host.md#codex).
 - **Tool count.** 26 by default, 27 under Codex, one fewer each with compression off.
 
 ## Resolution and fallback
 
 `--host=<id>` wins, then `FOREMAN_HOST`, then `claude-code`. An unknown id logs a warning to stderr and uses `claude-code`. The rendered procedure will then name the wrong worker tool, which the model reports as an unsupported capability when it tries to use it.
+
+Claude Code's Enter-key path (hooks, model turns, MCP, compact) is traced in [Life of a packet: Enter in Claude Code](https://github.com/malindarathnayake/Foreman/blob/main/docs/claude-code-life-of-a-packet.md).
 
 `host_status` and `session_orient` both report `unsupported_capabilities` for the active profile, taken from the capability contract. The contract, the readiness matrix, the completion-report schema, and the isolation checklist are in `foreman-mcp/HOST-CONTRACT.md` inside the package.
 
@@ -34,7 +37,7 @@ Two statuses matter and they are not the same. **Profile rendered** means the pr
 
 - Register the server as `cmd /c foreman-mcp` when the host spawns without a shell. See [Register your host](../getting-started/configure-mcp-host.md).
 - `run_tests` resolves `npm.cmd` and other shims itself, without a shell, and runs Gradle wrappers through `GradleWrapperMain`.
-- `invoke_advisor` wraps the advisor CLIs' `.cmd` shims.
+- `invoke_advisor` wraps the advisor CLIs' `.cmd` and `.ps1` shims.
 - Foreman's own suite runs green on Windows 11 with Node 22. Some file-rename races under antivirus scanning are retried with a bounded backoff in the atomic-write helper.
 
 ## Rank policy across hosts

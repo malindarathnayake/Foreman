@@ -27,22 +27,26 @@ The brief is the only thing the worker sees. It contains: the task, the files to
 
 Seven checks before spawning: extract every symbol the brief names; grep `spec.md` for each; read each hit with context; diff the brief against that footprint for contradictions, omissions, and literal values used differently elsewhere; revise; check that every test expectation in the brief agrees with its own implementation instruction; if the unit emits telemetry, check custom field names against the stack profile's reserved names.
 
-**Ledger:** `set_unit_status { s: "delegated", brief, tier, route_reason, preflight: { symbols_grepped, self_consistent: true, telemetry } }`.
+`preflight_check` runs the mechanical part against the spec and returns a `brief_hash`. It hashes the unit's `foreman-contract` block whenever the unit has one, in any phase, and fails when the block does not parse. A fix brief passes `correcting_attempt: <attempt>`: coverage reads `n/a`, since a correction does not restate the directive, and every other check still runs.
 
-The server refuses this write without a brief of at least 20 characters (`DELEGATION REQUIRED`) or without the preflight object (`PREFLIGHT REQUIRED`). It stores the brief, the tier, and the attestation on the unit's `delegations[]` history, so they survive later re-delegations. It refuses another attempt after three failed attempts since the unit last passed (`DELEGATION CAP`) unless the write carries `user_override: true`, which is recorded on the delegation. Each delegation is an attempt; so is a recorded direct fix.
+**Ledger:** `set_unit_status { s: "delegated", tier, route_reason, preflight: { receipt: <brief_hash>, symbols_grepped, self_consistent: true, telemetry }, guard?: { files, allowed_files } }`. This receipt-only form is the documented one: the preflight record holds the full checked brief, so the write needs no `brief` field. Once `preflight_check` has run in the project, a delegation without a matching receipt is refused (`PREFLIGHT RECEIPT`), and so is one whose contract block changed or was deleted since preflight.
+
+The server refuses this write without a brief of at least 20 characters, given or read from the preflight record (`DELEGATION REQUIRED`), or without the preflight object (`PREFLIGHT REQUIRED`). It stores the brief, the tier, and the attestation on the unit's `delegations[]` history, so they survive later re-delegations. It refuses another attempt after three failed attempts since the unit last passed (`DELEGATION CAP`) unless the write carries `user_override: true`, which is recorded on the delegation. Each delegation is an attempt; so is a recorded direct fix.
 
 The attestation is exactly that. The server checks the shape, not whether the grep happened.
 
 ## 5. Spawn the worker
 
-Before any editing worker, the model snapshots branch, HEAD, stash list, staged diff, and dirty paths. That snapshot is the ownership boundary it will check against afterwards.
+Before any editing worker, the model snapshots branch, HEAD, stash list, staged diff, and dirty paths with `repo_guard`. That snapshot is the ownership boundary it will check against afterwards. The simplest form is `data.guard` on the delegation write: the baseline is taken in the same locked write as the attempt, so a refused baseline refuses the delegation (`GUARD BLOCKED`) instead of leaving an unguarded attempt. A correction inherits its authorized set with `guard: {}`. An explicit `repo_guard snapshot` afterwards is answered from that baseline.
+
+Until the comparison, any change outside the authorized files is charged to the attempt, whoever made it. That includes your own edits to `PROGRESS.md` outside Foreman's fence, so schedule manual document edits outside the worker window.
 
 Which worker depends on the host:
 
 | Host | Worker | Who applies the change |
 |---|---|---|
 | Claude Code | `Agent` tool, model `sonnet`, brief only | The worker edits the shared tree directly |
-| Cursor | `Task` tool, `generalPurpose`, brief only | The worker edits the shared tree directly |
+| Cursor | Cursor Agent CLI: `agent -p --force --trust` (optional `-w`); `Task` + `foreman-worker*` from `cursor_agents_init` as IDE fallback | The worker edits the shared tree directly (or an isolated worktree when `-w` is used) |
 | Codex | `spawn_agent` subagent, brief only | The worker edits the shared tree directly |
 | Any host, `invoke_worker` (experimental) | The brief and selected file excerpts go to an OpenAI-compatible endpoint configured in `.foremanenv`; a checked patch comes back | The model applies the patch after a base-file hash check |
 
@@ -54,7 +58,7 @@ Line endings matter for worktrees. On a repo with `core.autocrlf=true` and no `.
 
 The worker's report is an input, not a verdict. In order:
 
-1. **Repository-state guard.** Compare branch, HEAD, stash, index, and dirty paths against the snapshot. Any change outside the brief's files, or any sign of `git stash`, `reset`, `checkout`, or `clean`, is a hard stop: preserve evidence, escalate to you, do not run tests.
+1. **Repository-state guard.** `repo_guard compare` is a separate call, before the tests. Compare branch, HEAD, stash, index, and dirty paths against the snapshot. Any change outside the brief's files, or any sign of `git stash`, `reset`, `checkout`, or `clean`, is a hard stop: preserve evidence, escalate to you, do not run tests. A violation stays open across later attempts: the compare records the paths it named, a new attempt's baseline does not clear it, and authorizing the stray file on the next brief does not either. Each later compare re-checks it against its own baseline and marks it `resolved` once those paths are back to their original bytes. Until then a pass is refused (`REPOSITORY GUARD`); `user_override` waives each open violation and is recorded where it happened.
 2. **Read every modified file** and compare against the AFTER pattern in the brief.
 3. **Run the test command** through `run_tests`, not the shell. Read the exit code, then the stderr tail.
 4. **Spec check.** Read the directive sentence by sentence; each needs a code path.
@@ -85,7 +89,7 @@ Then `write_progress complete_unit`.
 
 Inner loop, same worker: compile, import, and type errors, at most two self-fixes. Anything about logic or spec comes straight back.
 
-Outer loop, fresh worker, at most three attempts: the model writes a fix brief that quotes the rejection, the spec text, the exact files to touch and to leave alone, the previous attempts from the ledger, and the tier. Raising the tier is allowed only when the fix brief adds context or cites a reviewer diagnosis; a repeated failure on an unchanged brief means the brief is wrong, not the model too small.
+Outer loop, fresh worker, at most three attempts: the model writes a fix brief that quotes the rejection, the spec text, the exact files to touch and to leave alone, the previous attempts from the ledger, and the tier. Raising the tier is allowed only when `route_reason` cites a refined brief or an advisor diagnosis of the failure; a rejection alone is not evidence, and a repeated failure on an unchanged brief means the brief is wrong, not the model too small.
 
 After three failed attempts since the unit last passed, the model stops and escalates with the full rejection history. The ledger holds that line: another attempt or a pass then needs your decision, so fixing off the record is not a way past it. You give that decision once: `authorize_attempts { attempts, reason, user_override: true }` records a grant of up to ten further attempts, each later delegation or direct fix is charged to it, `session_orient` shows what is left, and a pass closes it. The server refuses a grant below the cap, since one issued early would defeat the cap, and refuses a second grant while one is open. Without a grant, each write past the cap needs its own `user_override: true`. A unit reopened by a checkpoint finding after a pass starts a fresh count, because the earlier series did converge, and inherits no grant.
 

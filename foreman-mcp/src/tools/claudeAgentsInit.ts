@@ -24,6 +24,7 @@ import { z } from "zod"
 import { atomicWriteFile } from "../lib/atomicWrite.js"
 import fs from "fs/promises"
 import { toKeyValue } from "../lib/toon.js"
+import { seatReportEconomy } from "../lib/outputBudget.js"
 
 export const CLAUDE_AGENT_ROLES = ["foreman-worker-light", "foreman-worker", "foreman-worker-heavy"] as const
 export type ClaudeAgentRole = (typeof CLAUDE_AGENT_ROLES)[number]
@@ -92,7 +93,9 @@ branch, HEAD, or files outside the listed task. Do not "clean up" a dirty tree. 
 state blocks the task, STOP and report it to the pit-boss unchanged.
 
 Report back: the files you changed, the command you ran to validate, and anything in the brief
-you could not do. Do not report success for work you did not verify.`
+you could not do. Do not report success for work you did not verify.
+
+${seatReportEconomy()}`
 
 const SPECS: Record<ClaudeAgentRole, { description: string; instructions: string }> = {
   "foreman-worker-light": {

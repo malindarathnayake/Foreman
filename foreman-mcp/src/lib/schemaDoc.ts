@@ -57,7 +57,11 @@ function renderNode(node: JsonSchemaNode): string {
   if (type === "object") return renderObject(node)
   if (type === "array") {
     const item = node.items ? renderNode(node.items) : "any"
-    const cap = node.maxItems !== undefined ? ` (max ${node.maxItems})` : ""
+    // 0.6.35: a minimum was enforced but never shown, so the first sign of it was a refusal.
+    const min = node.minItems !== undefined && node.minItems > 0 ? node.minItems : undefined
+    const cap = min !== undefined && node.maxItems !== undefined ? ` (min ${min}, max ${node.maxItems})`
+      : min !== undefined ? ` (min ${min})`
+      : node.maxItems !== undefined ? ` (max ${node.maxItems})` : ""
     return `${item}[]${cap}`
   }
 

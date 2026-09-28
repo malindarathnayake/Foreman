@@ -23,6 +23,7 @@ import { watch, type FSWatcher } from "fs"
 import path from "path"
 import crypto from "crypto"
 import { fileURLToPath } from "url"
+import { quoteMermaidEdgeLabels } from "./mermaidLabels.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -264,7 +265,7 @@ async function handleSource(rs: RunningServer, id: string, res: http.ServerRespo
     const text = await fs.readFile(state.filePath, "utf-8")
     setSecurityHeaders(res, "text/plain; charset=utf-8")
     res.writeHead(200)
-    res.end(text)
+    res.end(quoteMermaidEdgeLabels(text))
   } catch {
     res.writeHead(404, { "Content-Type": "text/plain" })
     res.end("source not found")

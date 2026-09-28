@@ -73,7 +73,7 @@ describe("schemaDoc.renderShape", () => {
 })
 
 describe("every tool description stays under the host clip", () => {
-  for (const host of ["claude-code", "codex"] as const) {
+  for (const host of ["claude-code", "codex", "cursor"] as const) {
     it(`${host}: no description reaches ${DESCRIPTION_CLIP_GUARD} characters`, async () => {
       await setupServer(host)
       const tools = await client.listTools()

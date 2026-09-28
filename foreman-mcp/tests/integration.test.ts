@@ -117,7 +117,7 @@ describe("list tools — verify all 36 present, update_bundle absent", () => {
     const tool = result.tools.find((t) => t.name === "session_orient")
     expect(tool).toBeDefined()
     expect(tool!.description).toBe(
-      "Returns ledger-authoritative Foreman resume state, including action, resume target, phase/unit, gate retry, blockers, and ledger/progress drift. Phase and unit ids order naturally (p2 before p10). last_completed_unit is the completion frontier (newest first-pass timestamp; re-verdicts do not move it); latest_pass_verdict_unit/ts is the newest pass verdict by timestamp. Call first at session start."
+      "Returns ledger-authoritative Foreman resume state, including action, resume target, phase/unit, gate retry, blockers, and ledger/progress drift. Phase and unit ids order naturally (p2 before p10). last_completed_unit is the completion frontier (newest first-pass timestamp; re-verdicts do not move it); latest_pass_verdict_unit/ts is the newest pass verdict by timestamp. Call first at session start. When the ledger is complete, session_hygiene is clear: stop and tell the user to run the host command (Cursor/Claude: /clear) before starting a different job."
     )
   })
 
@@ -163,13 +163,15 @@ describe("list tools — verify all 36 present, update_bundle absent", () => {
     const tool = result.tools.find((t) => t.name === "capability_check")!
     expect(tool.description).toContain("auth_status")
     expect(tool.description).not.toContain("Task subagent")
-    expect((tool.inputSchema.properties as any).cli.enum).toContain("claude")
+    expect(tool.description).not.toContain("Cursor Agent CLI")
+    expect((tool.inputSchema.properties as any).cli.enum).toEqual(["claude", "codex", "gemini"])
   })
 
   it("invoke_advisor schema exposes Claude as a first-class CLI", async () => {
     const result = await client.listTools()
     const tool = result.tools.find((t) => t.name === "invoke_advisor")!
-    expect(tool.description).toContain("claude|codex|gemini")
+    expect(tool.description).toContain("claude|codex|gemini CLI")
+    expect(tool.description).not.toContain("|cursor")
     expect((tool.inputSchema.properties as any).cli.enum).toEqual(["claude", "codex", "gemini"])
   })
 })
@@ -183,12 +185,43 @@ describe("Codex-only tool registration", () => {
     const result = await client.listTools()
     const tool = result.tools.find((entry) => entry.name === "codex_agents_init")
     // Host-gated registration makes the totals differ: claude-code gets claude_workflows_init and
-    // claude_agents_init and not codex_agents_init; codex gets the reverse. 0.6.28 added one
-    // claude-code-only tool, so claude-code is 36 and codex stays at 35.
+    // claude_agents_init and not codex_agents_init; codex gets the reverse; cursor gets
+    // cursor_agents_init. 0.6.28 added one claude-code-only tool, so claude-code is 36 and
+    // codex stays at 35. 0.6.31 adds cursor_agents_init on cursor only.
     expect(result.tools).toHaveLength(35)
     expect(result.tools.map((t) => t.name)).not.toContain("claude_agents_init")
+    expect(result.tools.map((t) => t.name)).not.toContain("cursor_agents_init")
     expect(tool).toBeDefined()
     expect(tool?.annotations?.title).toBe("Init Codex Agent Roles")
+    expect(tool?.annotations?.readOnlyHint).toBe(false)
+    expect(tool?.annotations?.destructiveHint).toBe(false)
+  })
+
+  it("does not advertise cli:cursor on the Codex host", async () => {
+    const result = await client.listTools()
+    const cap = result.tools.find((t) => t.name === "capability_check")!
+    const inv = result.tools.find((t) => t.name === "invoke_advisor")!
+    expect((cap.inputSchema.properties as any).cli.enum).toEqual(["claude", "codex", "gemini"])
+    expect((inv.inputSchema.properties as any).cli.enum).toEqual(["claude", "codex", "gemini"])
+    expect(cap.description).not.toContain("Cursor Agent CLI")
+    expect(inv.description).not.toContain("|cursor")
+  })
+})
+
+describe("Cursor-only tool registration", () => {
+  beforeEach(async () => {
+    await setupServer({ host: "cursor" })
+  })
+
+  it("registers cursor_agents_init only for the cursor host", async () => {
+    const result = await client.listTools()
+    const names = result.tools.map((t) => t.name)
+    expect(names).toContain("cursor_agents_init")
+    expect(names).not.toContain("claude_agents_init")
+    expect(names).not.toContain("codex_agents_init")
+    expect(result.tools).toHaveLength(35)
+    const tool = result.tools.find((entry) => entry.name === "cursor_agents_init")
+    expect(tool?.annotations?.title).toBe("Init Cursor Agents")
     expect(tool?.annotations?.readOnlyHint).toBe(false)
     expect(tool?.annotations?.destructiveHint).toBe(false)
   })
@@ -201,10 +234,14 @@ describe("capability_check description — cursor host", () => {
 
   it("renders the cursor-specific text", async () => {
     const result = await client.listTools()
-    const tool = result.tools.find((t) => t.name === "capability_check")!
-    expect(tool.description).toContain("Cursor's codex/gemini advisor seats")
-    expect(tool.description).toContain("claude")
-    expect(tool.description).not.toContain("auth_status taxonomy")
+    const cap = result.tools.find((t) => t.name === "capability_check")!
+    const inv = result.tools.find((t) => t.name === "invoke_advisor")!
+    expect(cap.description).toContain("Cursor Agent CLI")
+    expect(cap.description).toContain("auth_status")
+    expect(cap.description).not.toContain("synthetic")
+    expect((cap.inputSchema.properties as any).cli.enum).toEqual(["claude", "codex", "gemini", "cursor"])
+    expect(inv.description).toContain("claude|codex|gemini|cursor")
+    expect((inv.inputSchema.properties as any).cli.enum).toEqual(["claude", "codex", "gemini", "cursor"])
   })
 })
 

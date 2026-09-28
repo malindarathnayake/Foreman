@@ -455,9 +455,12 @@ export async function takeSnapshot(
 export function compareSnapshots(
   before: RepoSnapshot, after: RepoSnapshot, rel: RelativeScope = EMPTY_RELATIVE_SCOPE,
   /** 0.6.27: resolved by the caller, which has git; absent means "treat any HEAD move as a violation". */
-  head: HeadAttribution | undefined = undefined
+  head: HeadAttribution | undefined = undefined,
+  /** 0.6.34: receives every repo-relative path a violation names. */
+  paths?: Set<string>
 ): string[] {
   const violations: string[] = []
+  const flag = (p: string, message: string) => { violations.push(message); paths?.add(p) }
   const allowed = new Set((before.allowed ?? []).map(normalizePath))
 
   if (before.root !== after.root) {
@@ -508,7 +511,7 @@ export function compareSnapshots(
         // Synthesised for a tracked-clean file nobody touched: the only way an after-entry
         // exists with no baseline entry and a clean status is a legacy baseline.
         if (entry.fenced && entry.code === "  ") continue
-        violations.push(`file changed outside the brief: ${p}${legacyNote}`)
+        flag(p, `file changed outside the brief: ${p}${legacyNote}`)
       } else if (was.fenced && entry.fenced) {
         const key = was.fwt !== undefined && entry.fwt !== undefined ? "fwt" : "wt"
         // 0.6.20: the interior changed but nothing outside the fence did. Foreman's own fence
@@ -517,40 +520,40 @@ export function compareSnapshots(
         const stateMoved = before.marks === undefined || after.marks === undefined ||
           Object.keys({ ...before.marks, ...after.marks }).some((k) => before.marks![k] !== after.marks![k])
         if (key === "fwt" && was.fwt === entry.fwt && was.wt !== entry.wt && !stateMoved) {
-          violations.push(`Foreman-fenced block changed with no Foreman progress write: ${p}`)
+          flag(p, `Foreman-fenced block changed with no Foreman progress write: ${p}`)
         } else if (was[key] !== entry[key]) {
-          violations.push(
+          flag(p, 
             key === "fwt" && fenceBlocksOf(entry.fwt!) > fenceBlocksOf(was.fwt!)
               ? `Foreman-fenced file gained a second fence: ${p}`
               : `Foreman-fenced file changed outside its fence: ${p}`
           )
         } else if (was.idx !== entry.idx) {
-          violations.push(`staged content changed outside the brief: ${p}`)
+          flag(p, `staged content changed outside the brief: ${p}`)
         }
       } else if (was.wt !== entry.wt) {
-        violations.push(`pre-existing uncommitted change overwritten outside the brief: ${p}${legacyNote}`)
+        flag(p, `pre-existing uncommitted change overwritten outside the brief: ${p}${legacyNote}`)
       } else if (was.idx !== entry.idx) {
-        violations.push(`staged content changed outside the brief: ${p}${legacyNote}`)
+        flag(p, `staged content changed outside the brief: ${p}${legacyNote}`)
       } else if (was.code !== entry.code) {
-        violations.push(`git status of a file outside the brief changed: ${p} (${was.code.trim()} -> ${entry.code.trim()})${legacyNote}`)
+        flag(p, `git status of a file outside the brief changed: ${p} (${was.code.trim()} -> ${entry.code.trim()})${legacyNote}`)
       }
       continue
     }
     if (!was) {
-      violations.push(`file changed outside the brief: ${p}`)
+      flag(p, `file changed outside the brief: ${p}`)
     } else if (was.wt !== entry.wt) {
-      violations.push(`pre-existing uncommitted change overwritten outside the brief: ${p}`)
+      flag(p, `pre-existing uncommitted change overwritten outside the brief: ${p}`)
     } else if (was.idx !== entry.idx) {
-      violations.push(`staged content changed outside the brief: ${p}`)
+      flag(p, `staged content changed outside the brief: ${p}`)
     } else if (was.code !== entry.code) {
-      violations.push(`git status of a file outside the brief changed: ${p} (${was.code.trim()} -> ${entry.code.trim()})`)
+      flag(p, `git status of a file outside the brief changed: ${p} (${was.code.trim()} -> ${entry.code.trim()})`)
     }
   }
   for (const [p] of b) {
     // An authorized file may legitimately be restored to its committed content, which
     // removes it from the dirty set; that is the repair case, not a destroyed change.
     if (!a.has(p) && !allowed.has(p)) {
-      violations.push(`pre-existing uncommitted change disappeared: ${p}`)
+      flag(p, `pre-existing uncommitted change disappeared: ${p}`)
     }
   }
   return violations

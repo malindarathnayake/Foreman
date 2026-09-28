@@ -6,6 +6,7 @@ import type { Phase, ProgressFile, Unit } from "../types.js"
 import type { HostId } from "../lib/hostProfiles.js"
 import { unsupportedCapabilities } from "../lib/capabilitySet.js"
 import { modelRankSummary, resolveModelRank, type ModelRank } from "../lib/modelRank.js"
+import { applySessionHygiene, hygieneForOrient } from "../lib/sessionHygiene.js"
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -304,6 +305,24 @@ export async function readSessionState(
       computeGateUnitsHash(phase.units, phase.declared_units) !== phase.gate_units_hash.hash
   })
 
+  // 0.6.36 (field report 2026-09-27): after a restart, orientation said implement_unit while an
+  // attempt still held the repository window, and re-delegating replaces that window while the
+  // old worker may still be writing. Name the open attempt and the next check instead.
+  const openAttempt: Record<string, string> = {}
+  const w = ledger.window
+  if (w && ledger.phases[w.phase]?.units[w.unit_id]) {
+    const u = ledger.phases[w.phase].units[w.unit_id]
+    const d = (u.delegations ?? []).find((x) => x.attempt === w.attempt)
+    const compared = d?.guard?.result ?? "none"
+    const earlierOpen = (u.delegations ?? []).filter((x) => x !== d && x.guard?.result === "violation" && !x.guard.override && !x.guard.resolved).length
+    openAttempt.open_attempt = `${w.phase}/${w.unit_id} #${w.attempt} (${w.stage}, opened ${w.opened_ts}; compare: ${compared}${earlierOpen ? `; earlier open violations: ${earlierOpen}` : ""})`
+    openAttempt.open_attempt_next = w.stage === "editing" && compared === "none"
+      ? "check whether that worker is still running before anything else. Finished: repo_guard compare against the retained baseline, then validate and verdict. Abandoned: close_attempt. Do not re-delegate — a new attempt replaces the window while the old worker may still write."
+      : compared === "violation"
+        ? "the attempt's comparison found a violation; resolve it or get the owner's waiver before the verdict."
+        : "the comparison cleared; validate the output and record the verdict."
+  }
+
   return { progress, summary: {
     ...modelRankSummary(modelRank),
     status,
@@ -330,6 +349,7 @@ export async function readSessionState(
     state_drift,
     progress_advisories,
     missing_declared_units,
+    ...openAttempt,
   } }
 }
 
@@ -339,5 +359,7 @@ export async function sessionOrient(
   host: HostId = "claude-code",
   modelRank: ModelRank = resolveModelRank()
 ): Promise<string> {
-  return toKeyValue((await readSessionState(ledgerPath, progressPath, host, modelRank)).summary)
+  const summary = (await readSessionState(ledgerPath, progressPath, host, modelRank)).summary
+  const hygiene = hygieneForOrient(String(summary.status))
+  return applySessionHygiene(toKeyValue(summary), hygiene.action, host, hygiene.reason)
 }

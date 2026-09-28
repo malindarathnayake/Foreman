@@ -2,11 +2,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("../src/lib/externalCli.js", () => ({
   resolveInvocation: vi.fn(),
+  resolveFirst: vi.fn(),
   runWithStdin: vi.fn(),
+  runExternalCli: vi.fn(),
 }))
 
-import { resolveInvocation, runWithStdin } from "../src/lib/externalCli.js"
-import { invokeAdvisor } from "../src/tools/invokeAdvisor.js"
+import { resolveInvocation, runWithStdin, runExternalCli } from "../src/lib/externalCli.js"
+import { invokeAdvisor, CURSOR_ADVISOR_ARGS, cursorPromptArg } from "../src/tools/invokeAdvisor.js"
 
 const SUCCESS = {
   stdout: "review",
@@ -80,5 +82,29 @@ describe("invokeAdvisor", () => {
       "review this adversarially",
       300_000,
     )
+  })
+
+  it("runs Cursor Agent CLI print mode ask/trust with a tempfile prompt and never --approve-mcps", async () => {
+    vi.mocked(resolveInvocation).mockResolvedValue({
+      ok: true,
+      plan: { command: "agent", args: [] },
+    })
+    const { resolveFirst } = await import("../src/lib/externalCli.js")
+    vi.mocked(resolveFirst).mockResolvedValue({ ok: true, plan: { command: "agent", args: [] } })
+    vi.mocked(runExternalCli).mockResolvedValue(SUCCESS)
+
+    await invokeAdvisor("cursor", "review this adversarially", 60_000)
+
+    expect(resolveFirst).toHaveBeenCalled()
+    expect(runWithStdin).not.toHaveBeenCalled()
+    expect(runExternalCli).toHaveBeenCalledTimes(1)
+    const [, args] = vi.mocked(runExternalCli).mock.calls[0]
+    expect(args.slice(0, CURSOR_ADVISOR_ARGS.length)).toEqual([...CURSOR_ADVISOR_ARGS])
+    expect(args.join(" ")).not.toContain("approve-mcps")
+    expect(args.join(" ")).not.toContain("--model")
+    const promptArg = args[args.length - 1] as string
+    expect(promptArg).toContain("File:")
+    expect(promptArg).toContain("prompt.txt")
+    expect(promptArg).toBe(cursorPromptArg(promptArg.slice(promptArg.indexOf("File: ") + "File: ".length)))
   })
 })

@@ -1,7 +1,7 @@
 import fs from "fs/promises"
 import path from "path"
 import { createHash } from "crypto"
-import type { CapGrant, Delegation, DelegationGuard, EscapeClass, ForwardObligation, FrozenCheckpoint, GateEvidence, LedgerFile, Phase, PhaseReview, Unit, WriteLedgerInput } from "../types.js"
+import type { RepoSnapshot, CapGrant, Delegation, DelegationGuard, EscapeClass, ForwardObligation, FrozenCheckpoint, GateEvidence, LedgerFile, Phase, PhaseReview, ReviewFinding, Unit, WriteLedgerInput } from "../types.js"
 import type { HostId } from "./hostProfiles.js"
 import { detectTestFiles } from "./detectTestFiles.js"
 import { atomicWriteFile } from "./atomicWrite.js"
@@ -33,6 +33,8 @@ export interface ReceiptsAccess {
   /** 0.6.22: the server's spec path and project root; the contract and smoke gates read them. Absent on test paths without a contract. */
   specPath?: string
   projectRoot?: string
+  /** 0.6.36: a baseline the server computed for this delegation (data.guard); never model input. */
+  guardSnapshot?: RepoSnapshot
 }
 
 // Re-exported so existing importers of the gate predicates keep one entry point.
@@ -528,8 +530,11 @@ async function applyOperation(
             // edited after preflight cannot ride an earlier clearance.
             if (receipts.specPath) {
               const { contract } = await unitContract(receipts.specPath, unit_id)
-              if (contract && record.contract_sha256 !== contract.contract_sha256) {
-                throw new Error(`PREFLIGHT RECEIPT: the spec contract for unit '${unit_id}' changed since preflight (${record.contract_sha256 ?? "none"} -> ${contract.contract_sha256}); run preflight_check again.`)
+              // 0.6.35 (Codex review of the 2026-09-25 field report): deleting the block after
+              // preflight skipped this check, and a non-API unit whose contract declared a smoke
+              // passed with none. A block that existed at preflight must still exist.
+              if (record.contract_sha256 !== contract?.contract_sha256) {
+                throw new Error(`PREFLIGHT RECEIPT: the spec contract for unit '${unit_id}' changed since preflight (${record.contract_sha256 ?? "none"} -> ${contract?.contract_sha256 ?? "removed"}); run preflight_check again.`)
               }
               frozenContract = contract?.contract_sha256
             }
@@ -588,7 +593,10 @@ async function applyOperation(
         if (data.correction) {
           const permission = data.correction.kind === "mechanical" ? "reuse_worker_mechanical" : "reuse_worker_bounded"
           if (!modelRank.permissions[permission]) {
-            throw new Error(`RANK CORRECTION: ${modelRank.rank} rank does not allow ${data.correction.kind} worker reuse; use the normal Foreman protocol.`)
+            // 0.6.38 (field report 2026-09-27): the refusal named only the rank, so a rank
+            // reloaded after a restart (orientation only, no permissions) read as a policy bug.
+            const inEffect = Object.entries(modelRank.permissions).filter(([, v]) => v).map(([k]) => k).join(",") || "none"
+            throw new Error(`RANK CORRECTION: ${modelRank.rank} rank does not allow ${data.correction.kind} worker reuse in this process (permissions in effect: ${inEffect}; rank source: ${modelRank.rehydrated ? `reloaded from session ${modelRank.rehydrated.session_id} after a restart — call write_journal declare_model to restore permissions` : "declared"}); use the normal Foreman protocol.`)
           }
           const previous = unit.delegations?.at(-1)
           ensureAttemptState(unit)
@@ -616,7 +624,7 @@ async function applyOperation(
           if (ledger.phases[phase].scope?.hot_path || ledger.phases[phase].scope?.security_boundary) {
             throw new Error("RANK CORRECTION: hot_path or security_boundary phases require the normal workflow.")
           }
-          if (previous.guard?.result !== "ok" || previous.guard.override || unit.delegations?.some((d) => d.guard?.result === "violation")) {
+          if (previous.guard?.result !== "ok" || previous.guard.override || unit.delegations?.some((d) => d.guard?.result === "violation" && !d.guard.resolved)) {
             throw new Error("RANK CORRECTION: the previous worker attempt needs a cleared ownership guard.")
           }
           const allowed = new Set(normalizedPaths(previous.guard.snapshot.allowed))
@@ -675,6 +683,19 @@ async function applyOperation(
           ...(frozenCheckpoint ? { checkpoint: frozenCheckpoint } : {}),
         })
         if (data.correction) unit.v = "pending"
+        // 0.6.36: the baseline rides this write, so the attempt, its guard and the window are
+        // one transition — a refused baseline leaves no unguarded attempt behind.
+        const g = receipts?.guardSnapshot
+        if (g) {
+          if (data.correction) {
+            const prior = unit.delegations.find((x) => x.attempt === data.correction!.from_attempt)
+            if (!prior?.guard || prior.guard.snapshot.root !== g.root || !samePaths(prior.guard.snapshot.allowed, g.allowed)) {
+              throw new Error("RANK CORRECTION: the new guard must preserve the previous repository root and frozen authorized file set.")
+            }
+          }
+          unit.delegations[unit.delegations.length - 1].guard = { snapshot: g, snapshot_ts: now }
+          ledger.window = { root: g.root, phase, unit_id, attempt, stage: "editing", opened_ts: now }
+        }
         if (unit.delegations.length > 20) unit.delegations = unit.delegations.slice(-20)
       } catch (err) {
         // 0.6.20: every refusal of a write that carried data.rejection says the finding is not
@@ -834,6 +855,25 @@ async function applyOperation(
             }
             g.override = { ts: new Date().toISOString() }
           }
+        }
+        // 0.6.34 (Codex adversarial review 2026-09-25): an ordinary re-delegation took a fresh
+        // baseline of the violated tree, and its clean comparison hid the earlier violation.
+        // A violation now stays open until a later comparison finds its paths restored to its
+        // own baseline (repo_guard compare records `resolved`) or the owner waives it.
+        const openEarlier = (unit.delegations ?? []).filter((d) =>
+          d !== latestGuarded && d.guard?.result === "violation" && !d.guard.override && !d.guard.resolved)
+        if (openEarlier.length > 0) {
+          if (data.user_override !== true) {
+            const named = openEarlier.map((d) =>
+              `attempt #${d.attempt}: ${(d.guard!.violations ?? []).slice(0, 2).join("; ").slice(0, 200)}`).join(" | ")
+            throw new Error(
+              `REPOSITORY GUARD: unit '${unit_id}' has an unresolved violation from an earlier ${named}. ` +
+              "A new attempt's baseline does not clear it. Once the owner restores those paths, run repo_guard compare " +
+              "on the current attempt; it re-checks them against the earlier baseline and records the resolution. " +
+              "data.user_override: true records the waiver on each earlier delegation as guard_override."
+            )
+          }
+          for (const d of openEarlier) d.guard!.override = { ts: new Date().toISOString() }
         }
         // 0.6.20: data.escape_class classifies the NEWEST unclassified escape here, before the
         // check below. An older one (possible only after a recorded escape_override) still
@@ -1088,6 +1128,7 @@ async function applyOperation(
     case "update_phase_gate": {
       const { phase, data } = operation
       ensurePhase(ledger, phase)
+      let gateNote: string | undefined
       // Gate pass requires every unit in the phase to carry a pass verdict
       if (data.g === "pass") {
         const units = ledger.phases[phase].units
@@ -1234,11 +1275,29 @@ async function applyOperation(
           gatePhase.review_override = { ts: new Date().toISOString() }
           gateOverrides.push("review")
         } else {
+          // 0.6.36 (field report 2026-09-27): a confirmed LOW blocked the gate while the
+          // verification predicates already ignore LOW, and review rounds never converged on
+          // them. A confirmed LOW is now advisory at the gate: listed, recorded on the phase,
+          // and NOT resolved. Severity is the moderator's verified rating (the protocol requires
+          // checking it, not only the finding), so a mis-rated LOW is a triage failure.
+          // 0.6.36: a finding naming its units blocks only while this record still carries one
+          // of them; a record whose carried set is unknown (fully current) blocks as before.
+          const live = (r: PhaseReview, f: ReviewFinding) => {
+            if (!f.units?.length) return true
+            const carried = coverage.carries.get(r)
+            return carried === undefined || f.units.some((u) => carried.includes(u))
+          }
+          const describe = (r: PhaseReview, f: ReviewFinding) => `${r.advisor}: ${(f.file || "?").slice(0, 120)}:${f.line || "?"} ${f.description.slice(0, 80)}`
           const confirmed = participating.flatMap((r) =>
-            r.findings
-              .filter((f) => f.classification === "confirmed")
-              .map((f) => `${r.advisor}: ${(f.file || "?").slice(0, 120)}:${f.line || "?"} ${f.description.slice(0, 80)}`)
+            r.findings.filter((f) => f.classification === "confirmed" && f.severity !== "low" && live(r, f)).map((f) => describe(r, f))
           )
+          const advisoryLow = participating.flatMap((r) =>
+            r.findings.filter((f) => f.classification === "confirmed" && f.severity === "low" && live(r, f)).map((f) => describe(r, f))
+          )
+          if (advisoryLow.length > 0) {
+            gatePhase.advisory_findings = { ts: new Date().toISOString(), findings: advisoryLow.slice(0, 20) }
+            gateNote = `ADVISORY: ${advisoryLow.length} confirmed LOW finding(s) did not block this gate and are NOT resolved: ${advisoryLow.slice(0, 5).join("; ")}${advisoryLow.length > 5 ? ` (+${advisoryLow.length - 5} more)` : ""}. Fix them in later work, or record_escape source:'later' if one proves worse.`
+          }
           if (confirmed.length > 0) {
             if (data.user_override !== true) {
               const shown = confirmed.slice(0, 5).join("; ")
@@ -1350,7 +1409,8 @@ async function applyOperation(
         gatePhase.gate_units_hash = { hash: newHash, ts: now }
       }
       ledger.phases[phase].g = data.g
-      break
+      if (data.g !== "pass") gateNote = undefined
+      return gateNote
     }
     case "set_phase_scope": {
       const { phase, data } = operation
@@ -1399,6 +1459,12 @@ async function applyOperation(
           const shown = unknown.slice(0, 10).join(", ") + (unknown.length > 10 ? ` (+${unknown.length - 10} more)` : "")
           throw new Error(`REVIEW SCOPE: phase '${phase}' has no registered unit(s) ${shown}; data.units names registered units only — omit it to snapshot the whole phase.`)
         }
+      }
+      // 0.6.36: a finding's units must be registered, or the gate could never tie it to coverage.
+      const findingUnits = [...new Set(data.findings.flatMap((f) => f.units ?? []))]
+      const unknownFindingUnits = findingUnits.filter((id) => !Object.prototype.hasOwnProperty.call(p.units, id))
+      if (unknownFindingUnits.length > 0) {
+        throw new Error(`REVIEW SCOPE: finding units name unregistered unit(s) ${unknownFindingUnits.slice(0, 10).join(", ")} in phase '${phase}'; list the registered units the finding is about, or omit units.`)
       }
       if (data.stage === "native") {
         if (host !== "codex" && host !== "claude-code") throw new Error("NATIVE REVIEW: stage:'native' requires a host with native subagents (codex, claude-code).")
@@ -1490,8 +1556,16 @@ async function applyOperation(
         if (data.packet_hash !== receipt.prompt_sha256) {
           throw new Error("SEAT RECEIPT: packet mismatch — the record's packet_hash does not equal the receipt's prompt hash; the record names a different prompt than the seat ran.")
         }
-        if (receipt.exit_code !== 0 || receipt.failure_reason !== null) {
-          throw new Error(`SEAT RECEIPT: '${receipt.id}' is a failed seat (${receipt.failure_reason ?? `exit ${receipt.exit_code}`}); record it completion:'failed' without a receipt.`)
+        // 0.6.38 (field report 2026-09-27): a Codex seat timed out after printing complete
+        // findings, and the only way to record them dropped the receipt. A timed-out seat may
+        // bind its receipt to a completion:'partial' record: its findings are kept (a confirmed
+        // one blocks) and it covers nothing, because a timeout cannot show the seat finished.
+        const timedOutPartial = receipt.failure_reason === "timed_out" && data.completion === "partial"
+        if (!timedOutPartial && (receipt.exit_code !== 0 || receipt.failure_reason !== null)) {
+          throw new Error(`SEAT RECEIPT: '${receipt.id}' is a failed seat (${receipt.failure_reason ?? `exit ${receipt.exit_code}`}); ` +
+            (receipt.failure_reason === "timed_out"
+              ? "record it completion:'partial' with this receipt to keep its findings (they block if confirmed; the record covers nothing), then re-run the seat for coverage."
+              : "record it completion:'failed' without a receipt."))
         }
         // 0.6.26 (field report 2026-09-11): the receipts file is append-only and survived a
         // ledger loss intact, so both seats stayed bound while the records citing them were
@@ -1516,8 +1590,11 @@ async function applyOperation(
           ...(u.delegations ?? []).map((d) => d.ts), ...(u.direct_fixes ?? []).map((d) => d.ts),
         ])
         const newest = [latestVerdictTs(p), ...attemptTs].reduce((max, t) => (t > max ? t : max), "")
-        if (receipt.ts < newest) {
-          throw new Error(`SEAT RECEIPT: '${receipt.id}' ran at ${receipt.ts}, before the newest verdict or attempt in phase '${phase}' (${newest}); it reviewed old code. Run the seat again.`)
+        // 0.6.35 (Codex review of the 2026-09-25 field report): judged from when the seat
+        // STARTED. The completion time let a unit changed mid-run pass as reviewed.
+        const seatStart = receipt.started_ts ?? receipt.ts
+        if (seatStart < newest) {
+          throw new Error(`SEAT RECEIPT: '${receipt.id}' started at ${seatStart}, before the newest verdict or attempt in phase '${phase}' (${newest}); it reviewed old code. Run the seat again.`)
         }
         provenance = {
           receipt: receipt.id, cli: receipt.cli, provider: receipt.provider, model_served: receipt.model_served,
@@ -1767,7 +1844,11 @@ export async function recordRepoGuard(
   filePath: string,
   phase: string,
   unitId: string,
-  patch: DelegationGuard | { result: "ok" | "violation"; violations?: string[]; damaged?: string[]; baseline_hash?: string }
+  patch: DelegationGuard | {
+    result: "ok" | "violation"; violations?: string[]; violation_paths?: string[]; damaged?: string[]; baseline_hash?: string
+    /** 0.6.34: earlier attempts whose violation this comparison found restored. */
+    resolves?: number[]
+  }
 ): Promise<{ attempt: number; reopened: boolean }> {
   return withLedgerLock(filePath, async () => {
     const read = await readLedgerWithStatus(filePath)
@@ -1827,8 +1908,16 @@ export async function recordRepoGuard(
           "the attempt advanced during the comparison. Compare again against the current baseline."
         )
       }
-      const { baseline_hash: _bound, ...guardPatch } = patch
+      const { baseline_hash: _bound, resolves, ...guardPatch } = patch
       latest.guard = { ...latest.guard, ...guardPatch, checked_ts: new Date().toISOString() }
+      // 0.6.34: resolution is recorded only on an earlier, still-open violation; the caller's
+      // list cannot clear a guard that is overridden, already resolved, or not a violation.
+      for (const n of resolves ?? []) {
+        const d = delegations.find((x) => x.attempt === n && x !== latest)
+        if (d?.guard?.result === "violation" && !d.guard.override && !d.guard.resolved) {
+          d.guard.resolved = { ts: new Date().toISOString(), by_attempt: latest.attempt }
+        }
+      }
       if (patch.result === "ok" && ledger.window && ledger.window.phase === phase && ledger.window.unit_id === unitId && ledger.window.attempt === latest.attempt) {
         ledger.window.stage = "validation"
       }

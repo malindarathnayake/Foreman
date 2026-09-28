@@ -38,7 +38,7 @@ const CLAUDE_CODE_PROFILE: HostProfile = {
   placeholders: {
     host_name: "Claude Code",
     worker_invoke:
-      'Use the Agent tool. If `.claude/agents/foreman-worker*.md` exist (claude_agents_init writes them), spawn with `subagent_type` and NO model or effort argument, so the seat binds its own model AND reasoning effort: `foreman-worker-light` (tier cheap) when the brief names the exact edit — a literal substitution, rename, constant, test name, import path, or a mechanical repeat of a stated pattern; `foreman-worker` (tier standard) as the default for ordinary implementation and anything unclassifiable; `foreman-worker-heavy` (tier premium) for concurrency, migrations, error-handling semantics, public contracts or schemas, security/authz paths, and any unit a lower seat already failed. Escalate on evidence, never on a hunch: a fix worker moves up a tier only when `route_reason` cites the rejection, a refined brief, or an advisor diagnosis. Never start at premium to save a round. Without those definitions, fall back to `model: "sonnet"` and still record the tier. Pass only the worker brief — no spec, no ledger, no progress file.' + SHARED_TREE_SAFETY,
+      'Use the Agent tool. If `.claude/agents/foreman-worker*.md` exist (claude_agents_init writes them), spawn with `subagent_type` and NO model or effort argument, so the seat binds its own model AND reasoning effort: `foreman-worker-light` (tier cheap) when the brief names the exact edit — a literal substitution, rename, constant, test name, import path, or a mechanical repeat of a stated pattern; `foreman-worker` (tier standard) as the default for ordinary implementation and anything unclassifiable; `foreman-worker-heavy` (tier premium) for concurrency, migrations, error-handling semantics, public contracts or schemas, security/authz paths, and any unit a lower seat already failed. Escalate on evidence, never on a hunch: a fix worker moves up a tier only when `route_reason` cites a refined brief or an advisor diagnosis of the failure; a rejection alone is not evidence. Never start at premium to save a round. Without those definitions, fall back to `model: "sonnet"` and still record the tier. Pass only the worker brief — no spec, no ledger, no progress file.' + SHARED_TREE_SAFETY,
     worker_fanout:
       "When Step 2 batches to N workers: editing Agent-tool workers share repository state and MUST run sequentially by default. Record `write_ledger` `s:'delegated'` before each spawn; validate its repository-state guard and verdict before the next editing worker. Read-only explorer Agents may run in parallel. Parallel EDITING workers are permitted only under ALL of: (a) each worker is spawned with `isolation: \"worktree\"`; (b) their editable file sets are disjoint — any overlap means do not parallelize; (c) each worker returns its full `git diff` output in its completion report; (d) the pitboss applies those diffs to the main tree serially, validating each unit before applying the next; (e) any apply conflict rejects that unit for sequential re-delegation; (f) line endings: run `git config --get core.autocrlf` and `git ls-files --eol -- <unit files>` before creating any worktree — if autocrlf is `true` and those files have no `.gitattributes` eol rule, do NOT parallelize, serialize on the shared tree; create worktrees with `git -c core.autocrlf=false worktree add --detach …` so the checkout matches the index; run `git apply --check` before applying a returned diff and reject one whose line endings disagree with the target path's `git ls-files --eol` attributes. The full worktree fan-out contract (base-commit guarantees, content-addressed patch artifacts, cleanup) is v0.6 HOST-CONTRACT scope — until then this manual procedure is the only sanctioned parallel-edit path. Workers must not spawn further agents.",
     advisor_checks:
@@ -60,17 +60,17 @@ const CURSOR_PROFILE: HostProfile = {
   placeholders: {
     host_name: "Cursor",
     worker_invoke:
-      'Use the Cursor `Task` tool with `subagent_type: "generalPurpose"` and `model: "claude-4.6-sonnet-medium-thinking"`. Pass only the worker brief in the prompt — no spec, no ledger, no progress file.' + SHARED_TREE_SAFETY,
+      'Prefer the Cursor Agent CLI (binary `agent`, alias `cursor-agent`; the editor UI CLI is `cursor` and is not the agent). Probe with `mcp__foreman__capability_check({ cli: "cursor" })`. Spawn workers in print mode: `agent -p --force --trust --output-format text` with the brief as the prompt (or a short instruction to read a prompt file when the brief is long). Do not pass `--approve-mcps` — the child must not load Foreman MCP. Isolation: add `-w` / `--worktree`. Do not pin `--model` unless the operator supplied a verified id; inherit. If the Agent CLI is missing AND this session has the Cursor `Task` tool, fall back to Task: if `.cursor/agents/foreman-worker*.md` exist (cursor_agents_init writes them), spawn with `subagent_type` and NO model argument: `foreman-worker-light` (tier cheap) when the brief names the exact edit — a literal substitution, rename, constant, test name, import path, or a mechanical repeat of a stated pattern; `foreman-worker` (tier standard) as the default for ordinary implementation and anything unclassifiable; `foreman-worker-heavy` (tier premium) for concurrency, migrations, error-handling semantics, public contracts or schemas, security/authz paths, and any unit a lower seat already failed. Escalate on evidence, never on a hunch: a fix worker moves up a tier only when `route_reason` cites a refined brief or an advisor diagnosis of the failure; a rejection alone is not evidence. Never start at premium to save a round. Without those definitions, fall back to `subagent_type: "generalPurpose"` with no model argument (inherit the pit-boss) and still record the tier. Do not use `.claude/agents/` seats as the Cursor spawn target: those pin Claude Code aliases. Pass only the worker brief — no spec, no ledger, no progress file.' + SHARED_TREE_SAFETY,
     worker_fanout:
-      'When Step 2 batches to N workers: editing Cursor `Task` workers share repository state and MUST run sequentially unless each worker has a proven isolated worktree/sandbox. Record `write_ledger` `s:\'delegated\'` before each spawn; validate its repository-state guard and verdict before the next editing worker. Read-only explorer Tasks may run in parallel. Patch-only workers may run in parallel only for disjoint editable sets with a content-addressed apply check. Workers must not spawn further agents.',
+      'When Step 2 batches to N workers: editing workers share the parent checkout by default (Task) and MUST run sequentially unless each is launched with isolation (`agent -p --force --trust -w`, or a Task isolated worktree/copy) AND their editable file sets are disjoint. Record `write_ledger` `s:\'delegated\'` before each spawn; validate its repository-state guard and verdict before the next editing worker. Read-only explorer Tasks may run in parallel. Isolated editing workers return their full `git diff` in the completion report; the pitboss applies those diffs to the main tree serially, validating each unit before applying the next; an apply conflict rejects that unit for sequential re-delegation. Workers must not spawn further agents. Call `cursor_agents_init` if Task seats are missing.',
     advisor_checks:
-      '`mcp__foreman__capability_check({ cli: "codex" })` and `mcp__foreman__capability_check({ cli: "gemini" })`',
+      '`mcp__foreman__capability_check({ cli: "cursor" })`. For independence, also probe `cli: "claude"`, `cli: "codex"`, and `cli: "gemini"` — only a different vendor CLI is a second seat. Two Cursor Agent CLI calls are the same router.',
     advisor_a:
-      '**Advisor A (GPT-5.6-SOL):** Use the Cursor `Task` tool with `subagent_type: "explore"`, `readonly: true`, `model: "gpt-5.6-sol-ultra"`. Pass the deliberation prompt as the task description.',
+      '**Advisor A (Cursor Agent CLI):** `mcp__foreman__invoke_advisor({ cli: "cursor", prompt: "<PROMPT>" })` — Foreman runs `agent -p --mode=ask --trust --output-format text` (never `--approve-mcps`, never a pinned `--model`). Receipts are provider unknown (Cursor is a router), so one Cursor seat is `receipted`, not `receipted_external`.',
     advisor_b:
-      '**Advisor B (Gemini 3.1 Pro):** Use the Cursor `Task` tool with `subagent_type: "explore"`, `readonly: true`, `model: "gemini-3.1-pro"`. If `gemini-3.1-pro` is unavailable in the user\'s Cursor environment, fall back to `model: "composer-2-fast"`.',
+      '**Advisor B (independent vendor):** if capability_check reports ok for claude, codex, or gemini, `mcp__foreman__invoke_advisor` that CLI. A second `cli: "cursor"` call is perspective, not independence.',
     advisor_fallback:
-      '**Sonnet adversarial fallback (last rung):** With no council seats AND no CLI advisor, seat BOTH reviewers via two separate Cursor `Task` calls (`subagent_type: "generalPurpose"`, `model: "claude-4.6-sonnet-medium-thinking"`), each with a DIFFERENT adversarial critic prompt, run independently and never shown each other\'s output. Record in the ledger note that independent review was unavailable: two seats on one model is perspective, NOT independence.',
+      '**Adversarial fallback (last rung):** With no council seats AND no other-vendor CLI, seat BOTH reviewers as perspective: two separate Cursor Agent CLI ask-mode calls, or two Cursor `Task` inherit seats (`subagent_type: "generalPurpose"`, no model argument), each with a DIFFERENT adversarial critic prompt, run independently and never shown each other\'s output. Record in the ledger note that independent review was unavailable: two seats on one model is perspective, NOT independence.',
     autonomy:
       "**Background-agent surface:** a Cursor background agent may carry a Foreman goal only with budgets/scopes declared up front; evidence claims in-transcript; the goal ends at the phase gate; re-enter via `session_orient` after any context reset.",
   },
@@ -93,7 +93,7 @@ const CODEX_PROFILE: HostProfile = {
       '`worker_light` (tier cheap) when the brief names the exact edit — a literal substitution, rename, constant, test name, import path, or a mechanical repeat of a stated pattern; ' +
       '`worker` (tier standard) for ordinary implementation where the brief states the behaviour and the seat chooses the code — this is the default, and an unclassifiable unit belongs here; ' +
       '`worker_heavy` (tier premium) for concurrency, migrations, error-handling semantics, public contracts or schemas, security/authz paths, and any unit a lower seat already failed. ' +
-      'Escalate on evidence, never on a hunch: a fix worker moves up a tier only when `route_reason` cites the rejection, a refined brief, or an advisor diagnosis. Never start at premium to save a round. ' +
+      'Escalate on evidence, never on a hunch: a fix worker moves up a tier only when `route_reason` cites a refined brief or an advisor diagnosis of the failure; a rejection alone is not evidence. Never start at premium to save a round. ' +
       'Model pins live in `.codex/agents/<role>.toml` (written by `codex_agents_init`), so the seat is host configuration rather than a claim in this text; record the model Codex reports and never attest one the host did not confirm. ' +
       'Reasoning effort is host-owned in this build: pass it at spawn time if your Codex exposes it — high for light and standard, xhigh for heavy — and do not assert an effort the host did not apply.' + SHARED_TREE_SAFETY,
     worker_fanout:
@@ -151,6 +151,15 @@ CLAUDE_CODE_PROFILE.placeholders.workflows =
 for (const profile of [CURSOR_PROFILE, GENERIC_PROFILE, CODEX_PROFILE]) {
   profile.placeholders.workflows = "No saved-workflow surface on this host; use the review and deliberation paths above."
 }
+
+CLAUDE_CODE_PROFILE.placeholders.session_compact = "/compact"
+CLAUDE_CODE_PROFILE.placeholders.session_clear = "/clear"
+CURSOR_PROFILE.placeholders.session_compact = "/compact"
+CURSOR_PROFILE.placeholders.session_clear = "/clear"
+CODEX_PROFILE.placeholders.session_compact = "/compact"
+CODEX_PROFILE.placeholders.session_clear = "start a new thread"
+GENERIC_PROFILE.placeholders.session_compact = "compact this conversation"
+GENERIC_PROFILE.placeholders.session_clear = "start a new conversation"
 
 const PROFILES: Record<HostId, HostProfile> = {
   "claude-code": CLAUDE_CODE_PROFILE,
@@ -210,6 +219,7 @@ export function hostRuntimePreamble(host: HostId): string {
     ph.advisor_a,
     ph.advisor_b,
     ph.advisor_fallback,
+    `**Session hygiene:** Foreman cannot see the context meter or run ${ph.session_compact} / ${ph.session_clear}. Only when this session's context usage is above 80%, ask the user to run ${ph.session_compact} or start a new session, then session_orient; below that, or when the usage is not visible, never ask. Before a different job, suggest ${ph.session_clear}.`,
   ].join("\n")
 }
 

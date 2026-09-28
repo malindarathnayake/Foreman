@@ -11,6 +11,7 @@ import { Client } from "@modelcontextprotocol/client"
 import { InMemoryTransport, type McpServer } from "@modelcontextprotocol/server"
 import { createServer } from "../src/server.js"
 import { invokeAdvisor } from "../src/tools/invokeAdvisor.js"
+import { withReportBudget } from "../src/lib/outputBudget.js"
 import { readLedger, writeLedger } from "../src/lib/ledger.js"
 import {
   appendConsumed, appendReceipt, providerFromModelId, readReceipts, receiptFailure, receiptsPathFor, sha256Hex, type ReceiptInput,
@@ -41,6 +42,11 @@ afterEach(async () => {
 })
 
 const PROMPT = "Review these phase changes against the spec.\n" + "x".repeat(1200)
+// 0.6.30: invoke_advisor appends the caller's report budget before anything hashes or measures
+// the prompt, so the receipt attests to what actually left the machine rather than to what the
+// pit-boss typed. record_review compares its packet_hash against this same receipt field
+// (ledger.ts), so both sides moved together.
+const SENT = withReportBudget(PROMPT)
 const OK_INPUT: ReceiptInput = {
   cli: "gemini", provider: "google", model_requested: "gemini-3.1-pro-preview", model_served: "gemini-3.1-pro-preview",
   exit_code: 0, failure_reason: null, prompt_sha256: sha256Hex(PROMPT), bytes_in: Buffer.byteLength(PROMPT), bytes_out: 900, tokens_used: 4100,
@@ -130,12 +136,14 @@ describe("invoke_advisor writes a receipt and names it in the meta block", () =>
     const text = (result.content as Array<{ text: string }>)[0].text
     const id = /seat_receipt: ([0-9a-f]{16})/.exec(text)?.[1]
     expect(id).toBeDefined()
-    expect(text).toContain(`packet_sha256: ${sha256Hex(PROMPT)}`)
+    expect(SENT).not.toBe(PROMPT)
+    expect(vi.mocked(invokeAdvisor).mock.calls.at(-1)![1]).toBe(SENT)
+    expect(text).toContain(`packet_sha256: ${sha256Hex(SENT)}`)
     expect(text).toContain("Here is my review.")
     const state = await readReceipts(receiptsPath)
     expect(state.receipts.get(id!)).toMatchObject({
       cli: "codex", provider: "openai", model_requested: "gpt-6-astra", model_served: "gpt-6-astra", reasoning_effort: "xhigh",
-      exit_code: 0, failure_reason: null, prompt_sha256: sha256Hex(PROMPT), bytes_in: Buffer.byteLength(PROMPT), tokens_used: 12345,
+      exit_code: 0, failure_reason: null, prompt_sha256: sha256Hex(SENT), bytes_in: Buffer.byteLength(SENT), tokens_used: 12345,
     })
     expect(state.receipts.get(id!)!.bytes_out).toBeGreaterThan(400)
   })
@@ -225,6 +233,48 @@ describe("record_review binds one receipt to one independent record", () => {
     await expect(record({ seat_receipt: mid.id, packet_hash: mid.prompt_sha256 })).rejects.toThrow(/before the newest verdict or attempt/)
     const late = await receipt()
     await record({ seat_receipt: late.id, packet_hash: late.prompt_sha256 })
+  })
+  // 0.6.38 (field report 2026-09-27): a seat timed out after printing complete findings, and
+  // the only way to record them dropped the receipt.
+  it("a timed-out seat binds its receipt to a partial record; its confirmed finding blocks", async () => {
+    await passingUnit("u1")
+    const timedOut = await receipt({ exit_code: -1, failure_reason: "timed_out" })
+    const finding = { severity: "high", file: "src/a.ts", line: "3", description: "token leaks via field names", classification: "confirmed" }
+    await expect(record({ seat_receipt: timedOut.id, packet_hash: timedOut.prompt_sha256, findings: [finding] }))
+      .rejects.toThrow(/record it completion:'partial' with this receipt/)
+    await record({ seat_receipt: timedOut.id, packet_hash: timedOut.prompt_sha256, completion: "partial", findings: [finding] })
+    await expect(gate()).rejects.toThrow(/CONFIRMED FINDINGS|INCOMPLETE REVIEW|REVIEW REQUIRED/)
+    const other = await receipt({ exit_code: 2, failure_reason: "auth_failed" })
+    await expect(record({ seat_receipt: other.id, packet_hash: other.prompt_sha256, completion: "partial" }))
+      .rejects.toThrow(/record it completion:'failed' without a receipt/)
+  })
+  // 0.6.35 (Codex review of the 2026-09-25 field report): the receipt was stamped when the
+  // seat FINISHED, so a unit changed and re-verdicted while the seat was reading passed.
+  it("judges freshness from when the seat started, not when it finished", async () => {
+    await passingUnit("u1")
+    const started = new Date(Date.now()).toISOString()
+    await passingUnit("u2")
+    const midRun = await receipt({ started_ts: started })
+    await expect(record({ seat_receipt: midRun.id, packet_hash: midRun.prompt_sha256 })).rejects.toThrow(/started at .* before the newest verdict or attempt/)
+    const fresh = await receipt({ started_ts: new Date(Date.now()).toISOString() })
+    await record({ seat_receipt: fresh.id, packet_hash: fresh.prompt_sha256 })
+  })
+  it("invoke_advisor stamps the start before the seat runs", async () => {
+    server = await createServer({ host: "codex", ledgerPath, docsDir: dir })
+    const [ct, st] = InMemoryTransport.createLinkedPair()
+    await server.connect(st)
+    client = new Client({ name: "t", version: "1" })
+    await client.connect(ct)
+    const before = new Date(Date.now()).toISOString()
+    vi.mocked(invokeAdvisor).mockImplementation(async () => {
+      vi.setSystemTime(Date.now() + 60_000)
+      return { stdout: "Review.\n" + "y".repeat(400), stderr: "", exitCode: 0, timedOut: false, truncated: false }
+    })
+    const text = ((await client.callTool({ name: "invoke_advisor", arguments: { cli: "gemini", prompt: PROMPT, timeout_ms: 5000 } })).content as Array<{ text: string }>)[0].text
+    const id = /seat_receipt: ([0-9a-f]{16})/.exec(text)![1]
+    const r = (await readReceipts(receiptsPath)).receipts.get(id)!
+    expect(r.started_ts).toBe(before)
+    expect(r.ts > r.started_ts!).toBe(true)
   })
   it("on Codex an unreceipted independent record is stored with a warning, never refused", async () => {
     await passingUnit("u1", "codex")

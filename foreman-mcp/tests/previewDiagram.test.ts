@@ -95,6 +95,15 @@ describe("previewDiagram write contract", () => {
     await fs.access(path.join(tmp, "diagrams", "flow.mmd"))
     delete process.env.FOREMAN_PREVIEW
   })
+
+  it("quotes --force inside an unquoted flowchart edge label on write", async () => {
+    const src = "flowchart TD\n  D -- no / --force --> O[ACME out]\n"
+    const r = await previewDiagram({ id: "force", source: src }, tmp)
+    expect(r.isError).toBeFalsy()
+    const content = await fs.readFile(path.join(tmp, "diagrams", "force.mmd"), "utf8")
+    expect(content).toContain('-- "no / --force" -->')
+    expect(content).not.toMatch(/D -- no \/ --force -->/)
+  })
 })
 
 describe("preview server security", () => {
@@ -105,6 +114,16 @@ describe("preview server security", () => {
     const ok = await httpGet(port, `/t/${token}/api/source/flow`)
     expect(ok.status).toBe(200)
     expect(ok.body).toContain("A-->B")
+
+    const rawForce = path.join(tmp, "diagrams", "hand.mmd")
+    await fs.writeFile(rawForce, "flowchart TD\n  D -- no / --force --> O[ACME out]\n")
+    const opened = await previewDiagram({ id: "hand" }, tmp)
+    expect(opened.isError).toBeFalsy()
+    const served = await httpGet(port, `/t/${token}/api/source/hand`)
+    expect(served.status).toBe(200)
+    expect(served.body).toContain('-- "no / --force" -->')
+    const onDisk = await fs.readFile(rawForce, "utf8")
+    expect(onDisk).toContain("D -- no / --force -->")
 
     const badToken = await httpGet(port, `/t/deadbeefdeadbeefdeadbeefdeadbeef/api/source/flow`)
     expect(badToken.status).toBe(403)

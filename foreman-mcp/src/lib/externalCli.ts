@@ -113,6 +113,44 @@ export type ResolveResult =
 
 const NATIVE_EXTS = new Set(['.exe', '.com'])
 const SHIM_EXTS = new Set(['.cmd', '.bat'])
+const PS1_EXT = '.ps1'
+
+/**
+ * Pick a Windows spawn plan from which/where candidates.
+ * Prefers native binaries, then .cmd/.bat via cmd.exe, then .ps1 via powershell.exe.
+ */
+export function windowsSpawnPlan(candidates: string[]): ResolveResult {
+  const natives: string[] = []
+  const shims: string[] = []
+  const scripts: string[] = []
+
+  for (const candidate of candidates) {
+    const ext = path.extname(candidate).toLowerCase()
+    if (NATIVE_EXTS.has(ext)) natives.push(candidate)
+    else if (SHIM_EXTS.has(ext)) shims.push(candidate)
+    else if (ext === PS1_EXT) scripts.push(candidate)
+  }
+
+  if (natives.length > 0) {
+    return { ok: true, plan: { command: natives[0], args: [] } }
+  }
+
+  const systemRoot = process.env.SystemRoot || 'C:\\Windows'
+  if (shims.length > 0) {
+    const comspec = path.join(systemRoot, 'System32', 'cmd.exe')
+    return { ok: true, plan: { command: comspec, args: ['/d', '/s', '/c', shims[0]] } }
+  }
+
+  if (scripts.length > 0) {
+    const powershell = path.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+    return {
+      ok: true,
+      plan: { command: powershell, args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', scripts[0]] },
+    }
+  }
+
+  return { ok: false, reason: 'resolved but no executable candidate found' }
+}
 
 /** Split + trim lines from which/where output. Handles CRLF and LF. */
 export function parseLines(raw: string): string[] {
@@ -139,7 +177,8 @@ export function parseResolutionOutput(raw: string): string[] {
 /**
  * Resolve a CLI binary name to a SpawnPlan.
  * On POSIX: returns the absolute path directly.
- * On Windows: prefers native .exe/.com; wraps .cmd/.bat via cmd.exe /d /s /c.
+ * On Windows: prefers native .exe/.com; wraps .cmd/.bat via cmd.exe /d /s /c;
+ * wraps .ps1 via powershell.exe -File.
  */
 export async function resolveInvocation(cli: string): Promise<ResolveResult> {
   const result = await runExternalCli(RESOLVE_CMD, [cli], 3000)
@@ -158,32 +197,21 @@ export async function resolveInvocation(cli: string): Promise<ResolveResult> {
     return { ok: true, plan: { command: candidates[0], args: [] } }
   }
 
-  // Windows: prefer native .exe/.com over .cmd/.bat shims
-  const natives: string[] = []
-  const shims: string[] = []
-
-  for (const candidate of candidates) {
-    const ext = path.extname(candidate).toLowerCase()
-    if (NATIVE_EXTS.has(ext)) {
-      natives.push(candidate)
-    } else if (SHIM_EXTS.has(ext)) {
-      shims.push(candidate)
-    }
+  const plan = windowsSpawnPlan(candidates)
+  if (!plan.ok) {
+    return { ok: false, reason: `${cli} ${plan.reason}` }
   }
+  return plan
+}
 
-  if (natives.length > 0) {
-    return { ok: true, plan: { command: natives[0], args: [] } }
+/** Resolve the first binary name that exists on PATH. */
+export async function resolveFirst(names: readonly string[]): Promise<ResolveResult> {
+  let last: ResolveResult = { ok: false, reason: `${names.join('/')} not found` }
+  for (const name of names) {
+    last = await resolveInvocation(name)
+    if (last.ok) return last
   }
-
-  if (shims.length > 0) {
-    const comspec = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'cmd.exe')
-    return {
-      ok: true,
-      plan: { command: comspec, args: ['/d', '/s', '/c', shims[0]] },
-    }
-  }
-
-  return { ok: false, reason: `${cli} resolved but no executable candidate found` }
+  return last
 }
 
 // ── Spawn with stdin ───────────────────────────────────────────────────────────

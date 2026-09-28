@@ -15,6 +15,7 @@
  * capture_complete:false, and no assertion can pass against a prefix.
  */
 import { createHash } from "crypto"
+import { describeFetchError } from "../lib/systemCa.js"
 import path from "path"
 import { z } from "zod"
 import { recordProbe, type ProbeRecord } from "../lib/ledger.js"
@@ -152,7 +153,8 @@ export async function contractProbe(raw: ContractProbeInput, ledgerPath: string,
     status = res.status
     if (method === "GET") ({ body, complete } = await captureBody(res))
   } catch (err) {
-    transport = err instanceof Error ? (err.name === "AbortError" ? `timed out after ${timeoutMs} ms` : err.message) : String(err)
+    // 0.6.38: name the real cause (fetch reports only "fetch failed") and the trust fix.
+    transport = err instanceof Error && err.name === "AbortError" ? `timed out after ${timeoutMs} ms` : describeFetchError(err)
   } finally {
     clearTimeout(timer)
   }

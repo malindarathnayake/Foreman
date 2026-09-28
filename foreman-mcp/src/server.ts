@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/server"
+import { trustSystemCa } from "./lib/systemCa.js"
 import { serveStdio, StdioServerTransport } from "@modelcontextprotocol/server/stdio"
 import { z } from "zod"
 import fs from "fs/promises"
@@ -43,7 +44,8 @@ import { renderShape } from "./lib/schemaDoc.js"
 import { formatSchemaError, isZodError } from "./lib/schemaError.js"
 import { readJournal, initSession, declareModel, logEvent, endSession, rehydrateRank } from "./lib/journal.js"
 import { resolveModelRank, type ModelRank } from "./lib/modelRank.js"
-import { invokeAdvisor, advisorRunMeta, formatAdvisorResult, GEMINI_ADVISOR_MODEL, CODEX_ADVISOR_MODEL } from "./tools/invokeAdvisor.js"
+import { invokeAdvisor, advisorRunMeta, classifyAdvisorFailure, formatAdvisorResult, GEMINI_ADVISOR_MODEL, CODEX_ADVISOR_MODEL } from "./tools/invokeAdvisor.js"
+import { withReportBudget, REPORT_MAX_LINES_CEILING } from "./lib/outputBudget.js"
 import { appendReceipt, receiptsPathFor, receiptFailure, sha256Hex, CLI_PROVIDER } from "./lib/seatReceipts.js"
 import { DEFAULT_PATHS } from "./lib/foremanFiles.js"
 import { sessionOrient } from "./tools/sessionOrient.js"
@@ -51,10 +53,11 @@ import { renderIncludes, loadSkill } from "./lib/skillLoader.js"
 import { hostStatus } from "./tools/hostStatus.js"
 import { type HostId, resolveHost, parseHostFlag, getProfile } from "./lib/hostProfiles.js"
 import { maybeCompress, compressionEnabled, getRetrieveOriginalTool, toolNameForHash } from "./lib/compression.js"
-import { ADVISOR_CLIS } from "./lib/advisorCli.js"
+import { advisorClisForHost } from "./lib/advisorCli.js"
 import { codexAgentsInit, CODEX_AGENT_ROLES } from "./tools/codexAgentsInit.js"
 import { claudeWorkflowsInit, FOREMAN_WORKFLOWS } from "./tools/claudeWorkflowsInit.js"
 import { claudeAgentsInit, ClaudeAgentsInitInputSchema } from "./tools/claudeAgentsInit.js"
+import { cursorAgentsInit, CursorAgentsInitInputSchema } from "./tools/cursorAgentsInit.js"
 import { preflightCheck, PreflightCheckInputSchema } from "./tools/preflightCheck.js"
 import { renderOracle, runOracle, VerifyOracleInputSchema } from "./tools/verifyOracle.js"
 import { recordOracle } from "./lib/ledger.js"
@@ -88,6 +91,20 @@ export interface ServerConfig {
    */
   host?: HostId
 }
+
+/**
+ * 0.6.34: hosts defer tool loading (Claude Code ToolSearch, Codex tool_search, Cursor dynamic
+ * discovery), so these lines may be the only Foreman text a session sees before it acts.
+ * Conditional on purpose: Foreman is registered user-wide, and an unconditional "call
+ * session_orient first" would start a project in every repository and pull worker and
+ * reviewer seats into orchestration state. Kept under 512 characters; Codex recommends
+ * that prefix be self-contained.
+ */
+export const SERVER_INSTRUCTIONS =
+  "Foreman is a spec-driven workflow harness. Use it only when the user asks for Foreman work or the repository " +
+  "already has a Foreman ledger (.foreman-ledger.json); a missing ledger is not a reason to start one. " +
+  "Orchestrating a Foreman session: call session_orient first and follow its action. The ledger, not chat " +
+  "history, is the source of truth. Worker, reviewer and verifier seats: ignore Foreman state and do only your brief."
 
 export async function createServer(config?: ServerConfig): Promise<McpServer> {
   const ledgerPath = config?.ledgerPath ?? DEFAULT_PATHS.ledgerPath
@@ -129,7 +146,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
   // McpServer v2 installs and advertises capabilities as tools/resources are
   // registered. Avoid declaring empty capabilities up front: that would
   // install eager handlers and can advertise features that are not present.
-  const server = new McpServer({ name: "foreman", version: pkg.version })
+  const server = new McpServer({ name: "foreman", version: pkg.version }, { instructions: SERVER_INSTRUCTIONS })
 
   // Per-operation data shapes, rendered from the validation schemas. They live in the
   // `data` property's schema description rather than the tool description: the host
@@ -304,10 +321,10 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       title: "Capability Check",
       description:
         host === "cursor"
-          ? "Returns synthetic availability for Cursor's codex/gemini advisor seats. An explicit claude check probes the local Claude CLI."
+          ? "Checks whether the Cursor Agent CLI (agent / cursor-agent) and the claude, codex, or gemini CLIs are available and authenticated. Returns a closed auth_status taxonomy (ok|not_found|not_trusted|auth_expired|probe_timeout|model_substituted|error) with a corrective hint on failures. Cursor is probed live via agent status --format json; it is not assumed available from Task. For gemini it also reports model_requested and model_served from the run stats; a served model other than the pinned one is model_substituted."
           : "Checks whether the claude, codex, or gemini CLI is available and authenticated. Returns a closed auth_status taxonomy (ok|not_found|not_trusted|auth_expired|probe_timeout|model_substituted|error) with a corrective hint on failures. For gemini it also reports model_requested and model_served from the run stats; a served model other than the pinned one is model_substituted.",
       inputSchema: z.strictObject({
-        cli: z.enum(ADVISOR_CLIS),
+        cli: z.enum(advisorClisForHost(host)),
       }),
       outputSchema: TextOutputSchema,
       annotations: {
@@ -326,13 +343,20 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     "invoke_advisor",
     {
       title: "Invoke Advisor",
-      description: "Invoke claude|codex|gemini CLI via stdin. Resolves binaries cross-platform and wraps .cmd shims on win32. Claude runs headless with Fable 5 at max effort and no tools; Codex runs gpt-6-astra at xhigh reasoning (codex-cli 0.153.4 or newer) and the meta block echoes model_served and reasoning_effort from its header. Exit 0 with empty stdout, or stdout equal to the prompt, is reported as completion: failed with the stderr tail — not a clean seat; record it as failed and retry once. Gemini runs with JSON output: the meta block names model_requested and model_served, and a served model other than the pinned one is completion: failed (model_substituted). Failed calls may be compressed; if a failed call's summary is insufficient, call retrieve_original with the <<ccr:HASH>> marker for the full diagnostic.",
+      description:
+        host === "cursor"
+          ? "Invoke claude|codex|gemini|cursor CLI. Resolves binaries cross-platform and wraps .cmd/.ps1 shims on win32. Claude runs headless with Fable 5 at max effort and no tools; Codex runs gpt-6-astra at xhigh reasoning (codex-cli 0.153.4 or newer) and the meta block echoes model_served and reasoning_effort from its header. Cursor runs agent -p --mode=ask --trust (never --approve-mcps, never a pinned --model); receipts are provider unknown. Exit 0 with empty stdout, or stdout equal to the prompt, is reported as completion: failed with the stderr tail — not a clean seat; record it as failed and retry once. Gemini runs with JSON output: the meta block names model_requested and model_served, and a served model other than the pinned one is completion: failed (model_substituted). Failed calls may be compressed; if a failed call's summary is insufficient, call retrieve_original with the <<ccr:HASH>> marker for the full diagnostic."
+          : "Invoke claude|codex|gemini CLI via stdin. Resolves binaries cross-platform and wraps .cmd shims on win32. Claude runs headless with Fable 5 at max effort and no tools; Codex runs gpt-6-astra at xhigh reasoning (codex-cli 0.153.4 or newer) and the meta block echoes model_served and reasoning_effort from its header. Exit 0 with empty stdout, or stdout equal to the prompt, is reported as completion: failed with the stderr tail — not a clean seat; record it as failed and retry once. Gemini runs with JSON output: the meta block names model_requested and model_served, and a served model other than the pinned one is completion: failed (model_substituted). Failed calls may be compressed; if a failed call's summary is insufficient, call retrieve_original with the <<ccr:HASH>> marker for the full diagnostic.",
       inputSchema: z.strictObject({
-        cli: z.enum(ADVISOR_CLIS),
+        cli: z.enum(advisorClisForHost(host)),
         prompt: z.string().max(100000),
         // Newer Sol-class models at xhigh reasoning effort routinely think for
         // >5 min on large review prompts — budget 15 min by default, cap at 30.
         timeout_ms: z.number().min(5000).max(1800000).default(900000),
+        // Report economy (0.6.30). The CALLER owns this number: a seat is told the
+        // budget, never asked to pick one. Omitted -> FOREMAN_REPORT_MAX_LINES, then
+        // the built-in default. Raise it for a review that genuinely needs the room.
+        report_max_lines: z.number().int().min(1).max(REPORT_MAX_LINES_CEILING).optional(),
       }),
       outputSchema: TextOutputSchema,
       annotations: {
@@ -342,25 +366,30 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
     },
     async (args, _extra) => {
-      const result = await invokeAdvisor(args.cli, args.prompt, args.timeout_ms)
+      // The budget is appended BEFORE anything hashes, measures or echo-checks the
+      // prompt, so the receipt attests to what actually left the machine.
+      const sentPrompt = withReportBudget(args.prompt, args.report_max_lines)
+      const startedTs = new Date().toISOString()
+      const result = await invokeAdvisor(args.cli, sentPrompt, args.timeout_ms)
       const pinned = args.cli === "gemini" ? GEMINI_ADVISOR_MODEL : args.cli === "codex" ? CODEX_ADVISOR_MODEL : undefined
       // 0.6.19: every run gets a receipt, failed ones included, so a failed seat can never
       // be re-described as clean. The pit-boss copies seat_receipt and packet_sha256 into
       // record_review; the ledger checks them against this file, never against the text.
-      const meta = advisorRunMeta(args.cli, result, args.prompt, pinned)
+      const meta = advisorRunMeta(args.cli, result, sentPrompt, pinned)
       const extra: string[] = []
       try {
         const cli = args.cli as keyof typeof CLI_PROVIDER
         const receipt = await appendReceipt(receiptsPathFor(ledgerPath), {
+          started_ts: startedTs,
           cli,
           provider: CLI_PROVIDER[cli],
           ...(pinned !== undefined ? { model_requested: pinned } : {}),
           model_served: meta.modelServed ?? "unknown",
           ...(meta.reasoningEffort !== undefined ? { reasoning_effort: meta.reasoningEffort } : {}),
           exit_code: result.exitCode,
-          failure_reason: receiptFailure(result.exitCode, meta.failureReason),
-          prompt_sha256: sha256Hex(args.prompt),
-          bytes_in: Buffer.byteLength(args.prompt, "utf-8"),
+          failure_reason: receiptFailure(result.exitCode, meta.failureReason, classifyAdvisorFailure(result)),
+          prompt_sha256: sha256Hex(sentPrompt),
+          bytes_in: Buffer.byteLength(sentPrompt, "utf-8"),
           bytes_out: Buffer.byteLength(meta.body, "utf-8"),
           ...(meta.tokensUsed !== undefined ? { tokens_used: meta.tokensUsed } : {}),
         })
@@ -368,7 +397,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       } catch (err) {
         extra.push(`seat_receipt: unavailable (${err instanceof Error ? err.message : String(err)})`)
       }
-      const formatted = formatAdvisorResult(args.cli, result, args.prompt, pinned, extra)
+      const formatted = formatAdvisorResult(args.cli, result, sentPrompt, pinned, extra)
       // Successful advisor output is PROSE — never lossy-compress it (silent loss of the
       // recommendations). A FAILED call is an unpredictable diagnostic dump: let the normal
       // compression path handle it; the agent sees exit_code != 0 and can retrieve_original.
@@ -382,26 +411,31 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     {
       title: "Write Ledger",
       description: [
-        "Writes one ledger operation. Data shapes: the input schema; refusals return per-field hints.",
+        "Writes one ledger operation; phase always required. Shapes, stage rules: input schema.",
         "",
         "Operations:",
         "  set_unit_status (unit_id) — delegated needs brief ≥20 chars + preflight, optional data.rejection; a ranked correction { kind, from_attempt, files: [\"path\"] } reuses the worker; direct_fix is legacy-only. Past 3 failures: grant or user_override.",
         "  set_verdict (unit_id) — v:'pass' needs a prior delegation, an attempt after the latest failure (ATTEMPT REQUIRED), past the cap a grant or user_override (cap_override), a ≥5-word note on a no-test phase, no unclassified escape, a live_smoke when declared; v:'fail' is a failed attempt.",
-        "  add_rejection (unit_id) — { r, msg, ts? (server time if absent) }: a failed attempt; reopens a passed unit; on a gated unit records an escape (escape_class classifies).",
-        "  record_escape (unit_id) — classifies a post-gate defect (source:'later' when found later); refused if the unit never escaped.",
+        "  add_rejection (unit_id) — { r, msg, ts? }: a failed attempt; reopens a passed unit; on a gated unit records an escape (escape_class classifies).",
+        "  record_escape (unit_id) — classifies a post-gate defect; refused if the unit never escaped.",
         "  close_attempt (unit_id) — delivered | blocked | validation_only; changes no id, counter or cap.",
         "  authorize_attempts (unit_id) — the owner's decision, once: N attempts past the cap; refused below it or with a grant open; a pass closes it.",
         "  declare_phase_units — declared id set (cap 200); retire needs a reason; frozen once the gate passes.",
         "  update_phase_gate — g:'pass' needs every unit passed, declared ids registered, a current seat review with no confirmed finding, no unclassified escape, deliverable receipts cited; user_override waives, recorded.",
         "  set_phase_scope — once per phase; hot_path/security_boundary need agent_class:'frontier' at the gate.",
         "  record_review — every finding needs a classification; zero findings need checked[] or completion:'complete'; 'confirmed' blocks the gate; verification needs evidence; deliverable units cite live_smoke run_ids (smoke_receipts). Limit: checked ≤50 entries of ≤400 chars.",
+        "  record_fact — { key, text, source? }: a per-phase fact, replaced by key.",
       ].join("\n"),
       inputSchema: z.strictObject({
         operation: z.enum(["set_unit_status", "set_verdict", "add_rejection", "declare_phase_units", "update_phase_gate", "set_phase_scope", "record_review", "authorize_attempts", "record_escape", "record_fact", "close_attempt"]),
         unit_id: z.string().max(10000).optional(),
-        phase: z.string().max(10000).optional(),
+        // 0.6.35 (field report 2026-09-25): every write operation requires phase; advertising it
+        // as optional let record_fact pass the advertised shape and fail the real one.
+        phase: z.string().max(10000),
         data: z.record(z.string(), z.unknown()).describe(
           "Per-operation shape (every key, enum value, and limit):\n" + shapesOf(LedgerOperationDataSchemas) +
+          "\nrecord_review stages: independent — one seat, optional seat_receipt, may name units; native — reviewers ≥2 with distinct ids and lenses, a distinct verifier, complete coverage (codex / claude-code hosts); " +
+          "verification — evidence required with evidence.units (not data.units), counts only against an eligible baseline; cross_exam and fan — recorded, never a seat." +
           "\nSoft limits: record_review checked[] entries, limitations, and native.reviewers[].checked[] entries over their limit are cut to the limit with a trailing '…[truncated N chars]' marker and the result carries a warning; every other limit (ids, findings, evidence, notes) refuses the write."
         ),
       }),
@@ -413,7 +447,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
     },
     async (args, _extra) => {
-      const text = await handleWriteLedger(ledgerPath, args, host, activeModelRank, { specPath: path.join(docsDir, "spec.md"), projectRoot: process.cwd() })
+      const text = await handleWriteLedger(ledgerPath, args, host, activeModelRank, { specPath: path.join(docsDir, "spec.md"), projectRoot: process.cwd(), guardPaths: { ledgerPath, progressPath, journalPath, docsDir } })
       return textResult(text)
     }
   )
@@ -525,7 +559,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       },
     },
     async (args, _extra) => {
-      const text = await handleInvokeCouncil(args, { journalPath, receiptsPath: receiptsPathFor(ledgerPath) })
+      const text = await handleInvokeCouncil(args, { journalPath, receiptsPath: receiptsPathFor(ledgerPath), host })
       return textResult(text)
     }
   )
@@ -702,7 +736,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     "session_orient",
     {
       title: "Session Orient",
-      description: "Returns ledger-authoritative Foreman resume state, including action, resume target, phase/unit, gate retry, blockers, and ledger/progress drift. Phase and unit ids order naturally (p2 before p10). last_completed_unit is the completion frontier (newest first-pass timestamp; re-verdicts do not move it); latest_pass_verdict_unit/ts is the newest pass verdict by timestamp. Call first at session start.",
+      description: "Returns ledger-authoritative Foreman resume state, including action, resume target, phase/unit, gate retry, blockers, and ledger/progress drift. Phase and unit ids order naturally (p2 before p10). last_completed_unit is the completion frontier (newest first-pass timestamp; re-verdicts do not move it); latest_pass_verdict_unit/ts is the newest pass verdict by timestamp. Call first at session start. When the ledger is complete, session_hygiene is clear: stop and tell the user to run the host command (Cursor/Claude: /clear) before starting a different job.",
       inputSchema: z.strictObject({}),
       outputSchema: TextOutputSchema,
       annotations: {
@@ -763,7 +797,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       title: "Preflight Check",
       description: [
         "Checks a worker brief against the spec BEFORE the attempt is spent, and records a passing receipt the ledger requires on set_unit_status s:'delegated'.",
-        "Refuses: a symbol in `symbols` the spec does not contain; a citation in the brief (path, file:line, named test, `-run` selector) that does not resolve in the repo. Files and tests the unit CREATES go in `creates: [{ file, tests }]`: their citations are forward, and the pass verdict refuses until each exists and each test is declared in its file. Reports checkpoint reach: whether the spec's Test line's go test selectors include the package of every authorized file (a testdata fixture belongs to its parent package); an omission fails, and the delegation refuses it unless the owner overrides.",
+        "Refuses: a symbol in `symbols` the spec does not contain; a citation in the brief (path, file:line, named test, `-run` selector) that does not resolve in the repo. Files and tests the unit CREATES go in `creates: [{ file, tests }]`: their citations are forward, and the pass verdict refuses until each exists and each test is declared in its file. Reports checkpoint reach: whether the spec's Test line's go test selectors include the package of every authorized file (a testdata fixture belongs to its parent package); an omission fails, and the delegation refuses it unless the owner overrides. A correction brief passes correcting_attempt: N so its coverage is not scored.",
         "Advises: directive sentences with no echo in the brief, contradiction markers, drifted file:line citations, files outside `files` that reference `type_names`/`introduces` (dispatch sites with a default arm first).",
         "Returns brief_hash; copy it into the delegation as preflight.receipt with symbols_grepped as the same array.",
       ].join(" "),
@@ -901,6 +935,31 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         annotations: { title: "Init Claude Agents", readOnlyHint: false, destructiveHint: false },
       },
       async (args, _extra) => textResult(await claudeAgentsInit(args))
+    )
+  }
+
+  // Cursor only: write .cursor/agents seat definitions. Default model is inherit.
+  if (host === "cursor") {
+    server.registerTool(
+      "cursor_agents_init",
+      {
+        title: "Init Cursor Agents",
+        description: [
+          "Cursor host only. Writes Foreman's three implementation seats to .cursor/agents/ as",
+          "Cursor custom-subagent definitions. Default model is inherit (the pit-boss's model):",
+          "foreman-worker-light (cheap), foreman-worker (standard), foreman-worker-heavy (premium).",
+          "Cursor model ids rotate; a guessed slug would reproduce the stale-hardcode this exists",
+          "to remove. Override per role with `models` when you have a verified id",
+          "(composer-2.5[], claude-opus-5[effort=high]). Primary spawn is the Cursor Agent CLI",
+          "(agent / cursor-agent, print mode). Task + subagent_type with NO model argument is the",
+          "IDE fallback. A binding DEFAULT, not a lock. Writes Cursor-native files, not",
+          ".claude/agents/. Existing definitions are left alone unless overwrite: true.",
+        ].join(" "),
+        inputSchema: CursorAgentsInitInputSchema,
+        outputSchema: TextOutputSchema,
+        annotations: { title: "Init Cursor Agents", readOnlyHint: false, destructiveHint: false },
+      },
+      async (args, _extra) => textResult(await cursorAgentsInit(args))
     )
   }
 
@@ -1194,6 +1253,8 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "architecture, sequence, state, class, or ER diagram instead of dumping raw Mermaid text.",
         "Call again with the same id (or edit the .mmd directly) to update the preview in place.",
         "Pass source to create/replace the diagram; omit source to re-open an existing one.",
+        "Unquoted flowchart edge labels that contain `--` (e.g. `--force`) are quoted on write",
+        "and on serve so mermaid 11 does not lex them as a new edge.",
         "Note: architecture-beta and mindmap are not supported under the strict render policy.",
       ].join(" "),
       inputSchema: z.strictObject({
@@ -1437,6 +1498,9 @@ if (isMain) {
   } else {
     // Non-TTY stdin — MCP client is connecting, start the server
     console.error(`[foreman] starting MCP server (host=${host})`)
+    // 0.6.38: trust the OS certificate store (enterprise and SME PKI); see lib/systemCa.ts.
+    const ca = trustSystemCa()
+    console.error(`[foreman] OS certificate store: ${ca.status === "on" ? `trusted (${ca.system} certificates added)` : `${ca.status} — ${ca.reason}`}`)
     // serveStdio negotiates both the legacy 2025 initialize handshake and the
     // modern 2026-07-28 server/discover era, pinning one server per connection.
     const stdio = serveStdio(() => createServer({ host }), {

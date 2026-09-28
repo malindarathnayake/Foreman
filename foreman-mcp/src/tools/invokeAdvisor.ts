@@ -1,9 +1,14 @@
+import fs from "fs/promises"
+import os from "os"
+import path from "path"
 import {
   type ExternalCliResult,
+  resolveFirst,
   resolveInvocation,
+  runExternalCli,
   runWithStdin,
 } from "../lib/externalCli.js"
-import type { AdvisorCli } from "../lib/advisorCli.js"
+import { CURSOR_AGENT_BINS, type AdvisorCli } from "../lib/advisorCli.js"
 
 /**
  * Gemini seat model, shared with capability_check so the probe exercises the same model
@@ -78,8 +83,60 @@ export function parseGeminiJson(stdout: string): GeminiRun | null {
   return { response: d.response, mainModel, thoughts }
 }
 
-const ADVISOR_CONFIGS: Record<AdvisorCli, { buildArgs: () => string[] }> = {
+/**
+ * Cursor Agent CLI print-mode flags for a read-only advisor.
+ * Never `--approve-mcps` (the child must not load Foreman MCP) and never a
+ * pinned `--model` (Cursor ids rotate; inherit). Prompt is a tempfile because
+ * Windows cmd.exe wrapping the `.cmd` shim caps argv at ~8191 characters.
+ */
+export const CURSOR_ADVISOR_ARGS = ["-p", "--mode=ask", "--trust", "--output-format", "text"] as const
+
+export function cursorPromptArg(filePath: string): string {
+  return `Follow the instructions in this file verbatim and reply with the review only. Do not mention the file path. File: ${filePath}`
+}
+
+/**
+ * 0.6.35 (field report 2026-09-25): the Claude seat's $1 cap was fixed, so a 3-file packet at
+ * max effort failed with no way to raise it. FOREMAN_CLAUDE_ADVISOR_BUDGET_USD overrides it with
+ * a finite positive value up to a ceiling; anything else keeps the default. The default stays $1
+ * until there is cost evidence for more, and there is no "0 = uncapped".
+ */
+export const CLAUDE_ADVISOR_BUDGET_DEFAULT_USD = 1
+export const CLAUDE_ADVISOR_BUDGET_CEILING_USD = 25
+export function claudeAdvisorBudgetUsd(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.FOREMAN_CLAUDE_ADVISOR_BUDGET_USD?.trim()
+  if (!raw || !/^\d+(\.\d+)?$/.test(raw)) return CLAUDE_ADVISOR_BUDGET_DEFAULT_USD
+  const n = Number(raw)
+  return n > 0 && n <= CLAUDE_ADVISOR_BUDGET_CEILING_USD ? n : CLAUDE_ADVISOR_BUDGET_DEFAULT_USD
+}
+
+/**
+ * 0.6.35: why a seat that exited non-zero failed, read from structured state first and then
+ * from the TAIL of stderr only — Codex echoes the prompt at the top of stderr, so a prompt
+ * that mentions a 401 must not read as an auth failure. Unknown stays unknown.
+ */
+export type AdvisorFailureClass = "timed_out" | "auth_failed" | "budget_exceeded" | "model_rejected"
+const FAILURE_TAIL_LINES = 25
+export function classifyAdvisorFailure(result: ExternalCliResult): AdvisorFailureClass | null {
+  if (result.timedOut) return "timed_out"
+  if (result.exitCode === 0) return null
+  const tail = result.stderr.split("\n").slice(-FAILURE_TAIL_LINES).join("\n")
+  if (/Exceeded USD budget/i.test(tail)) return "budget_exceeded"
+  if (/\b401 Unauthorized\b|\b403 Forbidden\b|Incorrect API key|invalid[_ ]api[_ ]key|not logged in|please (run )?\S*\s*login/i.test(tail)) return "auth_failed"
+  if (/model is not supported|requires a newer version of Codex|model[_ ]not[_ ]found|unknown model/i.test(tail)) return "model_rejected"
+  return null
+}
+export const ADVISOR_FAILURE_HINT: Readonly<Record<AdvisorFailureClass, string>> = {
+  timed_out: "the seat ran out of time; narrow the packet or raise timeout_ms (and the host's tool timeout, see host_status)",
+  auth_failed: "the CLI's credential was rejected; re-authenticate it (codex: codex logout && codex login; claude: /login). capability_check reports local login state only, not whether the service accepts it",
+  budget_exceeded: "the Claude seat hit its USD cap; set FOREMAN_CLAUDE_ADVISOR_BUDGET_USD (max 25) or shrink the packet",
+  model_rejected: "the CLI refused the pinned model; upgrade the CLI or pick a model the account tier allows",
+}
+
+const ADVISOR_CONFIGS: Record<AdvisorCli, { binaries: readonly string[]; buildArgs: () => string[]; prompt: "stdin" | "tempfile" }> = {
   claude: {
+    binaries: ["claude"],
+    prompt: "stdin",
     buildArgs: () => [
       "-p",
       "--no-session-persistence",
@@ -87,11 +144,13 @@ const ADVISOR_CONFIGS: Record<AdvisorCli, { buildArgs: () => string[] }> = {
       "--model", "claude-fable-5",
       "--effort", "max",
       "--tools=",
-      "--max-budget-usd", "1",
+      "--max-budget-usd", String(claudeAdvisorBudgetUsd()),
       "--output-format", "text",
     ],
   },
   codex: {
+    binaries: ["codex"],
+    prompt: "stdin",
     buildArgs: () => [
       "exec", "--skip-git-repo-check", "-s", "read-only",
       "-m", CODEX_ADVISOR_MODEL,
@@ -100,6 +159,8 @@ const ADVISOR_CONFIGS: Record<AdvisorCli, { buildArgs: () => string[] }> = {
     ],
   },
   gemini: {
+    binaries: ["gemini"],
+    prompt: "stdin",
     // The model id is passed directly (0.6.6); the earlier `arch-review` was a custom alias
     // that existed only in one machine's ~/.gemini/settings.json. JSON output (0.6.7) so the
     // served model and thinking tokens can be read from the run stats: an accepted id is no
@@ -109,6 +170,22 @@ const ADVISOR_CONFIGS: Record<AdvisorCli, { buildArgs: () => string[] }> = {
       "--approval-mode", "plan", "--output-format", "json"
     ],
   },
+  cursor: {
+    binaries: CURSOR_AGENT_BINS,
+    prompt: "tempfile",
+    buildArgs: () => [...CURSOR_ADVISOR_ARGS],
+  },
+}
+
+async function withTempPrompt<T>(prompt: string, fn: (filePath: string) => Promise<T>): Promise<T> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "foreman-cursor-"))
+  const filePath = path.join(dir, "prompt.txt")
+  await fs.writeFile(filePath, prompt, { encoding: "utf-8", mode: 0o600 })
+  try {
+    return await fn(filePath)
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {})
+  }
 }
 
 export async function invokeAdvisor(
@@ -121,15 +198,23 @@ export async function invokeAdvisor(
     return { stdout: '', stderr: `unknown cli: ${cli}`, timedOut: false, exitCode: -1, truncated: false }
   }
 
-  const resolution = await resolveInvocation(cli)
+  const resolution = config.binaries.length === 1
+    ? await resolveInvocation(config.binaries[0])
+    : await resolveFirst(config.binaries)
   if (!resolution.ok) {
     return { stdout: '', stderr: resolution.reason, timedOut: false, exitCode: -1, truncated: false }
   }
 
   const plan = resolution.plan
-  const fullArgs = [...plan.args, ...config.buildArgs()]
+  const built = config.buildArgs()
 
-  return runWithStdin(plan.command, fullArgs, prompt, timeoutMs)
+  if (config.prompt === "tempfile") {
+    return withTempPrompt(prompt, (filePath) =>
+      runExternalCli(plan.command, [...plan.args, ...built, cursorPromptArg(filePath)], timeoutMs)
+    )
+  }
+
+  return runWithStdin(plan.command, [...plan.args, ...built], prompt, timeoutMs)
 }
 
 /** Prefix runWithStdin puts on a stream it cut (lib/externalCli.ts). Stripped before the emptiness test. */
@@ -267,7 +352,9 @@ export function formatAdvisorResult(
     const kept = Math.min(lines.length, STDERR_TAIL_LINES)
     return `${meta}\n\nSTDOUT\n${result.stdout}\n\nSTDERR (tail ${kept} of ${lines.length} lines)\n${lines.slice(-kept).join("\n")}`
   }
-  return `${meta}\n\nSTDOUT\n${result.stdout}\n\nSTDERR\n${result.stderr}`
+  const failed = classifyAdvisorFailure(result)
+  const why = failed ? `\ncompletion: failed\nfailure_reason: ${failed}\nhint: ${ADVISOR_FAILURE_HINT[failed]}` : ""
+  return `${meta}${why}\n\nSTDOUT\n${result.stdout}\n\nSTDERR\n${result.stderr}`
 }
 
 /** Lines of stderr kept when a successful call's stdout was truncated. */

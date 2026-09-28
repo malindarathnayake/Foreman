@@ -79,9 +79,12 @@ context: "Implement the approved spec one unit at a time. Resume from Foreman st
 ```text
 mcp__foreman__write_ledger  set_unit_status p1/u1 { s: "ip" }
                             (model reads the directive in spec.md and the source files it names)
-mcp__foreman__write_ledger  set_unit_status p1/u1 { s: "delegated", brief: "...", tier: "standard",
-                                                   preflight: { symbols_grepped: 4, self_consistent: true, telemetry: "n/a" } }
+mcp__foreman__preflight_check  p1/u1 { brief: "...", symbols: [...], files: [...] }   -> brief_hash
+mcp__foreman__write_ledger  set_unit_status p1/u1 { s: "delegated", tier: "standard",
+                                                   preflight: { receipt: "<brief_hash>", symbols_grepped: 4, self_consistent: true, telemetry: "n/a" },
+                                                   guard: { files: [...], allowed_files: [...] } }
 Agent                       worker subagent implements the brief, returns a completion report
+mcp__foreman__repo_guard    { operation: "compare", phase: "p1", unit_id: "u1" }
                             (model reads every changed file)
 mcp__foreman__run_tests     { runner: "npm", args: ["test", "--", "u1"] }
 mcp__foreman__write_ledger  set_verdict p1/u1 { v: "pass" }
@@ -101,10 +104,10 @@ mcp__foreman__write_ledger    update_phase_gate p1 { g: "pass" }
 mcp__foreman__write_journal   end_session
 ```
 
-If a reviewer finding was classified `confirmed`, the gate write is refused with `CONFIRMED FINDINGS` and the model goes back to the affected unit: rejection, fix, re-verdict, fresh review, then the gate.
+If a reviewer finding was classified `confirmed` above LOW, the gate write is refused with `CONFIRMED FINDINGS` and the model goes back to the affected unit: rejection, fix, re-verdict, a fresh review of the changed units, then the gate. A confirmed LOW does not block; the gate lists it and records it on the phase as advisory.
 
-The session ends with: `Phase 1 complete. New session required. All state persisted to ledger + progress.` Start a new session and paste the session-3 prompt again. `session_orient` picks up at `p2/u1`.
+The phase ends with: `Phase 1 complete. All state persisted to ledger + progress.` The model continues with the next phase in the same conversation. If you do start a new session, paste the session-3 prompt again; `session_orient` picks up at `p2/u1`. Foreman does not prompt you to compact after units; the model asks for `/compact` or a new session only when the host shows context usage above 80%, and suggests `/clear` once the last phase gate has passed.
 
 ## If you need to stop mid-unit
 
-Stop. The next session's `session_orient` reports the unit as in progress, and the procedure restarts it: the model re-reads the files, rebuilds the brief, and respawns the worker. It does not resume the previous worker's half-finished edit. See [Resuming a session](../how-it-works/resuming.md).
+Stop. The next session's `session_orient` reports the unit as in progress, and the procedure restarts it: the model re-reads the files, rebuilds the brief, and respawns the worker. It does not resume the previous worker's half-finished edit. If a delegated attempt still holds the repository window, `session_orient` reports it as `open_attempt` and the model checks and compares that attempt instead of re-delegating. See [Resuming a session](../how-it-works/resuming.md).

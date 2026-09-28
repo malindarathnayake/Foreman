@@ -22,6 +22,7 @@ import {
   isValidDiagramId,
   hasActiveConnections,
 } from "../lib/diagramServer.js"
+import { quoteMermaidEdgeLabels } from "../lib/mermaidLabels.js"
 
 export interface PreviewDiagramArgs {
   source?: string
@@ -90,8 +91,9 @@ export async function previewDiagram(
         /* new file */
       }
       // Atomic write: .tmp then rename (mirrors lib/ledger.ts:255).
+      // Quote unquoted flowchart labels so `--` inside them is not a new edge.
       const tmpPath = `${filePath}.tmp`
-      await fs.writeFile(tmpPath, args.source, "utf-8")
+      await fs.writeFile(tmpPath, quoteMermaidEdgeLabels(args.source), "utf-8")
       await fs.rename(tmpPath, filePath)
       status = existed ? "updated" : "wrote"
     } else {
