@@ -589,7 +589,7 @@ describe("set_verdict enforces the guard", () => {
       await delegateInline(["exportedA"])
       const { handleWriteLedger } = await import("../src/tools/writeLedger.js")
       const out = await handleWriteLedger(ledgerPath, { operation: "set_verdict", phase: "p1", unit_id: "u1", data: { v: "pass" } },
-        "claude-code", undefined, { projectRoot: os.tmpdir(), specPath: path.join(repoDir, "spec.md"), guardPaths: { ledgerPath } })
+        "claude-code", undefined, { projectRoot: await fs.mkdtemp(path.join(os.tmpdir(), "other-root-")), specPath: path.join(repoDir, "spec.md"), guardPaths: { ledgerPath } })
       expect(out).toContain("guard compared at verdict: ok")
     })
 
