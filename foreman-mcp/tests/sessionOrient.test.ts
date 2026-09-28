@@ -70,6 +70,7 @@ describe("sessionOrient", () => {
     const result = await sessionOrient(ledgerPath, progressPath)
 
     expect(result).toContain("status: in_progress")
+    expect(result).not.toContain("session_hygiene")
     expect(result).toContain("current_phase: p1")
     expect(result).toContain("current_unit: u1")
     expect(result).toContain("next_pending_unit: p1/u1")
@@ -144,6 +145,9 @@ describe("sessionOrient", () => {
     expect(result).toContain("phases_total: 2")
     expect(result).toContain("phases_done: 2")
     expect(result).toContain("last_completed_unit: p2/u4")
+    expect(result).toContain("session_hygiene: clear")
+    expect(result).toContain("SESSION HYGIENE: Ledger is complete.")
+    expect(result).toContain("/clear")
   })
 
   // ─── Test 5: blocked ledger ─────────────────────────────────────────────────

@@ -33,14 +33,14 @@ describe("codex_agents_init writes the tiered implementation seats", () => {
   it("pins a probe-verified model to each implementation seat", async () => {
     await codexAgentsInit({ project_dir: dir, roles: ["worker_light", "worker", "worker_heavy"] })
     expect(await roleToml("worker_light")).toContain('model = "gpt-5.6-terra"')
-    expect(await roleToml("worker")).toContain('model = "gpt-5.6-sol"')
+    expect(await roleToml("worker")).toContain('model = "gpt-6-sol"')
     expect(await roleToml("worker_heavy")).toContain('model = "gpt-6-astra"')
   })
 
   it("the table is the single source of those defaults", () => {
     expect(CODEX_SEAT_MODELS).toEqual({
       worker_light: "gpt-5.6-terra",
-      worker: "gpt-5.6-sol",
+      worker: "gpt-6-sol",
       worker_heavy: "gpt-6-astra",
     })
   })
@@ -48,7 +48,7 @@ describe("codex_agents_init writes the tiered implementation seats", () => {
   it("an explicit pin overrides the default, because ids rotate", async () => {
     await codexAgentsInit({ project_dir: dir, roles: ["worker"], models: { worker: "gpt-5.6-terra" } })
     expect(await roleToml("worker")).toContain('model = "gpt-5.6-terra"')
-    expect(await roleToml("worker")).not.toContain("gpt-5.6-sol")
+    expect(await roleToml("worker")).not.toContain("gpt-6-sol")
   })
 
   it("every implementation seat can write, and no seat may spawn another", async () => {
@@ -103,11 +103,15 @@ describe("the Codex profile maps a unit to a seat", () => {
 })
 
 describe("no other host is affected", () => {
-  it("only the codex profile mentions the seats or spawn_agent", () => {
+  it("only the codex profile mentions the Codex seats or spawn_agent", () => {
     for (const host of KNOWN_HOSTS.filter((h) => h !== "codex")) {
       const p = getProfile(host as HostId).placeholders
       for (const key of ["worker_invoke", "worker_fanout"]) {
-        expect(p[key], `${host}.${key}`).not.toMatch(/worker_light|worker_heavy|spawn_agent/)
+        // Cursor names `foreman-worker-light` / `foreman-worker-heavy`; those must not
+        // trip a substring match on the Codex role ids `worker_light` / `worker_heavy`.
+        expect(p[key], `${host}.${key}`).not.toContain("spawn_agent")
+        expect(p[key], `${host}.${key}`).not.toContain("`worker_light`")
+        expect(p[key], `${host}.${key}`).not.toContain("`worker_heavy`")
       }
     }
   })

@@ -52,7 +52,22 @@ export interface TransportBudgets {
   activityTimeoutMs: number
   /** Hard cap on total body bytes. Exceeded → WORKER_RESPONSE_TOO_LARGE (not refunded). */
   responseMaxBytes: number
+  /**
+   * 0.6.39: whole-call deadline. The activity budget alone let an endpoint that sends a small
+   * chunk every few minutes run forever. Exceeded → WORKER_TIMEOUT (refunded).
+   */
+  totalTimeoutMs?: number
 }
+
+/** 0.6.39: 30 minutes, the longest any Foreman seat or worker call is expected to run. */
+export const DEFAULT_TOTAL_TIMEOUT_MS = 1_800_000
+
+/** 0.6.39: per-call controls — the host's cancel signal and a progress tick. */
+export interface CallControls {
+  signal?: AbortSignal
+  onTick?: (elapsedMs: number) => void
+}
+const TICK_MS = 20_000
 
 /**
  * Reads the three FOREMAN_WORKER_* budget knobs. Council calls share these knobs
@@ -64,6 +79,7 @@ export function readTransportBudgets(): TransportBudgets {
     connectTimeoutMs: envInt("FOREMAN_WORKER_CONNECT_TIMEOUT_MS", DEFAULT_CONNECT_TIMEOUT_MS),
     activityTimeoutMs: envInt("FOREMAN_WORKER_ACTIVITY_TIMEOUT_MS", DEFAULT_ACTIVITY_TIMEOUT_MS),
     responseMaxBytes: envInt("FOREMAN_WORKER_RESPONSE_MAX_BYTES", DEFAULT_RESPONSE_MAX_BYTES),
+    totalTimeoutMs: envInt("FOREMAN_WORKER_TOTAL_TIMEOUT_MS", DEFAULT_TOTAL_TIMEOUT_MS),
   }
 }
 
@@ -80,10 +96,43 @@ export async function postChat(
   url: string,
   headers: Record<string, string>,
   body: string,
-  budgets: TransportBudgets
+  budgets: TransportBudgets,
+  controls: CallControls = {}
+): Promise<NetResult> {
+  // 0.6.39: one controller carries every stop reason; the reason decides the stage.
+  const controller = new AbortController()
+  const started = Date.now()
+  let stopped: "total" | "cancelled" | null = null
+  const totalMs = budgets.totalTimeoutMs ?? DEFAULT_TOTAL_TIMEOUT_MS
+  if (controls.signal?.aborted) {
+    return { kind: "neterror", stage: "WORKER_TIMEOUT", refunded: true, detail: "cancelled by the host before the request started" }
+  }
+  const totalTimer = setTimeout(() => { stopped ??= "total"; controller.abort() }, totalMs)
+  const onAbort = () => { stopped ??= "cancelled"; controller.abort() }
+  controls.signal?.addEventListener("abort", onAbort, { once: true })
+  const tick = controls.onTick ? setInterval(() => { try { controls.onTick!(Date.now() - started) } catch { /* best-effort */ } }, TICK_MS) : undefined
+  try {
+    const result = await postChatOnce(url, headers, body, budgets, controller)
+    if (stopped !== null && result.kind === "neterror") {
+      return { kind: "neterror", stage: "WORKER_TIMEOUT", refunded: true,
+        detail: stopped === "total" ? `overall deadline of ${totalMs}ms reached` : "cancelled by the host" }
+    }
+    return result
+  } finally {
+    clearTimeout(totalTimer)
+    if (tick) clearInterval(tick)
+    controls.signal?.removeEventListener("abort", onAbort)
+  }
+}
+
+async function postChatOnce(
+  url: string,
+  headers: Record<string, string>,
+  body: string,
+  budgets: TransportBudgets,
+  controller: AbortController
 ): Promise<NetResult> {
   const { connectTimeoutMs, activityTimeoutMs, responseMaxBytes } = budgets
-  const controller = new AbortController()
   let connectFired = false
   let activityFired = false
 

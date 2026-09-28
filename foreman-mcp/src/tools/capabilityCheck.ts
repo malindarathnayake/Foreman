@@ -1,15 +1,15 @@
-import { runExternalCli, resolveInvocation, type SpawnPlan } from "../lib/externalCli.js"
+import { runExternalCli, resolveFirst, type SpawnPlan } from "../lib/externalCli.js"
 import { toKeyValue } from "../lib/toon.js"
-import { type HostId, getProfile } from "../lib/hostProfiles.js"
-import type { AdvisorCli } from "../lib/advisorCli.js"
+import { type HostId } from "../lib/hostProfiles.js"
+import { CURSOR_AGENT_BINS, type AdvisorCli } from "../lib/advisorCli.js"
 import { GEMINI_ADVISOR_MODEL, parseGeminiJson } from "./invokeAdvisor.js"
 
 // Module-level cache for resolved SpawnPlans
 const resolvedPlans = new Map<string, SpawnPlan>()
 
-const HEALTH_COMMANDS: Record<AdvisorCli, { command: string; args: string[] }> = {
+const HEALTH_COMMANDS: Record<AdvisorCli, { binaries: readonly string[]; args: string[] }> = {
   claude: {
-    command: "claude",
+    binaries: ["claude"],
     args: ["auth", "status"],
   },
   codex: {
@@ -17,14 +17,21 @@ const HEALTH_COMMANDS: Record<AdvisorCli, { command: string; args: string[] }> =
     // non-zero = expired/logged out. A full `codex exec` health call is slow, model-
     // dependent (a stale `-m` id alone makes it fail), and times out under the 15s
     // budget — all of which surface as a false `auth_status: expired`.
-    command: "codex",
+    binaries: ["codex"],
     args: ["login", "status"],
   },
   gemini: {
-    command: "gemini",
+    binaries: ["gemini"],
     // Same model as the review seat, and JSON output so the probe can read which model
     // actually served the request (0.6.7): an accepted id is no proof of the model.
     args: ["-p", "echo health check", "-m", GEMINI_ADVISOR_MODEL, "--approval-mode", "plan", "--output-format", "json"],
+  },
+  cursor: {
+    binaries: CURSOR_AGENT_BINS,
+    // Live probe of `agent status --format json` (observed 2026.09.15-d2fe57e):
+    // { status, isAuthenticated, hasAccessToken, hasRefreshToken, userInfo }.
+    // Do not use `agent mcp list` — that command can hang waiting on MCP approval.
+    args: ["status", "--format", "json"],
   },
 }
 
@@ -65,12 +72,16 @@ export const SENTINEL_TABLE: readonly SentinelRow[] = [
 function hintFor(status: AuthStatus, cli: AdvisorCli): string | null {
   switch (status) {
     case "ok": return null
-    case "not_found": return "install the CLI or fix PATH, then re-run capability_check"
+    case "not_found":
+      return cli === "cursor"
+        ? "install the Cursor Agent CLI (agent / cursor-agent) or fix PATH, then re-run capability_check"
+        : "install the CLI or fix PATH, then re-run capability_check"
     case "probe_timeout": return "probe exceeded its 15s budget — retry; if persistent, check login state and network"
     case "not_trusted": return "trust the folder: run the gemini CLI interactively in this directory once and accept the trust prompt"
     case "auth_expired": {
       if (cli === "claude") return "re-login: run `claude auth login`"
       if (cli === "codex") return "re-login: run `codex login`"
+      if (cli === "cursor") return "re-login: run `agent login`"
       return "re-authenticate: run the gemini CLI interactively (or fix GEMINI_API_KEY)"
     }
     case "model_substituted":
@@ -106,64 +117,55 @@ function respond(
     available: String(available),
     version,
     auth_status: status,
+    // 0.6.35 (field report 2026-09-25): codex login status said ok while every request got a
+    // 401. The probe reads local login state only; say so rather than imply the service agrees.
+    ...(status === "ok" ? { auth_scope: "local login state; the service can still reject the credential (invoke_advisor then reports failure_reason: auth_failed)" } : {}),
     ...extra,
     ...(hint ? { hint } : {}),
   })
 }
 
 /**
- * Synthetic capability response for non-CLI hosts. In Cursor mode the LLM has
- * Task subagent access by definition — there is no binary to probe. Returning
- * `available: true` with `mechanism: cursor_subagent` lets the deliberation
- * tier mapping treat both advisors as available without shelling out.
- *
- * Cursor keeps its historical semantic mapping for codex/gemini:
- * codex -> Advisor A (GPT-5.6-SOL), gemini -> Advisor B
- * (Gemini-3.1-pro / Composer fallback). An explicit claude check still probes
- * the local Claude CLI instead of pretending Cursor supplied that seat.
+ * `agent status --format json` (Cursor Agent CLI 2026.09.15-d2fe57e) carries
+ * isAuthenticated as a boolean. userInfo is PII and must not be copied into output.
  */
-function syntheticCursorResponse(cli: "codex" | "gemini"): string {
-  const profile = getProfile("cursor")
-  const advisorPlaceholder = cli === "codex" ? "advisor_a" : "advisor_b"
-  const advisorText = profile.placeholders[advisorPlaceholder] ?? ""
-  // Extract a model hint from the placeholder text for visibility (best-effort).
-  const modelMatch = advisorText.match(/model:\s*"([^"]+)"/)
-  const model = modelMatch ? modelMatch[1] : "unknown"
-  return toKeyValue({
-    cli,
-    available: "true",
-    version: "cursor_subagent",
-    auth_status: "ok",
-    mechanism: "cursor_subagent",
-    model,
-  })
+export function parseCursorAuthStatus(stdout: string): { isAuthenticated?: boolean } {
+  const trimmed = stdout.trim()
+  if (!trimmed.startsWith("{")) return {}
+  try {
+    const doc: unknown = JSON.parse(trimmed)
+    if (typeof doc !== "object" || doc === null) return {}
+    const auth = (doc as { isAuthenticated?: unknown }).isAuthenticated
+    if (typeof auth === "boolean") return { isAuthenticated: auth }
+    return {}
+  } catch {
+    return {}
+  }
 }
 
 export async function capabilityCheck(
   cli: AdvisorCli,
-  host: HostId = "claude-code"
+  _host: HostId = "claude-code"
 ): Promise<string> {
-  if (host === "cursor" && cli !== "claude") {
-    return syntheticCursorResponse(cli)
-  }
-
   const config = HEALTH_COMMANDS[cli]
   if (!config) {
     return respond(cli, false, "null", "not_found")
   }
 
-  // Resolve CLI to a SpawnPlan (platform-aware: which/where, .cmd wrapping)
   let plan: SpawnPlan
   if (resolvedPlans.has(cli)) {
     plan = resolvedPlans.get(cli)!
   } else {
-    const resolution = await resolveInvocation(config.command)
+    const resolution = await resolveFirst(config.binaries)
     if (!resolution.ok) {
       return respond(cli, false, "null", "not_found")
     }
     plan = resolution.plan
     resolvedPlans.set(cli, plan)
   }
+
+  const cursorExtra: Record<string, string> | undefined =
+    cli === "cursor" ? { mechanism: "cursor_agent_cli" } : undefined
 
   // First check version
   let version: string | null = null
@@ -184,11 +186,23 @@ export async function capabilityCheck(
   }
 
   if (result.timedOut) {
-    return respond(cli, true, version ?? "unknown", "probe_timeout")
+    return respond(cli, true, version ?? "unknown", "probe_timeout", cursorExtra)
   }
 
   if (result.exitCode !== 0) {
-    return respond(cli, true, version ?? "unknown", classifyNonZeroExit(cli, result.exitCode, result.stderr ?? ""))
+    return respond(cli, true, version ?? "unknown", classifyNonZeroExit(cli, result.exitCode, result.stderr ?? ""), cursorExtra)
+  }
+
+  // 0.6.32: Cursor Agent CLI — exit 0 is not enough; isAuthenticated is the auth contract.
+  if (cli === "cursor") {
+    const auth = parseCursorAuthStatus(result.stdout ?? "")
+    if (auth.isAuthenticated === true) {
+      return respond(cli, true, version ?? "unknown", "ok", cursorExtra)
+    }
+    if (auth.isAuthenticated === false) {
+      return respond(cli, true, version ?? "unknown", "auth_expired", cursorExtra)
+    }
+    return respond(cli, true, version ?? "unknown", "error", cursorExtra)
   }
 
   // 0.6.7: for gemini, exit 0 is not enough — the run stats say which model served the

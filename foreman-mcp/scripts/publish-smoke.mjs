@@ -77,6 +77,7 @@ export const EXPECTED_TOOLS = [
   "invoke_council",
   "repo_guard",
   "claude_workflows_init",
+  "claude_agents_init",
   "preflight_check",
   "verify_oracle",
   "phase_ownership",

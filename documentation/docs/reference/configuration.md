@@ -32,11 +32,14 @@ Any other flag prints usage. With no flag the process serves MCP on stdin and st
 | `FOREMAN_TEST_ALLOWLIST` | Extra `run_tests` runners, comma separated | none |
 | `FOREMAN_BRIEF_MAX_BYTES` | `invoke_worker` brief plus file payload cap | 262144 |
 | `FOREMAN_WORKER_RESPONSE_MAX_BYTES` | `invoke_worker` response cap | see tool description |
+| `FOREMAN_WORKER_TOTAL_TIMEOUT_MS` | Whole-call deadline for `invoke_worker` and `invoke_council` HTTP calls, besides the connect and gap-between-chunks budgets | 1800000 (30 min) |
 | `FOREMAN_WORKER_CONNECT_TIMEOUT_MS`, `FOREMAN_WORKER_ACTIVITY_TIMEOUT_MS` | `invoke_worker` two-phase timeouts | see tool description |
 | `FOREMAN_COUNCIL_MAX_CALLS` | Cap on seats times lenses per `invoke_council` call | see tool description |
 | `FOREMAN_COUNCIL_EFFORT_MAX_TOKENS`, `FOREMAN_COUNCIL_PACKET_MAX_BYTES`, `FOREMAN_COUNCIL_RESPONSE_MAX_BYTES` | Council budgets | see tool description |
 | `FOREMAN_COUNCIL_SEAT_A`, `_B`, `_C`; `FOREMAN_COUNCIL_LABEL_<seat>`; `FOREMAN_COUNCIL_REASONING_<seat>`; `FOREMAN_COUNCIL_REASONING_MAX_TOKENS_<seat>` | Council seat models and reasoning settings | unset; the council reports `unavailable` |
 | `FOREMAN_LANGFUSE_BASE_URL`, `_PUBLIC_KEY`, `_SECRET_KEY`, `_TIMEOUT_MS`, `_ENVIRONMENT`, `_RELEASE`, `_CONTENT` | Optional Langfuse tracing for council runs. Tracing is off unless the URL and keys are set; `_CONTENT` controls whether prompt and finding text is sent | off |
+| `FOREMAN_TRUST_SYSTEM_CA` | `0` stops Foreman adding the operating system's certificate store to Node's TLS trust at startup. With it on (the default), `contract_probe` reaches services signed by your own CA; nothing disables verification | on |
+| `FOREMAN_CLAUDE_ADVISOR_BUDGET_USD` | USD cap for one `invoke_advisor` run on the Claude CLI seat. A finite positive number up to 25; anything else keeps the default | 1 |
 | `FOREMAN_PREVIEW` | `0` disables the diagram preview server | on |
 | `FOREMAN_NO_OPEN` | Set to stop `preview_diagram` from opening a browser | unset |
 

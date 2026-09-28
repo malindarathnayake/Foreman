@@ -5,9 +5,11 @@
  * a file that is NOT on this list is never excused. Writers import their names from here;
  * the guard imports the predicate. There is no second list. [CWE-863]
  *
- * Not on this list, by design: preview_diagram output under <docsDir>/diagrams and the
- * .codex/agents files codex_agents_init writes. Those are project artifacts, and a change
- * to them during a unit window is charged to whoever holds the window, as it is today.
+ * Not on this list, by design: preview_diagram output under <docsDir>/diagrams, the
+ * .codex/agents files codex_agents_init writes, the .cursor/agents files
+ * cursor_agents_init writes, and the .claude/agents files claude_agents_init writes.
+ * Those are project artifacts, and a change to them during a unit window is charged
+ * to whoever holds the window, as it is today.
  *
  * Docs/PROGRESS.md is a hand-written document. Foreman owns only its fenced checklist
  * block, so the guard fingerprints that file with the fence REMOVED rather than excusing

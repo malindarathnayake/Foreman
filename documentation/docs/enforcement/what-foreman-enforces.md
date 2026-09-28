@@ -27,7 +27,8 @@ The **ledger validation** is TypeScript in `lib/ledger.ts`. It runs on every `wr
 | A rejection on a passed unit reopens it to `pending` | The model writes the rejection when it should |
 | A gate needs every unit passed and every declared unit registered | The units were the right units |
 | A gate needs a review recorded after the latest verdict | The review read the right files |
-| A gate refuses while a review carries a `confirmed` finding | The classification was honest |
+| A gate refuses while a review carries a `confirmed` finding above LOW; a confirmed LOW is recorded as advisory | The classification and the severity were honest |
+| A repository-guard violation stays open across re-delegations until a later compare finds its paths restored, or you waive it | The model runs the compare |
 | A gate refuses while a current review is partial, failed, or silent with no examined list | The examined list is true |
 | A gate on a `hot_path` or `security_boundary` phase needs a declared frontier seat | The seat really is frontier-class |
 | A gate refuses when an external worker's sidecar chain contradicts the ledger | Host-native worker behavior, which has no sidecar |
@@ -59,19 +60,22 @@ The **ledger validation** is TypeScript in `lib/ledger.ts`. It runs on every `wr
 | same | flagged scope without `agent_class: "frontier"` | `SEAT MINIMUM` | `user_override: true` |
 | same | sidecar terminal outcome contradicts a pass | `DISCIPLINE ADHERENCE` | `user_override: true`, recorded in `discipline_overrides` |
 | same | no independent review, and no eligible verification record, at or after the latest verdict; `cross_exam` records never count | `REVIEW REQUIRED` | `user_override: true`, recorded as `review_override` |
-| same | a current review has a `confirmed` finding | `CONFIRMED FINDINGS` | `user_override: true`, recorded as `confirmed_override` |
+| same | a current review has a `confirmed` finding above LOW (a finding naming `units` counts only while its record still carries one of them) | `CONFIRMED FINDINGS` | `user_override: true`, recorded as `confirmed_override`. A confirmed LOW never refuses; it is listed and recorded as `advisory_findings` |
 | same | a current review is `partial`, `failed`, has zero findings with no `checked` list and no `completion: complete`, or carries a finding recorded before 0.6.4 without a classification | `INCOMPLETE REVIEW` | `user_override: true`, recorded as `incomplete_override` |
-| `set_unit_status { s: "delegated" }` | the brief's hash has no passing `preflight_check` record for this unit and phase | `PREFLIGHT RECEIPT` | none — run `preflight_check` |
+| `set_unit_status { s: "delegated" }` | the brief's hash has no passing `preflight_check` record for this unit and phase, or the unit's contract block changed or was deleted since that preflight | `PREFLIGHT RECEIPT` | none — run `preflight_check` |
+| same | the unit's contract block does not parse | `CONTRACT INVALID` | none — fix the block |
+| same | `data.guard` was given and the baseline was refused; nothing is recorded | `GUARD BLOCKED` | fix the cause named in the message |
 | same | the spec's `Test:` line does not select the Go package of an authorized file | `CHECKPOINT REACH` | `user_override: true`, recorded as `reach_override` |
 | same | another unit holds the repository window | `WINDOW BUSY` | record its verdict or `close_attempt` first |
 | `repo_guard { operation: "snapshot" }` | the authorized file set would be empty by accident | `refused` | pass `allowed_files`, or `[]` to declare a read-only guard |
 | same | an authorized file is non-empty and entirely NUL bytes | `damaged` | restore the file |
-| `set_verdict { v: "pass" }` | the attempt's ownership guard did not clear | `REPOSITORY GUARD` | `user_override: true`, recorded as `guard_override` |
+| `set_verdict { v: "pass" }` | the attempt's ownership guard did not clear, or an earlier attempt's violation is neither resolved nor waived | `REPOSITORY GUARD` | `user_override: true`, recorded as `guard_override` on each open violation |
 | same | a declared smoke plan or deliverable has no passing `live_smoke` for this attempt, or its digests moved | `SMOKE REQUIRED`, `DELIVERABLES` | `user_override: true`, recorded as `smoke` |
 | same | a file or test promised under `creates` still does not exist | `FORWARD CITATIONS UNMET` | none — create it |
 | same | the spec contract or checkpoint moved since the attempt was frozen | `CONTRACT CHANGED`, `CHECKPOINT CHANGED` | none — re-preflight |
 | `update_phase_gate { g: "pass" }` | three consecutive counted passes carried by same-provider review alone | `INDEPENDENCE BOUND` | a receipted cross-vendor seat, or `user_override` on the record |
-| `record_review` | the seat receipt is already bound to a review the ledger still holds | `SEAT RECEIPT` | none — a receipt whose record is gone is reclaimable automatically |
+| `record_review` | the seat receipt is already bound to a review the ledger still holds, or the seat started before the newest verdict or attempt in the phase | `SEAT RECEIPT` | none — a receipt whose record is gone is reclaimable automatically; a stale one needs the seat run again |
+| same | a finding's `units` name an unregistered unit | `REVIEW SCOPE` | none — name registered units or omit `units` |
 | any write with a bad shape | field missing, wrong enum, over a limit | `SCHEMA ERROR` | fix the call |
 
 Every override is written into the ledger where `read_ledger` and `session_orient` can show it. There is no silent override.
@@ -85,13 +89,15 @@ write_ledger({
   operation: "set_unit_status", phase: "p1", unit_id: "u1",
   data: {
     s: "delegated",
-    brief: "Add null check on config.port before parseInt; return 400 on missing port",
     tier: "standard",
     route_reason: "single-file change with an existing test",
-    preflight: { symbols_grepped: 3, self_consistent: true, telemetry: "n/a" }
+    preflight: { receipt: "<brief_hash from preflight_check>", symbols_grepped: 3, self_consistent: true, telemetry: "n/a" },
+    guard: { files: ["src/config.ts"], allowed_files: ["src/config.ts", "test/config.test.ts"] }
   }
 })
 ```
+
+The brief text comes from the preflight record the receipt names; `guard` takes the repository baseline in the same write.
 
 A gate that the server refuses:
 

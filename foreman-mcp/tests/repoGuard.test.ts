@@ -6,7 +6,14 @@
 // The "reproduced in review" cases mirror an adversarial pass over the 0.6.10 commit that
 // broke it in nine ways. The headline one: comparing path sets meant a worker overwriting
 // the user's uncommitted work in a file outside the brief returned ok.
-import { describe, it, expect, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest"
+
+// Every test in this file shells out to real git repeatedly (init, add, commit, status,
+// ls-files, stash) and several run a full snapshot/compare cycle. On Windows, under the
+// parallel load of the whole suite, that is routinely past vitest's 5s default — which
+// surfaced as a DIFFERENT test timing out on each run while every one passed in isolation.
+// The budget is the problem, not the tests, so it is set once for the file.
+vi.setConfig({ testTimeout: 30000, hookTimeout: 30000 })
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
@@ -424,6 +431,282 @@ describe("set_verdict enforces the guard", () => {
       data: { s: "ip", direct_fix: "a.ts: rename fooBar to foo_bar" },
     })
     await expect(verdict()).rejects.toThrow(/REPOSITORY GUARD/)
+  })
+
+  // 0.6.34 (Codex adversarial review 2026-09-25): an ordinary re-delegation took a fresh
+  // baseline of the already-violated tree, compared ok against it, and the pass cleared with
+  // the out-of-scope change still in place and no override recorded.
+  describe("a violation is not laundered by an ordinary re-delegation", () => {
+    async function violateThenRedelegate(allowed2 = ["a.ts"]) {
+      await baseline()
+      await fs.writeFile(path.join(repoDir, "b.ts"), "touched\n")
+      await guard("compare")
+      await delegate()
+      await guard("snapshot", { files: ["a.ts"], allowed_files: allowed2 })
+    }
+
+    it("refuses the pass while the attempt-1 stray change is still in the tree", async () => {
+      await violateThenRedelegate()
+      expect(status(await guard("compare"))).toBe("status: ok")
+      await expect(verdict()).rejects.toThrow(/REPOSITORY GUARD.*attempt #1/)
+    })
+
+    it("authorizing the stray file on the next attempt does not clear it", async () => {
+      await violateThenRedelegate(["a.ts", "b.ts"])
+      await guard("compare")
+      await expect(verdict()).rejects.toThrow(/REPOSITORY GUARD.*attempt #1/)
+    })
+
+    it("clears once the stray path is back to its attempt-1 baseline", async () => {
+      await violateThenRedelegate()
+      git(["checkout", "--", "b.ts"])
+      const out = await guard("compare")
+      expect(out).toMatch(/resolved.*attempt #1/)
+      await verdict()
+      const u = await unitOf()
+      expect(u.v).toBe("pass")
+      expect(u.delegations![0].guard?.resolved?.by_attempt).toBe(2)
+    })
+
+    it("user_override waives the earlier violation and records it there", async () => {
+      await violateThenRedelegate()
+      await guard("compare")
+      await verdict({ user_override: true })
+      const u = await unitOf()
+      expect(u.v).toBe("pass")
+      expect(u.delegations![0].guard?.override?.ts).toBeTruthy()
+    })
+  })
+
+  // 0.6.36 (field report 2026-09-27): delegation + snapshot were two calls per unit. data.guard
+  // takes the baseline in the delegation's own write; a refused baseline records nothing.
+  describe("data.guard takes the baseline with the delegation", () => {
+    const delegateGuarded = async (guard: Record<string, unknown>, unit = "u1", projectRoot = repoDir) => {
+      const { handleWriteLedger } = await import("../src/tools/writeLedger.js")
+      return handleWriteLedger(ledgerPath, { operation: "set_unit_status", phase: "p1", unit_id: unit, data: { s: "delegated", brief: BRIEF, preflight: PREFLIGHT, guard } },
+        "claude-code", undefined, { projectRoot, guardPaths: { ledgerPath } })
+    }
+
+    it("records the baseline and the window in one write; compare and verdict work as before", async () => {
+      const out = await delegateGuarded({ allowed_files: ["a.ts"] })
+      expect(out).toContain("baseline recorded (1 authorized file(s)")
+      expect((await readLedger(ledgerPath)).window).toMatchObject({ unit_id: "u1", attempt: 1, stage: "editing" })
+      await fs.writeFile(path.join(repoDir, "a.ts"), "export const a = 9\n")
+      expect(status(await guard("compare"))).toBe("status: ok")
+      await verdict()
+      expect((await unitOf()).v).toBe("pass")
+    })
+
+    it("an explicit snapshot afterwards is answered from the delegation's baseline", async () => {
+      await delegateGuarded({ allowed_files: ["a.ts"] })
+      const again = await guard("snapshot", { files: ["a.ts"], allowed_files: ["a.ts"] })
+      expect(status(again)).toBe("status: recorded")
+      expect(again).toContain("taken at delegation")
+      expect(status(await guard("snapshot", { allowed_files: ["b.ts"] }))).toBe("status: refused")
+    })
+
+    it("a refused baseline refuses the delegation and allocates no attempt", async () => {
+      await expect(delegateGuarded({})).rejects.toThrow(/GUARD BLOCKED: the delegation's baseline was refused/)
+      const u = (await readLedger(ledgerPath)).phases.p1?.units.u1
+      expect(u?.attempt_seq ?? 0).toBe(0)
+    })
+
+    it("outside a git work tree it records no guard and says so", async () => {
+      const plain = await fs.mkdtemp(path.join(os.tmpdir(), "no-git-"))
+      try {
+        const out = await delegateGuarded({ allowed_files: ["a.ts"] }, "u1", plain)
+        expect(out).toContain("no guard recorded (not a git work tree)")
+        expect((await readLedger(ledgerPath)).phases.p1.units.u1.delegations!.at(-1)!.guard).toBeUndefined()
+      } finally { await fs.rm(plain, { recursive: true, force: true }) }
+    })
+
+    // 0.6.38 (field report 2026-09-27): a new fixture had to be named in allowed_files even
+    // though preflight_check creates already declared it. Promised files are frozen in.
+    it("files promised in preflight creates join the authorized set; others still violate", async () => {
+      const { appendPreflight, briefHash, preflightPathFor } = await import("../src/lib/preflight.js")
+      await appendPreflight(preflightPathFor(ledgerPath), {
+        v: 1, ts: new Date().toISOString(), phase: "p1", unit_id: "u1", brief_hash: briefHash(BRIEF), status: "pass",
+        symbols: 1, coverage_ratio: 1, uncovered: 0, flags: 0, dead_citations: 0, ownership_outside: 0,
+        forward: [{ file: "fixtures/new.json", tests: [] }], brief: BRIEF,
+      } as never)
+      const { handleWriteLedger } = await import("../src/tools/writeLedger.js")
+      const out = await handleWriteLedger(ledgerPath, { operation: "set_unit_status", phase: "p1", unit_id: "u1",
+        data: { s: "delegated", brief: BRIEF, preflight: { ...PREFLIGHT, receipt: briefHash(BRIEF) }, guard: { allowed_files: ["a.ts"] } } },
+        "claude-code", undefined, { projectRoot: repoDir, guardPaths: { ledgerPath } })
+      expect(out).toContain("baseline recorded (2 authorized file(s)")
+      await fs.mkdir(path.join(repoDir, "fixtures"), { recursive: true })
+      await fs.writeFile(path.join(repoDir, "fixtures", "new.json"), "{}\n")
+      expect(status(await guard("compare"))).toBe("status: ok")
+      await fs.writeFile(path.join(repoDir, "b.ts"), "touched\n")
+      expect(status(await guard("compare"))).toBe("status: violation")
+    })
+
+    it("another unit's delegation is refused while this window is open", async () => {
+      await delegateGuarded({ allowed_files: ["a.ts"] })
+      await expect(delegateGuarded({ allowed_files: ["b.ts"] }, "u2")).rejects.toThrow(/WINDOW BUSY/)
+    })
+  })
+
+  // 0.6.39 (field data): preflight_check preceded the delegation within 60 s in 86/94 cases and
+  // compare preceded the pass verdict in 36/38. Both can now ride the write they precede.
+  describe("fewer calls per unit", () => {
+    const spec = () => fs.writeFile(path.join(repoDir, "spec.md"), "#### u1 — a\n- Change `exportedA` in a.ts to return 2.\n")
+    const write = async (op: Record<string, unknown>) => {
+      const { handleWriteLedger } = await import("../src/tools/writeLedger.js")
+      return handleWriteLedger(ledgerPath, op, "claude-code", undefined,
+        { projectRoot: repoDir, specPath: path.join(repoDir, "spec.md"), guardPaths: { ledgerPath } })
+    }
+    const delegateInline = (symbols: string[]) => write({ operation: "set_unit_status", phase: "p1", unit_id: "u1", data: {
+      s: "delegated", brief: "Change exportedA in a.ts to return 2, with its test.", preflight_check: { symbols, files: ["a.ts"] },
+      guard: { allowed_files: ["a.ts"] } } })
+
+    it("a delegation runs its preflight inline and records the receipt", async () => {
+      await spec()
+      await delegateInline(["exportedA"])
+      const d = (await unitOf()).delegations!.at(-1)!
+      expect(d.preflight?.receipt).toMatch(/^[0-9a-f]{16}$/)
+      expect(d.guard?.snapshot).toBeDefined()
+    })
+
+    it("a failing inline preflight refuses the delegation with its report and records nothing", async () => {
+      await spec()
+      await expect(delegateInline(["notInTheSpec"])).rejects.toThrow(/PREFLIGHT FAILED[\s\S]*notInTheSpec/)
+      expect((await readLedger(ledgerPath)).phases.p1?.units.u1?.attempt_seq ?? 0).toBe(0)
+    })
+
+    it("a pass verdict compares first when the attempt has no comparison; a stray edit still blocks", async () => {
+      await spec()
+      await delegateInline(["exportedA"])
+      await fs.writeFile(path.join(repoDir, "b.ts"), "touched\n")
+      await expect(write({ operation: "set_verdict", phase: "p1", unit_id: "u1", data: { v: "pass" } })).rejects.toThrow(/REPOSITORY GUARD/)
+      expect((await guardOf())?.result).toBe("violation")
+    })
+
+    // Codex review of 0.6.39: the verdict-time compare ran in the server's directory, not the
+    // baseline's, and recorded a "different repository" violation on an untouched tree.
+    it("the verdict-time compare runs in the baseline's own repository", async () => {
+      await spec()
+      await delegateInline(["exportedA"])
+      const { handleWriteLedger } = await import("../src/tools/writeLedger.js")
+      const out = await handleWriteLedger(ledgerPath, { operation: "set_verdict", phase: "p1", unit_id: "u1", data: { v: "pass" } },
+        "claude-code", undefined, { projectRoot: os.tmpdir(), specPath: path.join(repoDir, "spec.md"), guardPaths: { ledgerPath } })
+      expect(out).toContain("guard compared at verdict: ok")
+    })
+
+    it("a clean attempt passes with the comparison done at the verdict", async () => {
+      await spec()
+      await delegateInline(["exportedA"])
+      await fs.writeFile(path.join(repoDir, "a.ts"), "export const a = 2\n")
+      const out = await write({ operation: "set_verdict", phase: "p1", unit_id: "u1", data: { v: "pass" } })
+      expect(out).toContain("guard compared at verdict: ok")
+      expect((await unitOf()).v).toBe("pass")
+    })
+  })
+
+  // 0.6.39 (field report 2026-09-27): a 10–12 min seat was staled by ANY delegation in the
+  // phase. A receipt pinned to its units' authorized files is judged per unit.
+  describe("review pins", () => {
+    async function passUnit(unit: string, file: string) {
+      const { handleWriteLedger } = await import("../src/tools/writeLedger.js")
+      await handleWriteLedger(ledgerPath, { operation: "set_unit_status", phase: "p1", unit_id: unit, data: { s: "delegated", brief: BRIEF, preflight: PREFLIGHT, guard: { allowed_files: [file] } } },
+        "claude-code", undefined, { projectRoot: repoDir, guardPaths: { ledgerPath } })
+      await handleRepoGuard({ operation: "compare", phase: "p1", unit_id: unit, project_dir: repoDir } as never, { ledgerPath })
+      await writeLedger(ledgerPath, { operation: "set_verdict", phase: "p1", unit_id: unit, data: { v: "pass" } } as never)
+    }
+    async function pinnedReceipt(units: string[]) {
+      const { pinUnits } = await import("../src/lib/reviewPins.js")
+      const { appendReceipt, receiptsPathFor, sha256Hex } = await import("../src/lib/seatReceipts.js")
+      const pins = await pinUnits(await readLedger(ledgerPath), "p1", units, repoDir)
+      const prompt = "review packet " + "x".repeat(1200)
+      return appendReceipt(receiptsPathFor(ledgerPath), {
+        started_ts: new Date().toISOString(), ...(pins ? { pin_phase: pins.phase, pin_units: pins.units, pin_attempts: pins.attempts, pins: pins.pins } : {}),
+        cli: "gemini", provider: "google", model_served: "gemini-3.1-pro-preview", exit_code: 0, failure_reason: null,
+        prompt_sha256: sha256Hex(prompt), bytes_in: prompt.length, bytes_out: 900,
+      })
+    }
+    const recordFor = (receipt: { id: string; prompt_sha256: string }, units: string[]) =>
+      writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: {
+        advisor: "gemini", stage: "independent", completion: "complete", findings: [], checked: ["a.ts"], units,
+        seat_receipt: receipt.id, packet_hash: receipt.prompt_sha256 } } as never,
+        undefined, undefined, "claude-code", undefined, undefined, { projectRoot: repoDir })
+
+    it("another unit moving during the seat does not stale a pinned, scoped review", async () => {
+      await passUnit("u1", "a.ts")
+      await passUnit("u2", "b.ts")
+      const r = await pinnedReceipt(["u1"])
+      expect(r.pins?.map((p) => p.path)).toEqual(["a.ts"])
+      await new Promise((res) => setTimeout(res, 20))
+      await passUnit("u2", "b.ts")
+      await recordFor(r, ["u1"])
+    })
+
+    it("a pinned file changed after the seat started refuses the record", async () => {
+      await passUnit("u1", "a.ts")
+      const r = await pinnedReceipt(["u1"])
+      await fs.writeFile(path.join(repoDir, "a.ts"), "export const a = 42\n")
+      await expect(recordFor(r, ["u1"])).rejects.toThrow(/pinned file\(s\) changed since the seat started: a\.ts/)
+    })
+
+    // Codex review of 0.6.39: pins bind their phase and attempts, come from the current attempt,
+    // and never follow a link outside the root.
+    it("a pinned receipt bound in another phase is refused", async () => {
+      await passUnit("u1", "a.ts")
+      const r = await pinnedReceipt(["u1"])
+      const { appendReceipt, receiptsPathFor } = await import("../src/lib/seatReceipts.js")
+      const moved = await appendReceipt(receiptsPathFor(ledgerPath), { ...r, pin_phase: "p9" } as never)
+      await expect(recordFor(moved, ["u1"])).rejects.toThrow(/pinned for phase 'p9'/)
+    })
+
+    it("a unit that moved between hashing and recording is refused, not waved through", async () => {
+      await passUnit("u1", "a.ts")
+      const r = await pinnedReceipt(["u1"])
+      const { appendReceipt, receiptsPathFor } = await import("../src/lib/seatReceipts.js")
+      const early = await appendReceipt(receiptsPathFor(ledgerPath), { ...r, pin_attempts: { u1: 0 } } as never)
+      await expect(recordFor(early, ["u1"])).rejects.toThrow(/pinned unit\(s\) u1 at an earlier attempt/)
+    })
+
+    it("pins come only from the current attempt's baseline", async () => {
+      await passUnit("u1", "a.ts")
+      await writeLedger(ledgerPath, { operation: "set_unit_status", phase: "p1", unit_id: "u1", data: { s: "delegated", brief: BRIEF, preflight: PREFLIGHT } } as never)
+      const { pinUnits } = await import("../src/lib/reviewPins.js")
+      expect(await pinUnits(await readLedger(ledgerPath), "p1", ["u1"], repoDir)).toBeNull()
+    })
+
+    it("a link that leaves the project root is never pinned [CWE-22]", async () => {
+      const outside = await fs.mkdtemp(path.join(os.tmpdir(), "outside-"))
+      try {
+        await fs.writeFile(path.join(outside, "secret.txt"), "not yours\n")
+        await fs.symlink(outside, path.join(repoDir, "link"), process.platform === "win32" ? "junction" : "dir")
+        await passUnit("u1", "link/secret.txt")
+        const { pinUnits } = await import("../src/lib/reviewPins.js")
+        expect(await pinUnits(await readLedger(ledgerPath), "p1", ["u1"], repoDir)).toBeNull()
+      } finally { await fs.rm(outside, { recursive: true, force: true }) }
+    })
+
+    it("a record covering a unit the seat was not pinned to falls back to the phase-wide rule", async () => {
+      await passUnit("u1", "a.ts")
+      await passUnit("u2", "b.ts")
+      const r = await pinnedReceipt(["u1"])
+      await new Promise((res) => setTimeout(res, 20))
+      await passUnit("u2", "b.ts")
+      await expect(recordFor(r, ["u1", "u2"])).rejects.toThrow(/reviewed old code/)
+    })
+  })
+
+  // 0.6.36 (field report 2026-09-27): after a restart orientation said implement_unit while an
+  // attempt still held the window; re-delegating would replace it under a live worker.
+  it("session_orient names an open attempt and says not to re-delegate", async () => {
+    await baseline()
+    const { sessionOrient } = await import("../src/tools/sessionOrient.js")
+    const out = await sessionOrient(ledgerPath, path.join(repoDir, "progress.json"))
+    expect(out).toMatch(/open_attempt: p1\/u1 #1 \(editing, opened .*; compare: none\)/)
+    expect(out).toContain("Do not re-delegate")
+    await guard("compare")
+    expect(await sessionOrient(ledgerPath, path.join(repoDir, "progress.json"))).toContain("the comparison cleared")
+  })
+
+  it("snapshot output warns that manual edits in the window are charged to the attempt", async () => {
+    expect(await baseline()).toContain("charged to this attempt, whoever made them")
   })
 
   it("a later violation reopens a standing pass", async () => {

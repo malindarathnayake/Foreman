@@ -320,7 +320,8 @@ describe("skillTrimming — implementor", () => {
     // advisor-grounding body
     expect(rendered).toContain("hallucinate library APIs")
     // context-budget body
-    expect(rendered).toContain("ctx_used_pct")
+    expect(rendered).toContain("SESSION HYGIENE:")
+    expect(rendered).toContain("/compact")
     // no-test-attestation body
     expect(rendered).toContain("scope.has_tests === false")
     // host placeholder resolution — implementor uses {{worker_invoke}} (Step 5)
@@ -491,7 +492,7 @@ describe("skillTrimming — _common-protocol", () => {
 
   it("new-section rule anchors present — context-budget, no-test-attestation, advisor-grounding", async () => {
     const content = await readSkill("_common-protocol.md")
-    expect(content).toContain("70%")
+    expect(content).toContain("SESSION HYGIENE:")
     expect(content).toContain("scope.has_tests")
     expect(content.toLowerCase()).toContain("imports")
   })

@@ -140,6 +140,22 @@ describe("release invariants", () => {
     expect(match?.[1]).toBe(pkg.version)
   })
 
+  // 0.6.27: the `changelog` TOOL serves a hardcoded array in src/tools/changelog.ts, NOT the root
+  // CHANGELOG.md. Two releases were written to the markdown and not the array, so the tool told an
+  // operator there was nothing new to adopt while two releases of fixes sat unread. The markdown
+  // invariant above could not catch it because it reads a different file. This reads the tool.
+  it("the changelog TOOL's newest entry === package.json version", async () => {
+    const pkg = await readPackageJson()
+    const { changelog } = await import("../src/tools/changelog.js")
+    const rendered = changelog()
+    const first = rendered.match(/(\d+\.\d+\.\d+)/)
+    expect(first).not.toBeNull()
+    expect(first?.[1]).toBe(pkg.version)
+    // and the root markdown and the tool must agree on that newest version
+    const md = await readRootChangelog()
+    expect(md.match(/^## (\d+\.\d+\.\d+)/m)?.[1]).toBe(first?.[1])
+  })
+
   it("every workflow pins node-version 22", async () => {
     const workflowsDir = new URL("../../.github/workflows/", import.meta.url)
     const entries = await fs.readdir(workflowsDir)

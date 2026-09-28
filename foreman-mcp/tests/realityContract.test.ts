@@ -180,6 +180,52 @@ describe("preflight requires every registered claim under the current contract",
     await write({ operation: "set_unit_status", phase: "p1", unit_id: "u1", data: { s: "delegated", brief, preflight: { symbols_grepped: ["result"], self_consistent: true, receipt: hash } } })
     expect((await unit()).delegations!.at(-1)!.contract_sha256).toMatch(/^[0-9a-f]{16}$/)
   })
+  // 0.6.35 (field report 2026-09-25): outside has_api the preflight never hashed the block,
+  // and delegation looped on "changed since preflight (none -> …)". Deleting the block after
+  // preflight also skipped the comparison entirely.
+  describe("outside has_api", () => {
+    const brief = "Implement u1 using `result` from the live zones endpoint."
+    const nonApi = () => ({ operation: "set_phase_scope", phase: "p1", data: { has_tests: true, has_api: false, has_build: true } })
+    const preflight = async () => {
+      const text = await preflightCheck({ phase: "p1", unit_id: "u1", brief, symbols: ["result"], repo_root: dir, spec_path: "Docs/spec.md" }, preflightPathFor(ledgerPath), ledgerPath, specPath)
+      return { text, hash: /brief_hash: ([0-9a-f]{16})/.exec(text)![1] }
+    }
+    const delegateWith = (hash: string) => write({ operation: "set_unit_status", phase: "p1", unit_id: "u1", data: { s: "delegated", brief, preflight: { symbols_grepped: ["result"], self_consistent: true, receipt: hash } } })
+
+    it("a unit with a contract block delegates on its preflight receipt", async () => {
+      await write(nonApi())
+      await write(delegated())
+      const { text, hash } = await preflight()
+      expect(text).toContain("status: pass")
+      await delegateWith(hash)
+      expect((await unit()).delegations!.at(-1)!.contract_sha256).toMatch(/^[0-9a-f]{16}$/)
+    })
+
+    it("editing the block after preflight still refuses", async () => {
+      await write(nonApi())
+      await write(delegated())
+      const { hash } = await preflight()
+      await fs.writeFile(specPath, SPEC({ ...CONTRACT, smoke: null }))
+      await expect(delegateWith(hash)).rejects.toThrow(/PREFLIGHT RECEIPT: the spec contract for unit 'u1' changed since preflight/)
+    })
+
+    it("deleting the block after preflight refuses rather than dropping the contract", async () => {
+      await write(nonApi())
+      await write(delegated())
+      const { hash } = await preflight()
+      await fs.writeFile(specPath, "# Spec\n\n#### u1 — zones\n- List zones with `result`.\n")
+      await expect(delegateWith(hash)).rejects.toThrow(/changed since preflight \([0-9a-f]{16} -> removed\)/)
+    })
+
+    it("an invalid block fails preflight instead of passing and refusing at delegation", async () => {
+      await write(nonApi())
+      await fs.writeFile(specPath, "# Spec\n\n#### u1 — zones\n- List zones with `result`.\n\n```foreman-contract\n{\"unit\":\"u1\",\"claims\":\"nope\"}\n```\n")
+      const { text } = await preflight()
+      expect(text).toContain("status: fail")
+      expect(text).toContain("contract: INVALID")
+    })
+  })
+
   it("the lookup binds phase as well as unit, and the preflight file is Foreman-owned", async () => {
     const file = preflightPathFor(ledgerPath)
     const h = briefHash("x")

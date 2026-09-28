@@ -18,6 +18,8 @@
 //     unsupported approvals, and that judgement belongs to the moderator.
 
 import fs from "fs/promises"
+import { pinUnits } from "../lib/reviewPins.js"
+import { readLedger } from "../lib/ledger.js"
 import path from "path"
 import { createHash, randomBytes, randomUUID } from "crypto"
 import { appendReceipt, providerFromModelId } from "../lib/seatReceipts.js"
@@ -34,6 +36,7 @@ import {
   classifyHttpError,
   isReasoningParamRejection,
   readTransportBudgets,
+  type CallControls,
   envInt,
   tryJson,
   parseSseChat,
@@ -47,7 +50,9 @@ import {
   buildSeatPrompt,
   type LensId,
 } from "../lib/lensCatalog.js"
+import { reportEconomyInstruction, resolveReportMaxLines } from "../lib/outputBudget.js"
 import { councilTracer } from "../lib/councilTrace.js"
+import type { HostId } from "../lib/hostProfiles.js"
 
 const DEFAULT_PACKET_MAX_BYTES = 262144
 const DEFAULT_MAX_CALLS = 12
@@ -78,9 +83,16 @@ export const InvokeCouncilInputSchema = z.object({
   seats: z.array(z.enum(["a", "b", "c"])).max(3).optional(),
   files: z.array(z.string()).max(50).optional(),
   cross_examine: z.boolean().optional(),
+  /** 0.6.39: the units this council reviews; their authorized files are pinned on each seat receipt. */
+  units: z.array(z.string().min(1).max(200)).min(1).max(50).optional(),
 })
 
 export interface InvokeCouncilDeps {
+  /** 0.6.39: the host's cancel signal and progress tick for this call. */
+  controls?: CallControls
+  /** 0.6.39: the ledger and project root, for pinning the reviewed units' files. */
+  ledgerPath?: string
+  projectRoot?: string
   journalPath: string
   /** 0.6.19: receipts file beside the ledger; one receipt per seat when set. */
   receiptsPath?: string
@@ -88,6 +100,8 @@ export interface InvokeCouncilDeps {
   envDir?: string
   /** Override for the home credential store. Test seam. */
   credentialsPath?: string
+  /** Host slash-command names for the post-council compact yield. */
+  host?: HostId
 }
 
 // ─── Seat reply schema (mirrors SEAT_RESPONSE_SCHEMA) ────────────────────────────
@@ -268,7 +282,8 @@ async function runSeat(
   url: string,
   headers: Record<string, string>,
   budgets: ReturnType<typeof readTransportBudgets>,
-  openRouter: boolean
+  openRouter: boolean,
+  controls?: CallControls
 ): Promise<SeatResult> {
   const t0 = Date.now()
   const systemPrompt = buildSeatPrompt(LENS_CATALOG[lens])
@@ -284,7 +299,7 @@ async function runSeat(
     ...(paramDowngraded ? { paramDowngraded } : {}),
   })
 
-  let net = await postChat(url, headers, buildSeatBody(seatCfg, systemPrompt, userPacket, hasReasoning, openRouter), budgets)
+  let net = await postChat(url, headers, buildSeatBody(seatCfg, systemPrompt, userPacket, hasReasoning, openRouter), budgets, controls)
   let paramDowngraded = false
 
   // One-shot param downgrade, mirroring invoke_worker: a seat whose endpoint rejects the reasoning
@@ -302,7 +317,8 @@ async function runSeat(
         url,
         headers,
         buildSeatBody(seatCfg, systemPrompt, userPacket, false, openRouter),
-        budgets
+        budgets,
+        controls
       )
     }
   }
@@ -437,7 +453,8 @@ async function runCrossExam(
   url: string,
   headers: Record<string, string>,
   budgets: ReturnType<typeof readTransportBudgets>,
-  openRouter: boolean
+  openRouter: boolean,
+  controls?: CallControls
 ): Promise<{ refutations: Refutation[]; failure?: string }> {
   // Anti-pattern guard from _common-protocol.md: a seat never sees another seat's RAW output.
   // Only the normalized claim (severity, location, one-line description) crosses.
@@ -455,6 +472,7 @@ async function runCrossExam(
     "",
     "Default to \"uncertain\" over \"stands\" when you cannot locate the defect yourself.",
     "Agreement without independent confirmation is worthless here — do not rubber-stamp.",
+    reportEconomyInstruction(resolveReportMaxLines()),
   ].join("\n")
 
   const body = JSON.stringify({
@@ -471,7 +489,7 @@ async function runCrossExam(
     ...(openRouter ? { provider: { require_parameters: true } } : {}),
   })
 
-  const net = await postChat(url, headers, body, budgets)
+  const net = await postChat(url, headers, body, budgets, controls)
   if (net.kind === "neterror") return { refutations: [], failure: `${seatCfg.label}: ${net.stage}` }
   if (net.status < 200 || net.status >= 300) {
     return { refutations: [], failure: `${seatCfg.label}: ${classifyHttpError(net.status, net.bodyText).stage}` }
@@ -499,6 +517,13 @@ export async function handleInvokeCouncil(rawInput: unknown, deps: InvokeCouncil
     return `status: error\n\ninvalid invoke_council input: ${parsedInput.error.issues.map((i) => `${i.path.join(".")}: ${i.message}`).join("; ")}`
   }
   const input = parsedInput.data
+  // 0.6.39: pins are hashed before the start stamp (lib/reviewPins.ts).
+  const pinned = input.units && deps.ledgerPath
+    ? await pinUnits(await readLedger(deps.ledgerPath, { readOnly: true }), input.phase, input.units, deps.projectRoot ?? process.cwd())
+    : null
+  // 0.6.35: every seat's receipt carries the run start, so freshness is judged from when the
+  // seats read the packet, not from when they finished.
+  const startedTs = new Date().toISOString()
 
   const envDir = deps.envDir ?? process.cwd()
   const councilResult = await loadCouncilConfig({
@@ -619,7 +644,7 @@ export async function handleInvokeCouncil(rawInput: unknown, deps: InvokeCouncil
   for (const lens of lenses) for (const seatCfg of seats) pairs.push({ seatCfg, lens })
 
   const results = await Promise.all(
-    pairs.map(({ seatCfg, lens }) => runSeat(seatCfg, lens, userPacket, url, headers, budgets, openRouter))
+    pairs.map(({ seatCfg, lens }) => runSeat(seatCfg, lens, userPacket, url, headers, budgets, openRouter, deps.controls))
   )
 
   for (const r of results) {
@@ -664,7 +689,7 @@ export async function handleInvokeCouncil(rawInput: unknown, deps: InvokeCouncil
           const empty: { refutations: Refutation[]; failure?: string } = { refutations: [] }
           return Promise.resolve(empty)
         }
-        return runCrossExam(seatCfg, foreign, input.evidence, url, headers, budgets, openRouter)
+        return runCrossExam(seatCfg, foreign, input.evidence, url, headers, budgets, openRouter, deps.controls)
       })
     )
     for (const round of rounds) {
@@ -686,6 +711,8 @@ export async function handleInvokeCouncil(rawInput: unknown, deps: InvokeCouncil
       const tokens = mine.reduce((a, x) => a + (x.tokensIn ?? 0) + (x.tokensOut ?? 0), 0)
       try {
         const receipt = await appendReceipt(deps.receiptsPath, {
+          started_ts: startedTs,
+          ...(pinned ? { pin_phase: pinned.phase, pin_units: pinned.units, pin_attempts: pinned.attempts, pins: pinned.pins } : {}),
           cli: "council", provider: providerFromModelId(seatCfg.model), model_requested: seatCfg.model, model_served: seatCfg.model,
           ...(seatCfg.reasoningEffort !== undefined ? { reasoning_effort: seatCfg.reasoningEffort } : {}),
           exit_code: failed.length === 0 ? 0 : 1, failure_reason: failed.length === 0 ? null : "nonzero_exit",

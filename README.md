@@ -58,12 +58,27 @@ Cursor reads `~/.cursor/mcp.json` or the project's `.cursor/mcp.json`, and needs
 { "mcpServers": { "foreman": { "command": "foreman-mcp", "args": ["--host=cursor"] } } }
 ```
 
+On a Cursor project, ask the model to call `cursor_agents_init` once so `.cursor/agents/foreman-worker*.md` exist. The pit-boss prefers the Cursor Agent CLI (`agent` / `cursor-agent`, print mode) for workers and `invoke_advisor({cli:"cursor"})` for review; Task + those seats is the IDE fallback when the Agent CLI is missing.
+
+UI registration (editor CLI, not the agent):
+
+```bash
+cursor --add-mcp "{\"name\":\"foreman\",\"command\":\"foreman-mcp\",\"args\":[\"--host=cursor\"]}"
+```
+
+On Windows, wrap the npm shim:
+
+```bash
+cursor --add-mcp "{\"name\":\"foreman\",\"command\":\"cmd\",\"args\":[\"/c\",\"foreman-mcp\",\"--host=cursor\"]}"
+```
+
 Codex reads `~/.codex/config.toml` or the project's `.codex/config.toml`:
 
 ```toml
 [mcp_servers.foreman]
 command = "foreman-mcp"
 args = ["--host=codex"]
+tool_timeout_sec = 1200   # Codex defaults to 60 s, which cuts off advisor and council calls
 ```
 
 On Windows the npm shim is a `.cmd` file, so wrap the command:
@@ -104,7 +119,7 @@ doc_man               writes documentation from the code and labels what it cann
 1. **`design_partner`** asks 5 to 8 scoping questions and stops for your answers. When the blocking ones are settled it writes `Docs/design-summary.md` and asks you to approve it.
 2. **`spec_generator`** reads the approved summary and writes four files in `Docs/`: `spec.md` (phases and units, each with a directive), `handoff.md` (session-start and recovery instructions), `PROGRESS.md` (checklist and decisions), and `testing-harness.md` (test tiers and commands). It seeds the ledger with every phase and unit.
 3. **`pitboss_implementor`** works one unit at a time. The procedure tells the model to read the unit directive, build a brief for a worker, record the delegation in the ledger, start a worker subagent in your host, inspect every changed file, run the unit's test command, and record a pass or a rejection. A rejected unit goes to a fresh worker with the rejection history. After three failed attempts since the unit last passed, the ledger refuses another attempt, and a pass, without your override.
-4. **At the end of a phase** the procedure reviews the changes. Codex mode uses native reviewers plus a verifier, and adds available Claude/Gemini CLI advisors at major checkpoints; extra CLIs are optional. On Claude Code, reviewers are the Codex CLI and Gemini CLI, if installed. Findings are classified and recorded. The ledger refuses to close the phase while a review carries a confirmed finding, until the fix is re-verdicted and a fresh review shows it resolved. Then the procedure tells you to start a new session.
+4. **At the end of a phase** the procedure reviews the changes. Codex mode uses native reviewers plus a verifier, and adds available Claude/Gemini CLI advisors at major checkpoints; extra CLIs are optional. On Claude Code, reviewers are the Codex CLI and Gemini CLI, if installed. Findings are classified and recorded. The ledger refuses to close the phase while a review carries a confirmed finding above LOW (a confirmed LOW is recorded as advisory), until the fix is re-verdicted and a fresh review shows it resolved. Then the procedure tells you to start a new session.
 5. **Next session**, `session_orient` reads the ledger and returns the action and target: `implement_unit p2/u3`, `retry_phase_gate`, or `complete`. A unit that was in progress when the session stopped is restarted, not resumed mid-edit.
 
 Normal implementation units are delegated. The model edits directly only under `lighttask`, or under the implementor's Direct Fix rule, which allows a literal substitution after a rejection and nothing else.
@@ -118,12 +133,12 @@ Normal implementation units are delegated. The model edits directly only under `
 
 | Write | Refused unless |
 |---|---|
-| Delegating a unit | a brief of 20+ characters and a preflight attestation are included |
+| Delegating a unit | a brief of 20+ characters (given, or carried by the `preflight_check` receipt) and a preflight attestation are included |
 | A pass verdict | a delegation was recorded first; after a rejection, a fix attempt was recorded after it (a worker delegation or a direct fix); on a phase with no tests, a written attestation of how it was checked |
 | Another attempt, or a pass, after three failed attempts since the unit last passed | you decide once with `authorize_attempts`, or set `user_override` on the write; either is recorded on the unit |
 | Closing a phase after a fix | an independent review, a complete native review on Codex, or a verification record with evidence for a direct fix, postdates the re-verdict; a cross-examination record never counts |
 | A review finding | it carries a classification: confirmed, rejected, or unverified |
-| Closing a phase | every unit passed, every declared unit is registered, a review was recorded after the latest verdict, and no such review carries a confirmed finding, is partial, or is silent without an examined list; `user_override` waives the review conditions and is recorded on the phase |
+| Closing a phase | every unit passed, every declared unit is registered, a review was recorded after the latest verdict, and no such review carries a confirmed finding above LOW, is partial, or is silent without an examined list; `user_override` waives the review conditions and is recorded on the phase |
 | A rejection on a passed unit | never refused; it reopens the unit to pending |
 
 Those are checks on the ledger's own records. The ledger cannot see whether the model actually read a file or ran a test. Reading changed files, running the test command, comparing against the spec, and reviewing are obligations in the procedure text. The full split: [What Foreman enforces](https://malindarathnayake.github.io/Foreman/enforcement/what-foreman-enforces).
@@ -176,7 +191,7 @@ Full docs: [malindarathnayake.github.io/Foreman](https://malindarathnayake.githu
 
 ## Project
 
-**Current release:** `v0.6.27` | **Package:** `@malindarathnayake/foreman-mcp` | **Runtime:** Node.js `>=22`
+**Current release:** `v0.6.39` | **Package:** `@malindarathnayake/foreman-mcp` | **Runtime:** Node.js `>=22`
 
 - [Changelog](CHANGELOG.md)
 - [Security policy](SECURITY.md)

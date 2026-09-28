@@ -8,7 +8,7 @@ or routing policy. It orchestrates protocols, records state, and refuses invalid
 transitions (a unit cannot pass without a recorded delegation; a phase cannot
 pass while any unit is not `pass`).
 
-Package: `@malindarathnayake/foreman-mcp` · Version: `0.6.27` · Runtime: Node.js `>=22`
+Package: `@malindarathnayake/foreman-mcp` · Version: `0.6.33` · Runtime: Node.js `>=22`
 
 This file is written for an AI agent that just connected to the server. It is
 an operating packet, not a feature list — read the whole thing before your
@@ -16,7 +16,7 @@ first tool call.
 
 ## 1. Public tool surface (contract)
 
-Tool count: 35
+Tool count: 36
 
 - bundle_status — Returns the Foreman bundle version and override info.
 - host_status — Returns the active Foreman host and the model slugs used for worker/advisor invocation.
@@ -25,11 +25,13 @@ Tool count: 35
 - read_ledger — Reads bounded Foreman ledger slices; tabular queries support phase/verdict filters plus cursor/limit pagination, and oversized full reads fail with recovery guidance. `query: "reconstruct"` builds a read-only recovery worksheet from the append-only sidecars after a ledger loss: units and attempts they attest, what the ledger is missing, which seat receipts are reclaimable. It writes nothing.
 - read_progress — Reads the planning checklist. It is descriptive only; `session_orient` is the resume authority.
 - read_journal — Reads the Foreman session journal; returns session history with rollup.
-- capability_check — Checks whether the claude, codex, or gemini CLI is available and authenticated, with a closed auth-status taxonomy. CLI versions are telemetry, not compatibility pins.
-- invoke_advisor — Invokes the claude, codex, or gemini CLI via stdin for independent review. Claude runs headless `claude-fable-5` at `max` effort with tools disabled.
+- capability_check — Checks whether the claude, codex, or gemini CLI is available and authenticated, with a closed auth-status taxonomy. CLI versions are telemetry, not compatibility pins. On `--host=cursor`, also probes the Cursor Agent CLI (`agent` / `cursor-agent`).
+- invoke_advisor — Invokes the claude, codex, or gemini CLI via stdin for independent review. Claude runs headless `claude-fable-5` at `max` effort with tools disabled. On `--host=cursor`, also `cli: "cursor"` (`agent -p --mode=ask --trust`; never `--approve-mcps`; receipts are provider unknown).
 - write_ledger — Writes an operation to the Foreman ledger (unit status, verdicts, rejections, phase gates, scope, durable reviews).
 - invoke_worker — EXPERIMENTAL (egress: sends briefs + file excerpts to your configured HTTP endpoint). Delegates a single patch task to the remote OpenAI-compatible endpoint configured in `.foremanenv`; returns a shape-checked, verbatim patch for the host to apply.
 - repo_guard — Runs the shared-tree ownership check around an editing worker: `snapshot` records branch, HEAD, stash, index, dirty paths, `core.autocrlf`, and line-ending attributes on the delegation; `compare` re-reads them and names every mutation outside the brief. `allowed_files` IS the allow-list `compare` measures against; `files` only scopes the line-ending probe, and an accidentally empty allow-list is refused rather than frozen. Both refuse or flag an authorized file that is non-empty and entirely NUL bytes — destroyed, not edited. Foreman writes both, so a pass verdict can be refused until the guard clears. Reports `n/a` outside a git work tree.
+- cursor_agents_init — Cursor host only. Writes Foreman's three implementation seats to `.cursor/agents/` as Cursor custom-subagent definitions (IDE Task fallback). Default model is inherit. Primary spawn is the Cursor Agent CLI (`agent` / `cursor-agent`, print mode). Spawn with Task `subagent_type` and no model argument only when the Agent CLI is missing. Writes Cursor-native files, not `.claude/agents/`.
+- claude_agents_init — Claude Code host only. Writes Foreman's three implementation seats to `.claude/agents/` as agent definitions with a MODEL and a REASONING EFFORT pinned in frontmatter: foreman-worker-light (cheap, sonnet/low), foreman-worker (standard, sonnet/medium), foreman-worker-heavy (premium, opus/high), each axis overridable per role. The seats differ by effort rather than by a weaker model: a wrong mechanical edit costs an attempt plus its guard cycle. Foreman already records each delegation's tier and route_reason; this makes the tier resolve to a model the way it already does on Codex instead of a rule the operator restates each session. A binding default, not a lock: the Agent tool's model argument still overrides the frontmatter.
 - claude_workflows_init — Claude Code host only. Installs Foreman's saved Workflow scripts (checkpoint review fan, design panel, field-report triage) into the project's `.claude/workflows/`; a workflow review is same-model perspective recorded as `fan`, never a gate seat.
 - preflight_check — Checks a worker brief against the spec before the attempt is spent: symbols must appear in the spec, citations must resolve in the repo (a `-run` operand resolves as a Go regex against test declarations); files the unit creates go in creates: [{ file, tests }], whose citations are forward and are checked at the pass verdict; checkpoint reach reports whether the spec's Test line selects the Go package of every authorized file (a testdata fixture belongs to its parent package), and the delegation refuses an omission unless the owner overrides. Directive omissions, contradiction markers and out-of-set references are reported. Returns the brief_hash the ledger requires on the delegation.
 - phase_ownership — Runs the ownership sweep once for every unit in a phase, each against its own Files column, and assigns every outside reference to an owning unit or UNASSIGNED. Advisory and lexical; re-run after each unit lands.
@@ -60,7 +62,7 @@ Tool count: 35
 2. Activate exactly ONE protocol tool: `design_partner`, `spec_generator`, `pitboss_implementor`, `lighttask`, `spec_man`, or `doc_man`.
 3. Follow the injected procedure returned by that call — it is the operating instructions for the session, not optional color.
 4. Route every state mutation through `write_ledger`, `write_progress`, or `write_journal`. Nothing else durably records progress.
-5. Respect phase gates. Phase checkpoints mandate a fresh session (context reset) before continuing — `session_orient` is how the new session re-enters.
+5. Respect phase gates. When a tool result says `YIELD: SESSION HYGIENE`, stop and tell the user to run `session_hygiene_command` (`/compact` mid-task, `/clear` when the job is done or the next call is a different job). Then `session_orient`. Foreman cannot run those host commands. Do not estimate context percent and keep going.
 
 ## 3. Protocol selection rules
 

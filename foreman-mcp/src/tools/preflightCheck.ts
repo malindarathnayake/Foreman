@@ -53,6 +53,14 @@ export const PreflightCheckInputSchema = z.object({
     tests: z.array(z.string().trim().regex(/^[A-Za-z_][A-Za-z0-9_ .'-]{1,199}$/)).max(50).default([]),
   })).max(50).default([]),
   repo_root: z.string().max(4096).optional(),
+  /**
+   * 0.6.36 (field report 2026-09-27): the attempt this brief corrects. A correction brief
+   * deliberately does not restate the directive, so its coverage score (0.04–0.18 in the field)
+   * was noise on every call. Linked explicitly — never inferred from prose — and it must name an
+   * attempt the ledger holds for this unit. Only coverage scoring is skipped; symbols,
+   * citations, the contract and checkpoint reach are checked exactly as for any brief.
+   */
+  correcting_attempt: z.number().int().min(1).optional(),
 })
 export type PreflightCheckInput = z.infer<typeof PreflightCheckInputSchema>
 
@@ -71,8 +79,17 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
     const { ledger } = await readLedgerWithStatus(ledgerPath, { readOnly: true })
     const phase = ledger.phases[input.phase]
     probeRequired = phase?.scope?.has_api === true
+    // 0.6.35 (field report 2026-09-25): the contract hash was read only in has_api phases, but
+    // delegation compares it whenever the unit has a block, so a non-API unit with a contract
+    // looped on "changed since preflight (none -> …)" forever. Hash every unit's block; only
+    // the probe requirement stays scoped to has_api.
+    const { contract, error } = specPath ? await unitContract(specPath, input.unit_id) : { contract: null, error: null }
+    if (contract) contractSha = contract.contract_sha256
+    if (!probeRequired && error) {
+      contractMet = false
+      contractStatus = `INVALID: the foreman-contract block for this unit does not parse (${error}); delegation will refuse it`
+    }
     if (probeRequired) {
-      const { contract, error } = specPath ? await unitContract(specPath, input.unit_id) : { contract: null, error: null }
       if (error) {
         contractMet = false
         contractStatus = `REQUIRED: the foreman-contract block for this unit is invalid (${error})`
@@ -80,7 +97,6 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
         contractMet = false
         contractStatus = "REQUIRED: phase scope has_api and no foreman-contract block names this unit (claims: [] and smoke: null is the reviewed opt-out)"
       } else {
-        contractSha = contract.contract_sha256
         const probes = phase?.units[input.unit_id]?.probes ?? []
         const unmet = contract.contract.claims.filter((c) => {
           const newest = probes.filter((p) => p.claim_id === c.id && p.contract_sha256 === contract.contract_sha256).at(-1)
@@ -118,7 +134,18 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
         reachOmitted = true
         reachStatus = `REACH: ${reachMessage(reach, def)}`
       } else if (reach.status === "unknown") {
-        reachStatus = `unknown: ${reach.opaque.length ? reach.opaque.join("; ") : "no go test clause"}; Foreman cannot claim the checkpoint omits or reaches a file`
+        // 0.6.35 (field report 2026-09-25): a dotnet or pytest checkpoint read "unknown" plus a
+        // list of every file as unclassified on every call. Foreman parses go test selection
+        // only; for other runners say that once and drop the per-file notes.
+        const runners = [...new Set(def.clauses.filter((c) => c.kind === "opaque" && /is not go test/.test(c.reason ?? ""))
+          .map((c) => c.raw.trim().split(/\s+/)[0]))]
+        const onlyOtherRunners = runners.length > 0 && def.clauses.every((c) => c.kind === "opaque" && /is not go test/.test(c.reason ?? ""))
+        if (onlyOtherRunners) {
+          reachStatus = `not checked: ${runners.join(", ")} test selection is not parsed (${def.commands.join(" && ").slice(0, 160)})`
+          notes.length = 0
+        } else {
+          reachStatus = `unknown: ${reach.opaque.length ? reach.opaque.join("; ") : "no go test clause"}; Foreman cannot claim the checkpoint omits or reaches a file`
+        }
       } else {
         reachStatus = `ok: every authorized Go package or testdata fixture is selected by ${def.commands.join(" && ")}`
       }
@@ -141,6 +168,20 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
 
   const missing = missingSymbols(input.symbols, spec.length > 0 ? spec : directive)
   const coverage = directiveCoverage(directive, input.brief)
+  let correcting: number | undefined
+  if (input.correcting_attempt !== undefined) {
+    const { ledger } = ledgerPath ? await readLedgerWithStatus(ledgerPath, { readOnly: true }) : { ledger: undefined }
+    const known = ledger?.phases[input.phase]?.units[input.unit_id]?.delegations?.some((d) => d.attempt === input.correcting_attempt)
+    if (!known) {
+      return scrub(toKeyValue({
+        status: "refused",
+        unit_id: input.unit_id,
+        reason: `correcting_attempt ${input.correcting_attempt} is not an attempt the ledger holds for unit '${input.unit_id}' in phase '${input.phase}'`,
+        hint: "name the attempt this brief corrects, or omit correcting_attempt for a brief that restates the directive",
+      }))
+    }
+    correcting = input.correcting_attempt
+  }
   const flags = consistencyFlags(input.brief)
   const forward = normalizeObligations(input.creates)
   const cites = await checkCitations(root, input.brief, forward, input.files)
@@ -149,13 +190,13 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
   const promised = cites.filter((c) => c.status === "forward")
   const ownership = await ownershipSweep(root, input.type_names, input.introduces, input.files)
 
-  const probeMissing = probeRequired && !contractMet
+  const probeMissing = !contractMet
   const otherFailure = missing.length > 0 || dead.length > 0 || probeMissing
   const status: "pass" | "fail" = !otherFailure && !reachOmitted ? "pass" : "fail"
   const hash = briefHash(input.brief)
   const record: PreflightRecord = {
     v: PREFLIGHT_POLICY_VERSION, ts: new Date().toISOString(), phase: input.phase, unit_id: input.unit_id, brief_hash: hash, status,
-    symbols: input.symbols.length, coverage_ratio: Number(coverage.ratio.toFixed(2)), uncovered: coverage.uncovered.length,
+    symbols: input.symbols.length, coverage_ratio: correcting !== undefined ? -1 : Number(coverage.ratio.toFixed(2)), uncovered: correcting !== undefined ? 0 : coverage.uncovered.length,
     flags: flags.length, dead_citations: dead.length, ownership_outside: ownership.outside.length,
     ...(contractSha !== undefined ? { contract_sha256: contractSha } : {}),
     ...(forward.length ? { forward } : {}),
@@ -177,8 +218,9 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
     contract: contractStatus,
     drifted_citations: drifted.length,
     directive_sentences: coverage.sentences,
-    uncovered_sentences: coverage.uncovered.length,
-    coverage_ratio: coverage.ratio.toFixed(2),
+    ...(correcting !== undefined
+      ? { coverage: `n/a (correction of attempt #${correcting}; a correction brief does not restate the directive)` }
+      : { uncovered_sentences: coverage.uncovered.length, coverage_ratio: coverage.ratio.toFixed(2) }),
     contradiction_flags: flags.length,
     ownership_outside_declared_files: ownership.outside.length,
     ownership_scanned: `${ownership.scanned}${ownership.truncated ? " (truncated)" : ""}`,
@@ -191,7 +233,7 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
   if (dead.length) sections.push(`\nDEAD CITATIONS (refused)\n${toTable(["citation", "kind", "detail"], dead.map((c) => [c.raw, c.kind, c.detail]))}`)
   if (drifted.length) sections.push(`\nDRIFTED CITATIONS (advisory: fix the line before the worker reads it)\n${toTable(["citation", "kind", "detail"], drifted.map((c) => [c.raw, c.kind, c.detail]))}`)
   if (promised.length) sections.push(`\nFORWARD CITATIONS (promised under creates; the pass verdict refuses until each file exists and each test is declared in it)\n${toTable(["citation", "kind", "detail"], promised.map((c) => [c.raw, c.kind, c.detail]))}`)
-  if (coverage.uncovered.length) sections.push(`\nDIRECTIVE SENTENCES WITH NO ECHO IN THE BRIEF (advisory: each is an omission or a paraphrase that dropped its identifiers)\n${coverage.uncovered.slice(0, 40).map((s) => `- ${s}`).join("\n")}`)
+  if (correcting === undefined && coverage.uncovered.length) sections.push(`\nDIRECTIVE SENTENCES WITH NO ECHO IN THE BRIEF (advisory: each is an omission or a paraphrase that dropped its identifiers)\n${coverage.uncovered.slice(0, 40).map((s) => `- ${s}`).join("\n")}`)
   if (flags.length) sections.push(`\nCONTRADICTION MARKERS (advisory)\n${flags.map((f) => `- ${f.kind}: ${f.detail}`).join("\n")}`)
   if (ownership.outside.length) sections.push(`\nFILES OUTSIDE THE DECLARED SET THAT REFERENCE THE TYPE (advisory: at_risk = dispatch site with a default arm and no introduced member named; present = the member is already handled there)\n${toTable(["file", "status", "references", "members_present", "dispatch", "default_arm"], ownership.outside.map((h) => [h.file, h.status, h.references.join(" "), h.members_present.join(" ") || "-", String(h.dispatch), String(h.default_arm)]))}`)
   return sections.join("\n")

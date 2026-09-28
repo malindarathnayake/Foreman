@@ -39,7 +39,16 @@ function _simhash(text) {
  * Count differing bits between two 64-bit integers (Hamming distance).
  */
 function _hammingDistance(a, b) {
-    return (a ^ b).toString(2).split("").filter((c) => c === "1").length;
+    const x = a ^ b;
+    return _popcount32(Number(x & 0xffffffffn)) + _popcount32(Number(x >> 32n));
+}
+// Foreman divergence (0.6.39): the string-based bit count ran ~11.6M times on a 5,000-line
+// log (quadratic clustering) and took ~4 s. Same result, counted arithmetically; the
+// clustering loop below compares pre-split 32-bit halves so the hot path avoids BigInt.
+function _popcount32(n) {
+    n = n - ((n >>> 1) & 0x55555555);
+    n = (n & 0x33333333) + ((n >>> 2) & 0x33333333);
+    return (((n + (n >>> 4)) & 0x0f0f0f0f) * 0x01010101) >>> 24;
 }
 /**
  * Count items with distinct content using SimHash.
@@ -48,12 +57,12 @@ function _hammingDistance(a, b) {
 function countUniqueSimhash(items, threshold = 3) {
     if (items.length === 0)
         return 0;
-    const fingerprints = items.map(_simhash);
-    const clusters = []; // representative fingerprints
+    const fingerprints = items.map(_simhash).map((fp) => [Number(fp >> 32n), Number(fp & 0xffffffffn)]);
+    const clusters = []; // representative fingerprints as [hi, lo]
     for (const fp of fingerprints) {
         let matched = false;
         for (const rep of clusters) {
-            if (_hammingDistance(fp, rep) <= threshold) {
+            if (_popcount32((fp[0] ^ rep[0]) >>> 0) + _popcount32((fp[1] ^ rep[1]) >>> 0) <= threshold) {
                 matched = true;
                 break;
             }

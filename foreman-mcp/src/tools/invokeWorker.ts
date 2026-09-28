@@ -34,6 +34,7 @@ import {
   classifyHttpError,
   isReasoningParamRejection,
   readTransportBudgets,
+  type CallControls,
   envInt,
   tryJson,
   type NetResult,
@@ -98,6 +99,8 @@ const InputSchema = z.object({
 })
 
 export interface InvokeWorkerDeps {
+  /** 0.6.39: the host's cancel signal and progress tick for this call. */
+  controls?: CallControls
   docsDir: string
   ledgerPath: string
   journalPath: string
@@ -477,7 +480,7 @@ async function runDelegation(
   // The two-phase timeout + byte-capped read lives in lib/chatTransport.ts (shared with
   // invoke_council). This wrapper only supplies the per-attempt body.
   async function doRequest(includeReasoning: boolean): Promise<NetResult> {
-    return postChat(url, headers, buildBody(includeReasoning), budgets)
+    return postChat(url, headers, buildBody(includeReasoning), budgets, deps.controls)
   }
 
   // ── Step 9: clean → append delegation_started already done; POST now. ──

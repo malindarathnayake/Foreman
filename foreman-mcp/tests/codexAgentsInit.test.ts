@@ -37,7 +37,7 @@ describe("codexAgentsInit", () => {
     expect(worker).toContain("Do not spawn further subagents")
     // v0.6.15: implementation seats carry a probe-verified model pin (explorer above
     // still has none — it inherits the session's model).
-    expect(worker).toContain('model = "gpt-5.6-sol"')
+    expect(worker).toContain('model = "gpt-6-sol"')
   })
 
   it("skips existing role files when overwrite is false", async () => {

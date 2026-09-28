@@ -344,7 +344,51 @@ describe("REVIEW SCOPE refusals", () => {
     expect(parse(["u1"])).toBe(true)
   })
   it("the data schema renders the field", () => {
-    expect(renderShape(LedgerOperationDataSchemas.record_review)).toContain("units?: string (≥1 chars, ≤200 chars)[] (max 200)")
+    expect(renderShape(LedgerOperationDataSchemas.record_review)).toContain("units?: string (≥1 chars, ≤200 chars)[] (min 1, max 200)")
+  })
+})
+
+// 0.6.36 (field report 2026-09-27): a confirmed LOW is advisory at the gate — listed and
+// recorded, not resolved — and a confirmed MEDIUM still blocks.
+describe("confirmed LOW findings are advisory at the gate", () => {
+  const LOW = { ...HIGH, severity: "low", description: "getter could be private" }
+  it("passes the gate with the LOW listed and recorded on the phase", async () => {
+    await passingUnit("u1")
+    await record(independent({ findings: [LOW] }))
+    const out = await gate()
+    expect(out.warning).toContain("ADVISORY: 1 confirmed LOW finding(s) did not block this gate and are NOT resolved")
+    const phase = (await readLedger(ledgerPath)).phases.p1
+    expect(phase.g).toBe("pass")
+    expect(phase.advisory_findings?.findings[0]).toContain("getter could be private")
+  })
+  it("a confirmed MEDIUM still blocks", async () => {
+    await passingUnit("u1")
+    await record(independent({ findings: [{ ...HIGH, severity: "medium" }] }))
+    await expect(gate()).rejects.toThrow(/CONFIRMED FINDINGS/)
+  })
+})
+
+// 0.6.36 (field report 2026-09-27): an old whole-phase record kept blocking on a finding about
+// u3 because it still carried unchanged u1 and u2. A finding that names its units is tied to them.
+describe("a finding that names its units retires with their coverage", () => {
+  it("re-covering the finding's unit retires it while the old record still carries unchanged units", async () => {
+    for (const u of ["u1", "u2", "u3"]) await passingUnit(u)
+    await record(independent({ findings: [{ ...HIGH, units: ["u3"] }] }))
+    await moveUnit("u3")
+    await record(independent({ advisor: "claude", units: ["u3"] }))
+    await gate()
+    expect((await readLedger(ledgerPath)).phases.p1.g).toBe("pass")
+  })
+  it("a finding on a shared file keeps blocking until every unit it names is re-covered", async () => {
+    for (const u of ["u1", "u2", "u3"]) await passingUnit(u)
+    await record(independent({ findings: [{ ...HIGH, units: ["u2", "u3"] }] }))
+    await moveUnit("u3")
+    await record(independent({ advisor: "claude", units: ["u3"] }))
+    await expect(gate()).rejects.toThrow(/CONFIRMED FINDINGS/)
+  })
+  it("refuses finding units that are not registered", async () => {
+    await passingUnit("u1")
+    await expect(record(independent({ findings: [{ ...HIGH, units: ["nope"] }] }))).rejects.toThrow(/finding units name unregistered unit/)
   })
 })
 

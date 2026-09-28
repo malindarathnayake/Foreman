@@ -5,11 +5,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest"
 
 vi.mock("../src/lib/externalCli.js", () => ({
   resolveInvocation: vi.fn(),
+  resolveFirst: vi.fn(),
   runWithStdin: vi.fn(),
   runExternalCli: vi.fn(),
 }))
 
-import { resolveInvocation, runWithStdin, runExternalCli } from "../src/lib/externalCli.js"
+import { resolveInvocation, resolveFirst, runWithStdin, runExternalCli } from "../src/lib/externalCli.js"
 import { GEMINI_ADVISOR_MODEL, formatAdvisorResult, invokeAdvisor, parseGeminiJson } from "../src/tools/invokeAdvisor.js"
 import { capabilityCheck } from "../src/tools/capabilityCheck.js"
 import type { ExternalCliResult } from "../src/lib/externalCli.js"
@@ -83,6 +84,7 @@ describe("invokeAdvisor — gemini arguments", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(resolveInvocation).mockResolvedValue({ ok: true, plan: { command: "gemini", args: [] } })
+    vi.mocked(resolveFirst).mockResolvedValue({ ok: true, plan: { command: "gemini", args: [] } })
     vi.mocked(runWithStdin).mockResolvedValue(OK)
   })
 
@@ -92,7 +94,9 @@ describe("invokeAdvisor — gemini arguments", () => {
       "gemini",
       ["-p", "", "-m", "gemini-3.1-pro-preview", "--approval-mode", "plan", "--output-format", "json"],
       "review this",
-      1_000
+      1_000,
+      undefined,
+      undefined,
     )
   })
 })
@@ -107,6 +111,7 @@ describe("capabilityCheck — gemini served-model check", () => {
   beforeEach(() => {
     vi.clearAllMocks()
     vi.mocked(resolveInvocation).mockResolvedValue({ ok: true, plan: { command: "gemini", args: [] } })
+    vi.mocked(resolveFirst).mockResolvedValue({ ok: true, plan: { command: "gemini", args: [] } })
   })
 
   it("reports model_substituted with both models when the CLI answered with another model", async () => {

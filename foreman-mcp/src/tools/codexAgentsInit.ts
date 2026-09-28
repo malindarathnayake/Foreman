@@ -3,6 +3,7 @@ import path from "path"
 import { z } from "zod"
 import { atomicWriteFile } from "../lib/atomicWrite.js"
 import { toKeyValue } from "../lib/toon.js"
+import { seatReportEconomy } from "../lib/outputBudget.js"
 
 export const CODEX_AGENT_ROLES = ["explorer", "worker_light", "worker", "worker_heavy", "reviewer", "verifier"] as const
 export type CodexAgentRole = (typeof CODEX_AGENT_ROLES)[number]
@@ -28,26 +29,32 @@ export const CodexAgentsInitInputSchema = z.object({
 
 export type CodexAgentsInitInput = z.infer<typeof CodexAgentsInitInputSchema>
 
+const ECONOMY = seatReportEconomy()
+
 const EXPLORER_INSTRUCTIONS = `Stay in exploration mode.
 Trace the real execution path, cite files and symbols, and do not propose fixes unless asked.
 Prefer fast search and targeted file reads over broad scans.
-Never write files. Never spawn further subagents. Never produce a Foreman ledger verdict.`
+Never write files. Never spawn further subagents. Never produce a Foreman ledger verdict.
+
+${ECONOMY}`
 
 const WORKER_INSTRUCTIONS = `Implement only the bounded worker brief you are given.
 Do not read or request the full spec, ledger, or progress file.
 Self-fix compile/import/type errors at most twice; return immediately on logic/spec issues.
-Do not spawn further subagents (max_depth=1).`
+Do not spawn further subagents (max_depth=1).
+
+${ECONOMY}`
 
 /**
  * Default model per implementation seat, matching Foreman's existing cost tiers.
- * Every id below answered a live probe on codex-cli 0.153.4; note that the same family
- * at a different version does NOT resolve — gpt-6-terra and gpt-6-sol are both refused
- * on a ChatGPT account, so these are not interchangeable with a version bump. Override
- * per role with the models input when an id rotates.
+ * Every id below answered a live probe on a ChatGPT account: gpt-5.6-terra and gpt-6-astra
+ * on codex-cli 0.153.4, gpt-6-sol on 0.157.0 (it was refused on 0.153.4). gpt-6-terra is
+ * still refused on 0.157.0, so the light seat stays on 5.6 — the same family at a different
+ * version is not interchangeable. Override per role with the models input when an id rotates.
  */
 export const CODEX_SEAT_MODELS: Partial<Record<CodexAgentRole, string>> = {
   worker_light: "gpt-5.6-terra",
-  worker: "gpt-5.6-sol",
+  worker: "gpt-6-sol",
   worker_heavy: "gpt-6-astra",
 }
 
@@ -71,7 +78,9 @@ Severity is blast radius, not confidence. Do not report style preferences at any
 Zero findings is a valid answer, but you must still list what you examined — silence with no
 account of what was read is treated as a failed review, not an approval.
 Return completion (complete/partial/failed), your lens, a non-empty checked list, findings and limitations.
-Never write files. Never spawn further subagents. Never produce a Foreman ledger verdict.`
+Never write files. Never spawn further subagents. Never produce a Foreman ledger verdict.
+
+${ECONOMY}`
 
 const VERIFIER_INSTRUCTIONS = `You verify a native Foreman review and write its single report.
 The native reviewers may use the same model you are running on, so their findings are claims to test,
@@ -84,7 +93,9 @@ confirmation costs a remediation round, and an honest unknown costs a sentence.
 The orchestrator sees your report and nothing the reviewers said, so a finding you drop is gone.
 Return completion, a non-empty checked list, classified findings and limitations. Unresolved
 unverified findings require a partial result. Never claim cross-vendor independence for native agents.
-Never write files. Never spawn further subagents. Never produce a Foreman ledger verdict.`
+Never write files. Never spawn further subagents. Never produce a Foreman ledger verdict.
+
+${ECONOMY}`
 
 function escapeTomlString(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"')

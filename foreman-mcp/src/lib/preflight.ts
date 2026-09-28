@@ -43,7 +43,13 @@ function significantWords(text: string): string[] {
 /** Split a directive into sentence-sized units: bullets, table rows and sentences. */
 export function directiveSentences(directive: string): string[] {
   const out: string[] = []
+  // 0.6.35 (field report 2026-09-25): a foreman-contract block's JSON lines were reported as
+  // "directive sentences with no echo" on every call. Fenced blocks are skipped HERE ONLY —
+  // coverage scoring. Citations and the checkpoint's Test:/Files: lines still read them.
+  let fenced = false
   for (const rawLine of directive.split(/\r?\n/)) {
+    if (/^\s*(```|~~~)/.test(rawLine)) { fenced = !fenced; continue }
+    if (fenced) continue
     const line = rawLine.replace(/^\s*(?:[-*+]|\d+[.)]|\|)\s*/, "").trim()
     if (!line || /^#+\s/.test(rawLine) || /^\|?\s*-{3,}/.test(line)) continue
     for (const s of line.split(/(?<=[.;!?])\s+(?=[A-Z`(])/)) {
@@ -493,6 +499,17 @@ export async function checkCitations(
     } catch {
       // 0.6.27 (field report): before calling it dead, try the unit's OWN declared directories.
       const candidates: string[] = []
+      // 0.6.35 (field report 2026-09-25): a prose path like Checks/OracleCheck.cs was refused as
+      // dead while the unit's files named Observability/Checks/OracleCheck.cs. A file the unit
+      // lists whose path ENDS with the cited one counts; two or more stay ambiguous below.
+      const cited = c.file!.replace(/\\/g, "/").replace(/^\.\//, "")
+      for (const f of files) {
+        const nf = f.replace(/\\/g, "/").replace(/^\.\//, "")
+        if (nf !== cited && !nf.endsWith("/" + cited)) continue
+        const cand = path.resolve(repoRoot, nf)
+        if (path.relative(repoRoot, cand).startsWith("..")) continue
+        try { await fs.access(cand); if (!candidates.includes(cand)) candidates.push(cand) } catch { /* listed but absent */ }
+      }
       for (const d of unitDirs(files)) {
         const cand = path.resolve(repoRoot, d, c.file!)
         if (path.relative(repoRoot, cand).startsWith('..')) continue
@@ -548,6 +565,7 @@ export interface PreflightRecord {
   brief_hash: string
   status: "pass" | "fail"
   symbols: number
+  /** -1 when coverage was not scored (a linked correction brief, 0.6.36); never a fake 1.00. */
   coverage_ratio: number
   uncovered: number
   flags: number

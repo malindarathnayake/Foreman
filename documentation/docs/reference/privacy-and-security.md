@@ -23,6 +23,10 @@ Foreman has no telemetry service of its own. Whether anything leaves your machin
 
 The ledger, progress, journal, and events files never leave the machine through Foreman. Whether they leave through git is your commit policy.
 
+## TLS trust
+
+At startup Foreman adds the operating system's certificate store to Node's default TLS trust, so `contract_probe` can reach internal services signed by your own certificate authority. This is the store your browser and `git` already trust on the same machine. Verification is never disabled, and there is no option to skip it: a certificate that neither the OS store nor Node's bundled list vouches for still fails, and the error names `NODE_EXTRA_CA_CERTS` as the way to add one CA file. Set `FOREMAN_TRUST_SYSTEM_CA=0` to keep Node's bundled list only. `host_status` reports the state as `os_cert_store`.
+
 ## Secrets
 
 Foreman harvests secret values from the process environment at startup: a variable whose name matches a secret pattern, whose value is a single token of at least 8 characters and is not on a short denylist of dictionary words. It also registers the value behind `${ENV:NAME}` in `.foremanenv`. Those values are:

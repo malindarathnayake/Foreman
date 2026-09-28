@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest"
 
 vi.mock("../src/lib/externalCli.js", () => ({
   resolveInvocation: vi.fn(),
+  resolveFirst: vi.fn(),
   runExternalCli: vi.fn(),
 }))
 
@@ -44,7 +45,7 @@ function mockRun(cli: "claude" | "codex" | "gemini", healthResultValue: ReturnTy
 describe("capabilityCheck — auth_status taxonomy (D11)", () => {
   it("1. resolution failure -> not_found, available: false, with hint", async () => {
     const { ext, mod } = await load()
-    ext.resolveInvocation.mockResolvedValue({ ok: false, reason: "codex not found" })
+    ext.resolveFirst.mockResolvedValue({ ok: false, reason: "codex not found" })
     ext.runExternalCli.mockImplementation(mockRun("codex", healthResult({})))
 
     const result = await mod.capabilityCheck("codex")
@@ -55,7 +56,7 @@ describe("capabilityCheck — auth_status taxonomy (D11)", () => {
 
   it("2. exit 0 health -> ok, no hint line, available: true", async () => {
     const { ext, mod } = await load()
-    ext.resolveInvocation.mockResolvedValue({ ok: true, plan: { command: "x", args: [] } })
+    ext.resolveFirst.mockResolvedValue({ ok: true, plan: { command: "x", args: [] } })
     ext.runExternalCli.mockImplementation(mockRun("codex", healthResult({ exitCode: 0 })))
 
     const result = await mod.capabilityCheck("codex")
@@ -66,7 +67,7 @@ describe("capabilityCheck — auth_status taxonomy (D11)", () => {
 
   it("3. timedOut: true -> probe_timeout + hint", async () => {
     const { ext, mod } = await load()
-    ext.resolveInvocation.mockResolvedValue({ ok: true, plan: { command: "x", args: [] } })
+    ext.resolveFirst.mockResolvedValue({ ok: true, plan: { command: "x", args: [] } })
     ext.runExternalCli.mockImplementation(mockRun("codex", healthResult({ exitCode: -1, timedOut: true })))
 
     const result = await mod.capabilityCheck("codex")
@@ -76,7 +77,7 @@ describe("capabilityCheck — auth_status taxonomy (D11)", () => {
 
   it("4. spawn failure (exitCode: -1, timedOut: false) -> not_found", async () => {
     const { ext, mod } = await load()
-    ext.resolveInvocation.mockResolvedValue({ ok: true, plan: { command: "x", args: [] } })
+    ext.resolveFirst.mockResolvedValue({ ok: true, plan: { command: "x", args: [] } })
     ext.runExternalCli.mockImplementation(mockRun("codex", healthResult({ exitCode: -1, timedOut: false })))
 
     const result = await mod.capabilityCheck("codex")
@@ -85,7 +86,7 @@ describe("capabilityCheck — auth_status taxonomy (D11)", () => {
 
   it("5. gemini health exit 55 -> not_trusted + hint containing 'trust'", async () => {
     const { ext, mod } = await load()
-    ext.resolveInvocation.mockResolvedValue({ ok: true, plan: { command: "x", args: [] } })
+    ext.resolveFirst.mockResolvedValue({ ok: true, plan: { command: "x", args: [] } })
     ext.runExternalCli.mockImplementation(mockRun("gemini", healthResult({ exitCode: 55 })))
 
     const result = await mod.capabilityCheck("gemini")
@@ -95,7 +96,7 @@ describe("capabilityCheck — auth_status taxonomy (D11)", () => {
 
   it("6. gemini health exit 52 -> error", async () => {
     const { ext, mod } = await load()
-    ext.resolveInvocation.mockResolvedValue({ ok: true, plan: { command: "x", args: [] } })
+    ext.resolveFirst.mockResolvedValue({ ok: true, plan: { command: "x", args: [] } })
     ext.runExternalCli.mockImplementation(mockRun("gemini", healthResult({ exitCode: 52 })))
 
     const result = await mod.capabilityCheck("gemini")
@@ -104,7 +105,7 @@ describe("capabilityCheck — auth_status taxonomy (D11)", () => {
 
   it("7. gemini health exit 7 (unseeded) -> error (fallback)", async () => {
     const { ext, mod } = await load()
-    ext.resolveInvocation.mockResolvedValue({ ok: true, plan: { command: "x", args: [] } })
+    ext.resolveFirst.mockResolvedValue({ ok: true, plan: { command: "x", args: [] } })
     ext.runExternalCli.mockImplementation(mockRun("gemini", healthResult({ exitCode: 7 })))
 
     const result = await mod.capabilityCheck("gemini")
@@ -113,7 +114,7 @@ describe("capabilityCheck — auth_status taxonomy (D11)", () => {
 
   it("8. codex health exit 1 -> auth_expired + hint containing 'codex login'", async () => {
     const { ext, mod } = await load()
-    ext.resolveInvocation.mockResolvedValue({ ok: true, plan: { command: "x", args: [] } })
+    ext.resolveFirst.mockResolvedValue({ ok: true, plan: { command: "x", args: [] } })
     ext.runExternalCli.mockImplementation(mockRun("codex", healthResult({ exitCode: 1 })))
 
     const result = await mod.capabilityCheck("codex")
@@ -123,7 +124,7 @@ describe("capabilityCheck — auth_status taxonomy (D11)", () => {
 
   it("9. key order: cli, available, version, auth_status, hint", async () => {
     const { ext, mod } = await load()
-    ext.resolveInvocation.mockResolvedValue({ ok: true, plan: { command: "x", args: [] } })
+    ext.resolveFirst.mockResolvedValue({ ok: true, plan: { command: "x", args: [] } })
     ext.runExternalCli.mockImplementation(mockRun("gemini", healthResult({ exitCode: 55 })))
 
     const result = await mod.capabilityCheck("gemini")
@@ -151,7 +152,7 @@ describe("capabilityCheck — auth_status taxonomy (D11)", () => {
 
   it("11. claude auth status exit 0 -> ok and reports version without pinning it", async () => {
     const { ext, mod } = await load()
-    ext.resolveInvocation.mockResolvedValue({ ok: true, plan: { command: "claude", args: [] } })
+    ext.resolveFirst.mockResolvedValue({ ok: true, plan: { command: "claude", args: [] } })
     ext.runExternalCli.mockImplementation(mockRun("claude", healthResult({ exitCode: 0 })))
 
     const result = await mod.capabilityCheck("claude", "codex")
@@ -164,7 +165,7 @@ describe("capabilityCheck — auth_status taxonomy (D11)", () => {
 
   it("12. claude auth status non-zero -> auth_expired independent of CLI version", async () => {
     const { ext, mod } = await load()
-    ext.resolveInvocation.mockResolvedValue({ ok: true, plan: { command: "claude", args: [] } })
+    ext.resolveFirst.mockResolvedValue({ ok: true, plan: { command: "claude", args: [] } })
     ext.runExternalCli.mockImplementation(async (_cmd: string, args: string[]) =>
       args.includes("--version")
         ? healthResult({ exitCode: 0, stdout: "9.9.9 (Claude Code)" })

@@ -91,6 +91,52 @@ describe('runExternalCli', () => {
   })
 })
 
+describe('windowsSpawnPlan', () => {
+  test('prefers native exe over cmd shim', async () => {
+    const { windowsSpawnPlan } = await import('../src/lib/externalCli.js')
+    const plan = windowsSpawnPlan([
+      'C:\\Tools\\agent.cmd',
+      'C:\\Tools\\agent.exe',
+    ])
+    expect(plan).toEqual({ ok: true, plan: { command: 'C:\\Tools\\agent.exe', args: [] } })
+  })
+
+  test('wraps .cmd via cmd.exe', async () => {
+    const { windowsSpawnPlan } = await import('../src/lib/externalCli.js')
+    const plan = windowsSpawnPlan(['C:\\Users\\me\\AppData\\Local\\cursor-agent\\agent.cmd'])
+    expect(plan.ok).toBe(true)
+    if (!plan.ok) return
+    expect(plan.plan.command.toLowerCase()).toContain('cmd.exe')
+    expect(plan.plan.args).toEqual(['/d', '/s', '/c', 'C:\\Users\\me\\AppData\\Local\\cursor-agent\\agent.cmd'])
+  })
+
+  test('wraps .ps1 via powershell.exe when no cmd shim exists', async () => {
+    const { windowsSpawnPlan } = await import('../src/lib/externalCli.js')
+    const plan = windowsSpawnPlan(['C:\\Users\\me\\AppData\\Local\\cursor-agent\\agent.ps1'])
+    expect(plan.ok).toBe(true)
+    if (!plan.ok) return
+    expect(plan.plan.command.toLowerCase()).toContain('powershell.exe')
+    expect(plan.plan.args).toEqual([
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-File',
+      'C:\\Users\\me\\AppData\\Local\\cursor-agent\\agent.ps1',
+    ])
+  })
+
+  test('prefers .cmd over .ps1', async () => {
+    const { windowsSpawnPlan } = await import('../src/lib/externalCli.js')
+    const plan = windowsSpawnPlan([
+      'C:\\Tools\\agent.ps1',
+      'C:\\Tools\\agent.cmd',
+    ])
+    expect(plan.ok).toBe(true)
+    if (!plan.ok) return
+    expect(plan.plan.args).toContain('C:\\Tools\\agent.cmd')
+  })
+})
+
 describe('runWithStdin env param', () => {
   test('an explicit env is passed to the child (PLANTED var visible)', async () => {
     const resolved = await resolveInvocation('node')
