@@ -18,7 +18,7 @@ import fs from "fs/promises"
 import path from "path"
 import { z } from "zod"
 import {
-  appendPreflight, briefHash, checkCitations, consistencyFlags, directiveCoverage, extractDirective, missingSymbols, normalizeObligations, ownershipSweep,
+  appendPreflight, briefHash, checkCitations, specNamedTestSymbols, consistencyFlags, directiveCoverage, extractDirective, missingSymbols, normalizeObligations, ownershipSweep,
   PREFLIGHT_POLICY_VERSION, type PreflightRecord,
 } from "../lib/preflight.js"
 import { absenceMessage, checkpointReach, lookupCheckpoint, reachMessage } from "../lib/checkpoint.js"
@@ -184,7 +184,11 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
   }
   const flags = consistencyFlags(input.brief)
   const forward = normalizeObligations(input.creates)
-  const cites = await checkCitations(root, input.brief, forward, input.files)
+  // 0.7.0: only the SERVER's spec can exempt a test-shaped name (never a caller-chosen spec_path
+  // or directive); when it cannot be read, nothing is exempt.
+  let serverSpec = ""
+  if (specPath) { try { serverSpec = await fs.readFile(specPath, "utf-8") } catch { serverSpec = "" } }
+  const cites = await checkCitations(root, input.brief, forward, input.files, specNamedTestSymbols(input.symbols, serverSpec))
   const dead = cites.filter((c) => c.status === "dead")
   const drifted = cites.filter((c) => c.status === "drifted")
   const promised = cites.filter((c) => c.status === "forward")

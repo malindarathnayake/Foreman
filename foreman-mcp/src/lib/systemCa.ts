@@ -38,7 +38,7 @@ export function trustSystemCa(env: NodeJS.ProcessEnv = process.env, api: TlsWith
   if (typeof api.getCACertificates !== "function" || typeof api.setDefaultCACertificates !== "function") {
     state = {
       status: "unavailable",
-      reason: `Node ${process.version} cannot add the OS store at runtime (needs 22.19+ or 24.5+); start Foreman with NODE_USE_SYSTEM_CA=1, or NODE_EXTRA_CA_CERTS=<ca.pem>`,
+      reason: `Node ${process.version} cannot add the OS store at runtime (needs 22.19+ or 24.5+); upgrade Node, or start Foreman with NODE_EXTRA_CA_CERTS=<ca.pem> (NODE_USE_SYSTEM_CA arrived in the same Node versions)`,
     }
     return state
   }

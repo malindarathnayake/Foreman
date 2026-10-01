@@ -29,7 +29,8 @@ describe("OS certificate store", () => {
   it("an older Node without the API is told how to get the same result", () => {
     const s = trustSystemCa({}, {} as never)
     expect(s.status).toBe("unavailable")
-    expect(JSON.stringify(s)).toContain("NODE_USE_SYSTEM_CA=1")
+    expect(JSON.stringify(s)).toContain("NODE_EXTRA_CA_CERTS")
+    expect(JSON.stringify(s)).not.toContain("NODE_USE_SYSTEM_CA=1")
   })
 
   it("a certificate failure names its cause and the fix; other failures stay plain", () => {

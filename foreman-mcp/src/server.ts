@@ -1,8 +1,18 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/server"
 import { trustSystemCa } from "./lib/systemCa.js"
-import { pinUnits } from "./lib/reviewPins.js"
-import { readLedger as readLedgerForPins } from "./lib/ledger.js"
+import { projectChangelog, ProjectChangelogInputSchema } from "./tools/projectChangelog.js"
+import { pinUnitsWithReason, pinStatusLine } from "./lib/reviewPins.js"
+import { foremanFileScope } from "./lib/foremanFiles.js"
+import { readLedgerWithStatus as readLedgerForPins } from "./lib/ledger.js"
+
+/** 0.7.0: pins from a readable ledger only; a corrupt ledger is a reason, not a missing phase. */
+async function pinFor(ledgerPath: string, phase: string, units: string[], root: string,
+  progressPathForPins: string, journalPathForPins: string, docsDirForPins: string) {
+  const read = await readLedgerForPins(ledgerPath, { readOnly: true })
+  if (read.corrupt) return { reason: "the ledger could not be read (corrupt)" }
+  return pinUnitsWithReason(read.ledger, phase, units, root, foremanFileScope({ ledgerPath, progressPath: progressPathForPins, journalPath: journalPathForPins, docsDir: docsDirForPins }))
+}
 import { serveStdio, StdioServerTransport } from "@modelcontextprotocol/server/stdio"
 import { z } from "zod"
 import fs from "fs/promises"
@@ -215,6 +225,24 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     }
   )
 
+  // 0.7.0: a repository's own CHANGELOG.md in Keep a Changelog 1.1.0 format.
+  server.registerTool(
+    "project_changelog",
+    {
+      title: "Project Changelog",
+      description:
+        "Keeps the repository's root CHANGELOG.md in Keep a Changelog 1.1.0 format (https://keepachangelog.com/en/1.1.0/). " +
+        "check: lists every format issue with its line (deterministic). init: creates the file with the standard header and an empty [Unreleased]; never overwrites. " +
+        "release { version, date? }: moves [Unreleased] under '## [version] - date'; refuses an empty [Unreleased] or a version not newer than the latest. " +
+        "notes { version }: returns that version's section as a release-body draft — publishing it anywhere is the owner's call. " +
+        "init and release are refused while a worker holds the repository window. Writing the entries is a writer seat's job at a phase gate (see the implementor protocol).",
+      inputSchema: ProjectChangelogInputSchema,
+      outputSchema: TextOutputSchema,
+      annotations: { title: "Project Changelog", readOnlyHint: false, destructiveHint: false },
+    },
+    async (args, _extra) => textResult(await projectChangelog(args, process.cwd(), ledgerPath))
+  )
+
   server.registerTool(
     "changelog",
     {
@@ -396,9 +424,8 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       const sentPrompt = withReportBudget(args.prompt, args.report_max_lines)
       // 0.6.39: hash the reviewed units' files BEFORE stamping the start, so a change made
       // after the stamp can never be inside the pinned bytes.
-      const reviewPins = args.phase && args.units
-        ? await pinUnits(await readLedgerForPins(ledgerPath, { readOnly: true }), args.phase, args.units, process.cwd())
-        : null
+      const pinResult = args.phase && args.units ? await pinFor(ledgerPath, args.phase, args.units, process.cwd(), progressPath, journalPath, docsDir) : undefined
+      const reviewPins = pinResult && "pinned" in pinResult ? pinResult.pinned : null
       const startedTs = new Date().toISOString()
       const result = await invokeAdvisor(args.cli, sentPrompt, args.timeout_ms, callControls(_extra, `invoke_advisor ${args.cli}`))
       const pinned = args.cli === "gemini" ? GEMINI_ADVISOR_MODEL : args.cli === "codex" ? CODEX_ADVISOR_MODEL : undefined
@@ -407,6 +434,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       // record_review; the ledger checks them against this file, never against the text.
       const meta = advisorRunMeta(args.cli, result, sentPrompt, pinned)
       const extra: string[] = []
+      if (pinResult) extra.push(pinStatusLine(pinResult))
       if (result.modelFallback) extra.push(`model_fallback: ${result.modelFallback.from} -> ${result.modelFallback.to} (${result.modelFallback.reason})`)
       // 0.6.39 (Codex review): the Claude seat records the model it asked for, and a fallback
       // leaves a receipt for the refused Fable attempt too, so the switch is durable.

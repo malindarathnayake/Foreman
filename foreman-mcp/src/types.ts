@@ -110,6 +110,11 @@ export interface DelegationGuard {
   violation_paths?: string[]
   /** 0.6.34: a later attempt's comparison found this violation's paths back at this baseline. */
   resolved?: { ts: string; by_attempt: number }
+  /**
+   * 0.7.0: authorized paths whose observed state changed between baseline and comparison.
+   * Informational, never a gate; see lib/repoGuard.ts authorizedChanges for what it cannot see.
+   */
+  edited?: number
 }
 
 /** One delegation attempt. Appended per (re-)delegation so retry history survives the `w` overwrite. */

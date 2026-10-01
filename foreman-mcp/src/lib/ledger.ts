@@ -693,7 +693,7 @@ async function applyOperation(
           if (data.correction) {
             const prior = unit.delegations.find((x) => x.attempt === data.correction!.from_attempt)
             if (!prior?.guard || prior.guard.snapshot.root !== g.root || !samePaths(prior.guard.snapshot.allowed, g.allowed)) {
-              throw new Error("RANK CORRECTION: the new guard must preserve the previous repository root and frozen authorized file set.")
+              throw new Error("GUARD CORRECTION: the new guard must preserve the previous repository root and frozen authorized file set.")
             }
           }
           unit.delegations[unit.delegations.length - 1].guard = { snapshot: g, snapshot_ts: now }
@@ -851,7 +851,7 @@ async function applyOperation(
                   : "no comparison was recorded after the worker returned"
               throw new Error(
                 `REPOSITORY GUARD: unit '${unit_id}' attempt #${unit.attempt_seq} has a repository snapshot but ${detail}. ` +
-                "Run repo_guard { operation: 'compare', phase, unit_id, allowed_files } after the worker returns and before the verdict. " +
+                "Run repo_guard { operation: 'compare', phase, unit_id } after the worker returns and before the tests and the verdict (compare takes no allowed_files: the authorized set is frozen on the baseline). " +
                 "A violation is a hard stop: preserve the evidence and escalate to the owner — do not attempt automatic recovery. " +
                 "data.user_override: true records the waiver on the delegation as guard_override."
               )
@@ -1879,6 +1879,10 @@ export async function recordRepoGuard(
   unitId: string,
   patch: DelegationGuard | {
     result: "ok" | "violation"; violations?: string[]; violation_paths?: string[]; damaged?: string[]; baseline_hash?: string
+    /** 0.7.0: the attempt the comparison started for; a mismatch is refused. */
+    expected_attempt?: number
+    /** 0.7.0: informational count of authorized paths that changed (see DelegationGuard.edited). */
+    edited?: number
     /** 0.6.34: earlier attempts whose violation this comparison found restored. */
     resolves?: number[]
   }
@@ -1914,7 +1918,7 @@ export async function recordRepoGuard(
         const prior = delegations.find((d) => d.attempt === latest.correction?.from_attempt)
         if (!prior?.guard || prior.guard.snapshot.root !== patch.snapshot.root ||
           !samePaths(prior.guard.snapshot.allowed, patch.snapshot.allowed)) {
-          throw new Error("RANK CORRECTION: the new guard must preserve the previous repository root and frozen authorized file set.")
+          throw new Error("GUARD CORRECTION: the new guard must preserve the previous repository root and frozen authorized file set.")
         }
       }
       // 0.6.22: acquire the repository window. Another unit's open window refuses the baseline.
@@ -1941,7 +1945,14 @@ export async function recordRepoGuard(
           "the attempt advanced during the comparison. Compare again against the current baseline."
         )
       }
-      const { baseline_hash: _bound, resolves, ...guardPatch } = patch
+      const attemptNow = unit.attempt_seq ?? latest.attempt
+      if (patch.expected_attempt !== undefined && patch.expected_attempt !== attemptNow) {
+        throw new Error(
+          `GUARD BLOCKED: this comparison started for unit '${unitId}' attempt #${patch.expected_attempt} but the unit is now on attempt #${attemptNow}; ` +
+          "the attempt advanced during the comparison. Compare again against the current baseline."
+        )
+      }
+      const { baseline_hash: _bound, expected_attempt: _for, resolves, ...guardPatch } = patch
       latest.guard = { ...latest.guard, ...guardPatch, checked_ts: new Date().toISOString() }
       // 0.6.34: resolution is recorded only on an earlier, still-open violation; the caller's
       // list cannot clear a guard that is overridden, already resolved, or not a violation.
@@ -2041,3 +2052,18 @@ export async function recordSmoke(filePath: string, phase: string, unitId: strin
   })
 }
 export type { SmokeReceipt }
+
+/**
+ * 0.7.0 (Codex review): run a project write only while no worker holds the repository window,
+ * with the check and the write under the ledger lock that delegations take — so a window cannot
+ * open between the check and the write. Used by project_changelog.
+ */
+export async function whileWindowClosed<T>(filePath: string, fn: () => Promise<T>): Promise<{ value: T } | { refused: string }> {
+  return withLedgerLock(filePath, async () => {
+    const read = await readLedgerWithStatus(filePath, { readOnly: true })
+    if (read.corrupt) return { refused: "the ledger could not be read (corrupt); not writing while the repository window is unknown" }
+    const w = read.ledger.window
+    if (w) return { refused: `unit '${w.unit_id}' in phase '${w.phase}' holds the repository window; a write now would be charged to that attempt` }
+    return { value: await fn() }
+  })
+}

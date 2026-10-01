@@ -29,7 +29,7 @@ describe("list tools — verify all 36 present, update_bundle absent", () => {
 
   it("lists exactly 36 tools", async () => {
     const result = await client.listTools()
-    expect(result.tools).toHaveLength(36)
+    expect(result.tools).toHaveLength(37)
   })
 
   it("includes all required tool names", async () => {
@@ -188,7 +188,7 @@ describe("Codex-only tool registration", () => {
     // claude_agents_init and not codex_agents_init; codex gets the reverse; cursor gets
     // cursor_agents_init. 0.6.28 added one claude-code-only tool, so claude-code is 36 and
     // codex stays at 35. 0.6.31 adds cursor_agents_init on cursor only.
-    expect(result.tools).toHaveLength(35)
+    expect(result.tools).toHaveLength(36)
     expect(result.tools.map((t) => t.name)).not.toContain("claude_agents_init")
     expect(result.tools.map((t) => t.name)).not.toContain("cursor_agents_init")
     expect(tool).toBeDefined()
@@ -219,7 +219,7 @@ describe("Cursor-only tool registration", () => {
     expect(names).toContain("cursor_agents_init")
     expect(names).not.toContain("claude_agents_init")
     expect(names).not.toContain("codex_agents_init")
-    expect(result.tools).toHaveLength(35)
+    expect(result.tools).toHaveLength(36)
     const tool = result.tools.find((entry) => entry.name === "cursor_agents_init")
     expect(tool?.annotations?.title).toBe("Init Cursor Agents")
     expect(tool?.annotations?.readOnlyHint).toBe(false)

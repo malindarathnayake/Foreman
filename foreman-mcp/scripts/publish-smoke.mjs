@@ -51,6 +51,7 @@ export const EXPECTED_TOOLS = [
   "bundle_status",
   "host_status",
   "changelog",
+  "project_changelog",
   "ethos",
   "read_ledger",
   "read_progress",

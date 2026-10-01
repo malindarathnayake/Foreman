@@ -311,6 +311,11 @@ export function extractCitations(brief: string): Array<{ raw: string; kind: Cita
   const inCodeSpan = (i: number) => codeRanges.some(([a, b]) => i >= a && i < b)
 
   let scan = brief
+  // 0.7.0: a file path is not a test name. `tests/test_config_loader.py` was read twice — as a
+  // file and as the test `test_config_loader`. File spans are blanked before the name scan.
+  for (const m of brief.matchAll(FILE_REF)) {
+    scan = scan.slice(0, m.index!) + " ".repeat(m[0].length) + scan.slice(m.index! + m[0].length)
+  }
   for (const m of brief.matchAll(RUN_SELECTOR)) {
     const operand = m[1] ?? m[2] ?? m[3]
     const raw = m[0].trim().replace(/^`/, "")
@@ -383,7 +388,7 @@ export async function forwardUnmet(repoRoot: string, obligations: ForwardObligat
   const unmet: string[] = []
   for (const o of obligations) {
     const abs = path.resolve(repoRoot, o.file)
-    if (path.relative(repoRoot, abs).startsWith("..")) {
+    if (await outsideRoot(repoRoot, abs)) {
       unmet.push(`${o.file}: escapes the repository root`)
       continue
     }
@@ -419,7 +424,14 @@ function unitDirs(files: string[]): string[] {
 }
 
 export async function checkCitations(
-  repoRoot: string, brief: string, creates: ForwardObligation[] = [], files: string[] = []
+  repoRoot: string, brief: string, creates: ForwardObligation[] = [], files: string[] = [],
+  /**
+   * 0.7.0 (field report 2026-09-28): a brief naming the TYPE `TestOpts` failed as a dead test
+   * citation. Names listed in preflight_check `symbols` AND found as whole words in the server's
+   * spec are exempt when the brief does not use them in a test position (`func TestX(`,
+   * `def test_x(`, `TestX(`). A stale test the spec does not name is still dead.
+   */
+  specNames: ReadonlySet<string> = new Set()
 ): Promise<CitationCheck[]> {
   const cites = extractCitations(brief)
   const results: CitationCheck[] = []
@@ -479,6 +491,8 @@ export async function checkCitations(
       const hit = [...src.entries()].find(([, text]) => re.test(text))
       if (hit) {
         results.push({ raw: c.raw, kind: c.kind, status: "ok", detail: `defined or referenced in ${hit[0]}` })
+      } else if (specNames.has(c.name!) && !inTestPosition(brief, c.name!)) {
+        results.push({ raw: c.raw, kind: c.kind, status: "ok", detail: "named in the spec and listed in symbols; not used as a test here" })
       } else if (forwardTests.has(c.name!)) {
         results.push({ raw: c.raw, kind: c.kind, status: "forward", detail: `promised in ${forwardTests.get(c.name!)}; the pass verdict requires it declared there` })
       } else {
@@ -489,7 +503,7 @@ export async function checkCitations(
       continue
     }
     const abs = path.resolve(repoRoot, c.file!)
-    if (path.relative(repoRoot, abs).startsWith("..")) {
+    if (await outsideRoot(repoRoot, abs)) {
       results.push({ raw: c.raw, kind: c.kind, status: "dead", detail: "path escapes the repository root" })
       continue
     }
@@ -507,12 +521,12 @@ export async function checkCitations(
         const nf = f.replace(/\\/g, "/").replace(/^\.\//, "")
         if (nf !== cited && !nf.endsWith("/" + cited)) continue
         const cand = path.resolve(repoRoot, nf)
-        if (path.relative(repoRoot, cand).startsWith("..")) continue
+        if (await outsideRoot(repoRoot, cand)) continue
         try { await fs.access(cand); if (!candidates.includes(cand)) candidates.push(cand) } catch { /* listed but absent */ }
       }
       for (const d of unitDirs(files)) {
         const cand = path.resolve(repoRoot, d, c.file!)
-        if (path.relative(repoRoot, cand).startsWith('..')) continue
+        if (await outsideRoot(repoRoot, cand)) continue
         try { await fs.access(cand); if (!candidates.includes(cand)) candidates.push(cand) } catch { /* not under this one */ }
       }
       if (candidates.length > 1) {
@@ -632,4 +646,75 @@ export async function findPreflightAny(filePath: string, briefHashValue: string,
     }
   }
   return newest
+}
+
+/** Case-insensitive letters for a word, without making the whole pattern (and the name) insensitive. */
+function ci(word: string): string {
+  return word.replace(/[a-z]/gi, (ch) => `[${ch.toLowerCase()}${ch.toUpperCase()}]`)
+}
+const TEST_BEFORE = [ci("tests"), ci("test"), ci("runs"), ci("run"), ci("renames"), ci("renamed"), ci("rename"), ci("renaming")].join("|")
+const TEST_AFTER = ["fails", "failing", "failed", "fail", "passes", "passing", "passed", "pass", "covers", "covering", "covered", "cover"].map(ci).join("|")
+
+/**
+ * 0.7.0: the brief uses NAME as a test, judged per sentence (and per line): a declaration
+ * (`func TestX`, `def test_x`), a call (`TestX(` on the same line, not `new TestX(`), test
+ * vocabulary before it through a list ("Tests TestAlpha and TestBravo"), a rename into it
+ * ("Rename TestBefore to TestAfter"), or a test outcome after it through a list
+ * ("TestAlpha, TestBravo fail today"). Codex review: each of those escaped the first version.
+ */
+export function inTestPosition(brief: string, name: string): boolean {
+  const n = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+  const word = `(?<![A-Za-z0-9_])${n}(?![A-Za-z0-9_])`
+  const LIST = String.raw`(?:\s*(?:,|\s[aA][nN][dD])\s*[A-Za-z0-9_]+)*`
+  const patterns = [
+    new RegExp(`(?:\\bfunc\\s+|\\bdef\\s+)${n}(?![A-Za-z0-9_])`),
+    new RegExp(`(?<![nN][eE][wW]\\s)(?<![A-Za-z0-9_])${n}[ \\t]*\\(`),
+    new RegExp(`\\b(?:${TEST_BEFORE})\\s+(?:[A-Za-z0-9_]+\\s*(?:,|\\s[aA][nN][dD])\\s*)*${n}(?![A-Za-z0-9_])`),
+    new RegExp(`\\b(?:${ci("renames")}|${ci("renamed")}|${ci("rename")}|${ci("renaming")})\\b.*\\b${ci("to")}\\s+${n}(?![A-Za-z0-9_])`),
+    new RegExp(`${word}${LIST}\\s+(?:${TEST_AFTER})\\b`),
+  ]
+  for (const sentence of brief.split(/(?<=[.!?])\s+|\r?\n/)) {
+    if (!new RegExp(word).test(sentence)) continue
+    if (patterns.some((p) => p.test(sentence))) return true
+  }
+  return false
+}
+
+/** 0.7.0: test-shaped names from `symbols` that the spec names as whole words. */
+export function specNamedTestSymbols(symbols: string[], spec: string): Set<string> {
+  const out = new Set<string>()
+  if (!spec) return out
+  for (const s of symbols) {
+    if (!/^(?:Test[A-Z]|test_)/.test(s)) continue
+    const n = s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+    if (new RegExp(`(?<![A-Za-z0-9_])${n}(?![A-Za-z0-9_])`).test(spec)) out.add(s)
+  }
+  return out
+}
+
+/**
+ * 0.7.0 (Codex review): outside the repository after resolving links. The lexical check alone
+ * let a junction inside the root reach a file outside it, and `startsWith("..")` both missed a
+ * cross-drive path and refused a real directory named `..fixtures`. The nearest existing
+ * ancestor is resolved, so a path that does not exist yet is still judged by where it would land.
+ */
+async function outsideRoot(repoRoot: string, abs: string): Promise<boolean> {
+  const lexical = path.relative(repoRoot, abs)
+  if (lexical === ".." || lexical.startsWith(".." + path.sep) || path.isAbsolute(lexical)) return true
+  let rootReal: string
+  try { rootReal = await fs.realpath(repoRoot) } catch { return false }
+  let probe = abs
+  let tail = ""
+  for (;;) {
+    try {
+      const real = path.join(await fs.realpath(probe), tail)
+      const rel = path.relative(rootReal, real)
+      return rel === ".." || rel.startsWith(".." + path.sep) || path.isAbsolute(rel)
+    } catch {
+      const parent = path.dirname(probe)
+      if (parent === probe) return false
+      tail = path.join(path.basename(probe), tail)
+      probe = parent
+    }
+  }
 }

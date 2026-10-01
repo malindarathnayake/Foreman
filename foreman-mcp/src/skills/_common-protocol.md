@@ -235,6 +235,17 @@ Evidence, not the author's verdict: an initial review prompt carries the require
 Adversarial wording: state the authorized verification goal and the bounded target — "find inputs this guard fails to reject", "show an in-scope call sequence where this check is skipped". Avoid context-free "break / bypass / defeat / circumvent" imperatives; some advisor CLIs refuse them and the run is wasted. If a seat refuses, record `completion: "failed"` with the refusal in `limitations`, retry once with bounded verification wording, and never treat a refusal as a clean review.
 <!-- /section -->
 
+<!-- section: project-changelog -->
+## Project Changelog (phase boundary)
+
+After a phase gate passes, record the phase's user-visible changes in the repository's root `CHANGELOG.md`, Keep a Changelog 1.1.0 (https://keepachangelog.com/en/1.1.0/):
+
+1. `project_changelog { operation: "check" }` — `init` when it reports `missing`.
+2. **Writer:** a cheap worker seat gets the passed units' briefs, the gate's advisory findings and the diff summary (no ledger, no spec). It adds bullets under `[Unreleased]` in Added / Changed / Deprecated / Removed / Fixed / Security, written for users: what changed and why it matters, no unit ids or internal jargon.
+3. **Release-note doctor:** a reviewer seat in fresh context rewrites anything internal, vague or misfiled without changing meaning; then `check` again until it reports `ok`.
+4. **At release:** `project_changelog { operation: "release", version }`, then `notes` for the release body. Publishing it (GitHub release, docs, chat) is the owner's call: show the text and ask.
+<!-- /section -->
+
 <!-- section: context-budget -->
 ## Context Budget Discipline
 

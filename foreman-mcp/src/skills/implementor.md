@@ -16,10 +16,10 @@ description: Pit-boss implementation orchestrator. A frontier pitboss orchestrat
 |------|-----|
 | Pit-boss NEVER writes implementation code, fixes, or tests; use an implementation worker | Separation of concerns |
 | Workers NEVER see full spec, ledger, or progress | Information isolation |
-| Workers stay bounded to one unit; release after its correction work is complete | Prevents context accumulation across units |
+| A fresh worker per unit, spawned after the delegation and baseline are recorded; release it after its correction work is complete | Prevents context accumulation across units; keeps the guard window honest |
 | Fresh worker after rejection unless the declared rank permits bounded reuse | Keep correction scope explicit |
 | Ledger is durable — persisted after every verdict | State survives sessions |
-| Mandatory new session at phase checkpoints | Context accumulation degrades quality |
+| A new session only when context usage is above 80% (see Phase boundary) | Context size is the host's call |
 
 **Proportional entry:** full implementor ceremony is for prepared multi-unit work, security/trust boundaries, migrations, and changes where a silent defect is expensive. Ordinary low-risk CRUD and one-file maintenance can use `lighttask` before entering this protocol; do not manufacture phases merely to satisfy this protocol.
 
@@ -120,9 +120,9 @@ When preflight or validation shows the SPEC is wrong and an accepted decision or
 
 The worker brief MUST contain the Shared-Tree Safety paragraph above verbatim. If accepted uncommitted work is present and the host cannot prevent Git mutations, use a patch-only worker path or stop for owner direction. Never stash, commit, reset, checkout, clean, or move the user's work to make delegation convenient.
 
-Record the delegation in the ledger BEFORE spawning. One write can carry the whole preamble: `data.brief` plus `preflight_check: { symbols, files, creates }` runs the preflight inside the delegation (a failing preflight refuses it with the full report, nothing recorded), and `guard: { files, allowed_files }` takes the baseline. At the pass verdict, an attempt with no comparison yet is compared first — still compare BEFORE running the tests, so a tampered test config never runs. This is mechanically enforced — a `pass` verdict is rejected unless the unit was first set to `delegated` with a brief. Also record the cost `tier` the worker runs at and a short `route_reason` — audit evidence, not a gate:
+Record the delegation in the ledger BEFORE spawning. One write can carry the whole preamble: `data.brief` plus `preflight_check: { symbols, files, creates }` runs the preflight inside the delegation (a failing preflight refuses it with the full report, nothing recorded), and `guard: { files, allowed_files }` takes the baseline. The legal minimum is two ledger writes — the delegation (with preflight and guard) and the pass verdict — plus `repo_guard compare` before the tests, which stays mandatory so a tampered test config never runs; the verdict compares an uncompared attempt as a backstop only. Wrong allow-list noticed before spawning: delegate again with the corrected list — no failure is added, though cap and grant checks still apply. A file the unit creates goes in `creates`; an existing fixture it edits goes in `allowed_files`. This is mechanically enforced — a `pass` verdict is rejected unless the unit was first set to `delegated` with a brief. Also record the cost `tier` the worker runs at and a short `route_reason` — audit evidence, not a gate:
 ```
-mcp__foreman__write_ledger({ operation: "set_unit_status", phase, unit_id, data: { s: "delegated", tier: "standard", route_reason: "<why this tier fits this unit>", preflight: { symbols_grepped: <N from Step 4.5>, self_consistent: true, telemetry: "checked" | "n/a" } } })
+mcp__foreman__write_ledger({ operation: "set_unit_status", phase, unit_id, data: { s: "delegated", brief: "<the full worker brief>", tier: "standard", route_reason: "<why this tier fits this unit>", preflight_check: { symbols: [<brief symbols>], files: [<cited files>], creates: [<new files>] }, guard: { files: [<unit files>], allowed_files: [<authorized files>] } } })
 ```
 Record `worker_id: "<actual host-returned ID>"` for a native worker on the verdict, or — when the previous attempt still carries no ID (rejected before any verdict, or a verdict written without it) — on the eligible correction write, which binds it onto that attempt once (`worker_id_bound: { at: "correction" }`). A recorded ID never changes. Never invent an ID or carry a live-worker assumption across sessions.
 
@@ -289,6 +289,8 @@ Include: unit verdicts, gate results, review findings with classifications, defe
 ```
 mcp__foreman__write_journal({ operation: "end_session", data: { dur_min: <estimate>, ctx_used_pct: <estimate>, summary: { units_ok: <N>, units_rej: <N>, w_spawned: <N>, w_wasted: <N>, tok_wasted: 0, delay_min: 0, blockers: [], friction: <1-100> } } })
 ```
+
+{{include: project-changelog}}
 
 {{include: context-budget}}
 

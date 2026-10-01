@@ -323,7 +323,7 @@ describe("repo_guard snapshot on a correction attempt", () => {
 
   it("still refuses a different explicit set through the ledger, and an explicit identical set is not marked inherited", async () => {
     await correctionOnRealGuard()
-    await expect(snap({ allowed_files: ["b.ts"] })).rejects.toThrow(/^RANK CORRECTION: the new guard must preserve the previous repository root and frozen authorized file set\.$/)
+    await expect(snap({ allowed_files: ["b.ts"] })).rejects.toThrow(/^GUARD CORRECTION: the new guard must preserve the previous repository root and frozen authorized file set\.$/)
     expect((await unit()).delegations!.at(-1)!.guard).toBeUndefined()
     const out = await snap({ allowed_files: ["a.ts"] })
     expect(line(out, "status")).toBe("status: recorded")

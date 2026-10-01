@@ -15,8 +15,8 @@
  */
 
 import path from "path"
-import { attributeHeadMove, compareSnapshots, takeSnapshot } from "../lib/repoGuard.js"
-import { JOURNAL_FILE, PROGRESS_STATE_FILE, foremanFileScope } from "../lib/foremanFiles.js"
+import { attributeHeadMove, authorizedChanges, compareSnapshots, takeSnapshot } from "../lib/repoGuard.js"
+import { JOURNAL_FILE, PROGRESS_STATE_FILE, foremanFileScope, isForemanStateFile } from "../lib/foremanFiles.js"
 import { readLedger, recordRepoGuard } from "../lib/ledger.js"
 import { scrub } from "../lib/redaction.js"
 import { toKeyValue } from "../lib/toon.js"
@@ -148,7 +148,12 @@ export async function handleRepoGuard(
   }
 
   // compare
-  const before = await currentGuard(paths.ledgerPath, phase, unit_id)
+  // 0.7.0 (Codex review): bind to the unit's attempt_seq, not only the delegation — a direct
+  // fix advances the attempt without a new delegation, and a stale comparison must not clear it.
+  const unitNow = await currentUnit(paths.ledgerPath, phase, unit_id)
+  const startedFor = unitNow?.delegations?.at(-1)
+  const startedAttempt = unitNow?.attempt_seq ?? startedFor?.attempt
+  const before = startedFor?.guard
   if (!before) {
     return scrub(toKeyValue({
       operation: "compare",
@@ -215,6 +220,7 @@ export async function handleRepoGuard(
     violations.unshift(`authorized file is entirely NUL bytes — destroyed, not edited: ${f}`)
   }
   const result = violations.length === 0 ? "ok" : "violation"
+  const edited = authorizedChanges(before.snapshot, outcome.snapshot, outcome.scope)
   const { attempt, reopened } = await recordRepoGuard(paths.ledgerPath, phase, unit_id, {
     result,
     violations: violations.slice(0, 20).map((v) => v.slice(0, 400)),
@@ -222,6 +228,10 @@ export async function handleRepoGuard(
     ...(resolves.length ? { resolves } : {}),
     ...(outcome.damaged.length ? { damaged: outcome.damaged.slice(0, 20) } : {}),
     baseline_hash: before.snapshot.hash,
+    // 0.7.0 (Codex review): the attempt this comparison started for, so it cannot land on a
+    // later attempt whose unchanged tree produced the same baseline hash.
+    ...(startedAttempt !== undefined ? { expected_attempt: startedAttempt } : {}),
+    edited,
   })
 
   const head = toKeyValue({
@@ -233,6 +243,7 @@ export async function handleRepoGuard(
     baseline_hash: before.snapshot.hash,
     current_hash: outcome.snapshot.hash,
     violations: violations.length,
+    authorized_changed: edited,
     ...(outcome.damaged.length ? { zeroed_files: outcome.damaged.join(", ") } : {}),
     ...(resolves.length ? { resolved: resolves.map((n) => `attempt #${n}`).join(", ") } : {}),
     ...(stillOpen.length ? { earlier_open: stillOpen.length } : {}),
@@ -242,8 +253,22 @@ export async function handleRepoGuard(
     ? "\nEARLIER VIOLATIONS STILL OPEN (the pass stays refused until these paths are restored or the owner waives them)\n" +
       stillOpen.map((v) => `  - ${v}`).join("\n")
     : ""
+  // 0.7.0 (G1): informational. Zero observed changes on a non-empty authorized set means the
+  // work happened before the baseline was taken, or the worker changed nothing. Never a gate.
+  const effective = before.snapshot.allowed.filter((p) => !isForemanStateFile(p, outcome.scope))
+  const noChange = edited === 0 && effective.length > 0
+    ? "\nNOTE: no authorized change was observed between the baseline and this comparison — the work happened before the baseline was taken, or the worker changed nothing. Informational; nothing is refused. Take the baseline before the worker edits."
+    : ""
+  // 0.7.0 (G3): new untracked paths get a preservation hint, never a deletion instruction.
+  const beforePaths = new Set(before.snapshot.entries.map((e) => e.path))
+  const created = [...violationPaths].filter((p) => !beforePaths.has(p) && outcome.snapshot.entries.some((e) => e.path === p && e.code === "??")).slice(0, 5)
+  const createdNote = created.length
+    ? "\n\nNEW FILES OUTSIDE THE BRIEF: " + created.join(", ") + "\n" +
+      "  Preserve them. Removing or restoring them is the owner's call (or the owner waives the violation).\n" +
+      "  If the unit was meant to create them, declare them in preflight_check creates on the next delegation."
+    : ""
   if (result === "ok") {
-    return scrub(head + (stillOpen.length
+    return scrub(head + noChange + (stillOpen.length
       ? "\nThis attempt touched nothing outside its frozen authorized set." + earlierNote
       : "\nThe worker touched nothing outside the frozen authorized set. The pass verdict is clear to proceed."))
   }
@@ -253,6 +278,7 @@ export async function handleRepoGuard(
       "\nVIOLATIONS\n" +
       violations.map((v) => `  - ${v}`).join("\n") +
       earlierNote +
+      createdNote +
       "\n\nHARD STOP\n" +
       "  Repository state is user-owned. Do not attempt automatic recovery and do not run the tests.\n" +
       "  Preserve the evidence and escalate to the owner. The pass verdict for this attempt is refused\n" +
@@ -399,9 +425,17 @@ async function openEarlierViolations(ledgerPath: string, phase: string, unitId: 
 
 /** The guard on the unit's newest delegation, if any. */
 async function currentGuard(ledgerPath: string, phase: string, unitId: string) {
+  return (await currentDelegation(ledgerPath, phase, unitId))?.guard
+}
+
+/** The unit's newest delegation (its attempt number binds a comparison, 0.7.0). */
+async function currentDelegation(ledgerPath: string, phase: string, unitId: string) {
+  return (await currentUnit(ledgerPath, phase, unitId))?.delegations?.at(-1)
+}
+
+async function currentUnit(ledgerPath: string, phase: string, unitId: string) {
   const ledger = await readLedger(ledgerPath, { readOnly: true })
-  const delegations = ledger.phases[phase]?.units[unitId]?.delegations ?? []
-  return delegations.length > 0 ? delegations[delegations.length - 1].guard : undefined
+  return ledger.phases[phase]?.units[unitId]
 }
 
 /** Same set of repo-relative paths, ignoring order and ./ or backslash spelling. */

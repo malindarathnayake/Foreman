@@ -18,7 +18,7 @@ import fs from "fs/promises"
 import os from "os"
 import path from "path"
 import { execFileSync } from "child_process"
-import { readLedger, writeLedger } from "../src/lib/ledger.js"
+import { readLedger, recordRepoGuard, writeLedger } from "../src/lib/ledger.js"
 import { compareSnapshots, invalidPathReason, normalizePath, parsePorcelainZ, takeSnapshot, ENTRY_CEILING, MAX_ENTRIES } from "../src/lib/repoGuard.js"
 import { attributeHeadMove } from "../src/lib/repoGuard.js"
 import { handleRepoGuard } from "../src/tools/repoGuard.js"
@@ -99,6 +99,21 @@ describe("path arguments never become git options [CWE-88]", () => {
     expect(invalidPathReason("C:\\Windows\\system.ini")).toMatch(/absolute/)
     expect(invalidPathReason("../../secrets.env")).toMatch(/escapes/)
     expect(invalidPathReason("src/a.ts")).toBeNull()
+  })
+
+  // 0.7.0: drive-relative and Windows stream paths, and git pathspec magic/wildcards.
+  it("refuses a drive-relative path, and a stream name on Windows", () => {
+    expect(invalidPathReason("D:brief.md")).toMatch(/drive-relative/)
+    if (process.platform === "win32") expect(invalidPathReason("notes.txt:hidden.html")).toMatch(/stream name/)
+  })
+
+  it("matches path arguments literally: a bracket name is not a wildcard, ':/' is not repo-root magic", async () => {
+    await fs.writeFile(path.join(repoDir, "b.ts"), "export const b = 2\n")
+    const wild = await takeSnapshot(repoDir, ["[b].ts"])
+    expect(wild.status).toBe("ok")
+    if (wild.status === "ok") expect(wild.snapshot.eol).toEqual([])
+    const named = await takeSnapshot(repoDir, ["b.ts"])
+    if (named.status === "ok") expect(named.snapshot.eol.length).toBe(1)
   })
 
   it("refuses rather than shelling out with the bad path", async () => {
@@ -547,6 +562,63 @@ describe("set_verdict enforces the guard", () => {
     })
   })
 
+  // 0.7.0: informational signals (G1–G3) and attempt-bound comparisons. None of them refuses.
+  describe("0.7.0 guard signals", () => {
+    const hw = async (op: Record<string, unknown>) => {
+      const { handleWriteLedger } = await import("../src/tools/writeLedger.js")
+      const { resolveModelRank } = await import("../src/lib/modelRank.js")
+      // A declared session, so a worker ID can be bound at the verdict.
+      const rank = { ...resolveModelRank("opus"), session_id: "s1" }
+      return handleWriteLedger(ledgerPath, op, "claude-code", rank, { projectRoot: repoDir, guardPaths: { ledgerPath } })
+    }
+    const delegateGuarded = (unit = "u1", file = "a.ts", extra: Record<string, unknown> = {}) =>
+      hw({ operation: "set_unit_status", phase: "p1", unit_id: unit, data: { s: "delegated", brief: BRIEF, preflight: PREFLIGHT, guard: { allowed_files: [file] }, ...extra } })
+
+    it("notes when no authorized change was observed (work done before the baseline), at compare and at verdict", async () => {
+      await fs.writeFile(path.join(repoDir, "a.ts"), "export const a = 5\n")   // edited BEFORE the baseline
+      await delegateGuarded()
+      const cmp = await guard("compare")
+      expect(cmp).toContain("authorized_changed: 0")
+      expect(cmp).toContain("NOTE: no authorized change was observed")
+      const v = await hw({ operation: "set_verdict", phase: "p1", unit_id: "u1", data: { v: "pass" } })
+      expect(v).toContain("no authorized change was observed for this attempt")
+    })
+
+    it("counts an authorized edit made after the baseline and stays quiet", async () => {
+      await delegateGuarded()
+      await fs.writeFile(path.join(repoDir, "a.ts"), "export const a = 6\n")
+      const cmp = await guard("compare")
+      expect(cmp).toContain("authorized_changed: 1")
+      expect(cmp).not.toContain("NOTE: no authorized change")
+    })
+
+    it("a new untracked file outside the brief gets a preserve-it hint, never a deletion instruction", async () => {
+      await delegateGuarded()
+      await fs.writeFile(path.join(repoDir, "c.ts"), "new\n")
+      const cmp = await guard("compare")
+      expect(cmp).toContain("NEW FILES OUTSIDE THE BRIEF: c.ts")
+      expect(cmp).toContain("Preserve them")
+      expect(cmp).not.toMatch(/remove the file and compare/i)
+    })
+
+    it("a comparison that started for an earlier attempt cannot land on a later one", async () => {
+      await delegateGuarded()
+      const base = (await guardOf())!.snapshot.hash
+      await expect(recordRepoGuard(ledgerPath, "p1", "u1", { result: "ok", baseline_hash: base, expected_attempt: 99 } as never))
+        .rejects.toThrow(/started for unit 'u1' attempt #99 but the unit is now on attempt #1/)
+    })
+
+    it("notes a declared worker ID reused on another unit", async () => {
+      await delegateGuarded("u1", "a.ts")
+      await guard("compare")
+      await hw({ operation: "set_verdict", phase: "p1", unit_id: "u1", data: { v: "pass", worker_id: "w-1" } })
+      await delegateGuarded("u2", "b.ts")
+      await handleRepoGuard({ operation: "compare", phase: "p1", unit_id: "u2", project_dir: repoDir } as never, { ledgerPath })
+      const v = await hw({ operation: "set_verdict", phase: "p1", unit_id: "u2", data: { v: "pass", worker_id: "w-1" } })
+      expect(v).toMatch(/declared worker ID 'w-1' is also recorded on p1\/u1#1/)
+    })
+  })
+
   // 0.6.39 (field data): preflight_check preceded the delegation within 60 s in 86/94 cases and
   // compare preceded the pass verdict in 36/38. Both can now ride the write they precede.
   describe("fewer calls per unit", () => {
@@ -681,6 +753,20 @@ describe("set_verdict enforces the guard", () => {
         const { pinUnits } = await import("../src/lib/reviewPins.js")
         expect(await pinUnits(await readLedger(ledgerPath), "p1", ["u1"], repoDir)).toBeNull()
       } finally { await fs.rm(outside, { recursive: true, force: true }) }
+    })
+
+    // 0.7.0 (Codex review): pins were silently short — every `.foreman-*` name and any path
+    // outside the root was dropped and the rest still counted as pinned.
+    it("pins an ordinary file whose name starts with .foreman-, and reports why it pins nothing otherwise", async () => {
+      const { pinUnitsWithReason, pinStatusLine } = await import("../src/lib/reviewPins.js")
+      await passUnit("u1", "src/.foreman-helper.ts")
+      const ok = await pinUnitsWithReason(await readLedger(ledgerPath), "p1", ["u1"], repoDir)
+      expect("pinned" in ok && ok.pinned.pins.map((p) => p.path)).toEqual(["src/.foreman-helper.ts"])
+      await passUnit("u2", ".foreman-ledger.json")
+      const state = await pinUnitsWithReason(await readLedger(ledgerPath), "p1", ["u2"], repoDir)
+      expect(pinStatusLine(state)).toMatch(/pins: none — authorized path '\.foreman-ledger\.json' is a Foreman state file/)
+      const missing = await pinUnitsWithReason(await readLedger(ledgerPath), "p1", ["nope"], repoDir)
+      expect(pinStatusLine(missing)).toMatch(/unit 'nope' is not registered/)
     })
 
     it("a record covering a unit the seat was not pinned to falls back to the phase-wide rule", async () => {

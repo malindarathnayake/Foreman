@@ -18,8 +18,9 @@
 //     unsupported approvals, and that judgement belongs to the moderator.
 
 import fs from "fs/promises"
-import { pinUnits } from "../lib/reviewPins.js"
-import { readLedger } from "../lib/ledger.js"
+import { pinUnitsWithReason, pinStatusLine, type PinSet } from "../lib/reviewPins.js"
+import { readLedgerWithStatus } from "../lib/ledger.js"
+import { foremanFileScope, PROGRESS_STATE_FILE } from "../lib/foremanFiles.js"
 import path from "path"
 import { createHash, randomBytes, randomUUID } from "crypto"
 import { appendReceipt, providerFromModelId } from "../lib/seatReceipts.js"
@@ -518,9 +519,17 @@ export async function handleInvokeCouncil(rawInput: unknown, deps: InvokeCouncil
   }
   const input = parsedInput.data
   // 0.6.39: pins are hashed before the start stamp (lib/reviewPins.ts).
-  const pinned = input.units && deps.ledgerPath
-    ? await pinUnits(await readLedger(deps.ledgerPath, { readOnly: true }), input.phase, input.units, deps.projectRoot ?? process.cwd())
-    : null
+  let pinStatus: string | undefined
+  let pinned: PinSet | null = null
+  if (input.units && deps.ledgerPath) {
+    const read = await readLedgerWithStatus(deps.ledgerPath, { readOnly: true })
+    const r = read.corrupt ? { reason: "the ledger could not be read (corrupt)" } : await pinUnitsWithReason(read.ledger, input.phase, input.units, deps.projectRoot ?? process.cwd(), foremanFileScope({
+      ledgerPath: deps.ledgerPath, progressPath: path.join(path.dirname(deps.ledgerPath), PROGRESS_STATE_FILE),
+      journalPath: deps.journalPath, docsDir: path.dirname(deps.ledgerPath),
+    }))
+    pinned = "pinned" in r ? r.pinned : null
+    pinStatus = pinStatusLine(r)
+  }
   // 0.6.35: every seat's receipt carries the run start, so freshness is judged from when the
   // seats read the packet, not from when they finished.
   const startedTs = new Date().toISOString()
@@ -725,7 +734,7 @@ export async function handleInvokeCouncil(rawInput: unknown, deps: InvokeCouncil
     }
   }
 
-  return noticePrefix + renderCouncil({
+  return noticePrefix + (pinStatus ? `${pinStatus}\n` : "") + renderCouncil({
     receipts,
     runId,
     phase: input.phase,
