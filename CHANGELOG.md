@@ -12,6 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Security
 
 - The supported Node.js range is now `^22.23.4 || ^24.22.1 || >=26.12.1`. Earlier releases carry the Brotli decoder flaw CVE-2026-111497.
+- `@modelcontextprotocol/server` and `@modelcontextprotocol/client` 2.4.0 and `zod` 4.6.7 replace 2.0.0 and 4.4.3 (GHSA-jm63-cq47-j5jp, GHSA-46jr-4wx8-v453, GHSA-rvq5-wwqv-78pq, GHSA-mrhx-c7xc-m3w5). Foreman serves over stdio only, so the HTTP-transport and bearer-auth advisories did not apply; the zod memory advisory did.
 
 ### Changed
 
