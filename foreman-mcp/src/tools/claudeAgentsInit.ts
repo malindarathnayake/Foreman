@@ -10,7 +10,7 @@
  * re-stating it every session.
  *
  * Claude Code has the same mechanism Codex does: an agent definition in `.claude/agents/*.md`
- * carries its model in frontmatter. This writes the three implementation seats there, so the
+ * carries its model in frontmatter. This writes the implementation seats there, so the
  * tier resolves to a model AND a reasoning effort the same way on both hosts.
  *
  * What this does NOT do: lock the model. The Agent tool's `model` argument takes precedence
@@ -25,8 +25,9 @@ import { atomicWriteFile } from "../lib/atomicWrite.js"
 import fs from "fs/promises"
 import { toKeyValue } from "../lib/toon.js"
 import { seatReportEconomy } from "../lib/outputBudget.js"
+import { configuredWorkerModels, workerRoleTier, DEFAULT_WORKER_MODELS } from "../lib/workerSeats.js"
 
-export const CLAUDE_AGENT_ROLES = ["foreman-worker-light", "foreman-worker", "foreman-worker-heavy"] as const
+export const CLAUDE_AGENT_ROLES = ["foreman-worker-light", "foreman-worker", "foreman-worker-heavy", "foreman-worker-frontier"] as const
 export type ClaudeAgentRole = (typeof CLAUDE_AGENT_ROLES)[number]
 
 /**
@@ -47,6 +48,7 @@ export const ClaudeAgentsInitInputSchema = z.strictObject({
       "foreman-worker-light": z.string().min(1).max(100).optional(),
       "foreman-worker": z.string().min(1).max(100).optional(),
       "foreman-worker-heavy": z.string().min(1).max(100).optional(),
+      "foreman-worker-frontier": z.string().min(1).max(100).optional(),
     })
     .optional(),
   /** Override the reasoning effort per role. Named levels only; the host refuses anything else. */
@@ -55,6 +57,7 @@ export const ClaudeAgentsInitInputSchema = z.strictObject({
       "foreman-worker-light": z.enum(CLAUDE_EFFORT_LEVELS).optional(),
       "foreman-worker": z.enum(CLAUDE_EFFORT_LEVELS).optional(),
       "foreman-worker-heavy": z.enum(CLAUDE_EFFORT_LEVELS).optional(),
+      "foreman-worker-frontier": z.enum(CLAUDE_EFFORT_LEVELS).optional(),
     })
     .optional(),
   overwrite: z.boolean().optional(),
@@ -64,21 +67,29 @@ export type ClaudeAgentsInitInput = z.infer<typeof ClaudeAgentsInitInputSchema>
 /**
  * Default seat per Foreman cost tier: a MODEL and a reasoning EFFORT.
  *
- * The three seats differ by effort rather than by dropping to a weaker model. A Foreman worker
+ * The first three seats differ by effort rather than by dropping to a weaker model. A Foreman worker
  * implements code against a binding brief, and a wrong "mechanical" edit costs a whole attempt
  * plus its guard cycle — more than the tokens a cheaper model saves. So `cheap` is the same
  * model thinking less, not a lesser model. Override either axis per role.
+ *
+ * Every default is a host FAMILY alias, never a versioned id: the host resolves `sonnet`,
+ * `opus` and `fable` to the newest model of that family, so a model release needs no Foreman
+ * change. The frontier seat (0.9.1) is the rung above premium; the ledger sends a unit there
+ * after a premium attempt is rejected. The host falls back from `fable` to opus when the
+ * account cannot serve it.
  */
 export const CLAUDE_SEAT_MODELS: Record<ClaudeAgentRole, string> = {
-  "foreman-worker-light": "sonnet",
-  "foreman-worker": "sonnet",
-  "foreman-worker-heavy": "opus",
+  "foreman-worker-light": DEFAULT_WORKER_MODELS["claude-code"].cheap!,
+  "foreman-worker": DEFAULT_WORKER_MODELS["claude-code"].standard!,
+  "foreman-worker-heavy": DEFAULT_WORKER_MODELS["claude-code"].premium!,
+  "foreman-worker-frontier": DEFAULT_WORKER_MODELS["claude-code"].frontier!,
 }
 
 export const CLAUDE_SEAT_EFFORT: Record<ClaudeAgentRole, ClaudeEffort> = {
   "foreman-worker-light": "low",
   "foreman-worker": "medium",
   "foreman-worker-heavy": "high",
+  "foreman-worker-frontier": "high",
 }
 
 const SHARED = `Implement only the bounded worker brief you are given.
@@ -129,6 +140,17 @@ Spend the extra reasoning on the failure modes, not on scope: the brief's file l
 
 ${SHARED}`,
   },
+  "foreman-worker-frontier": {
+    description:
+      "Foreman implementation seat, tier frontier. A unit the premium seat already failed; the ledger routes it here after a rejected premium attempt.",
+    instructions: `Implement a change that the premium seat attempted and got rejected.
+The brief carries the rejection history. Read it first: find why the previous attempt failed
+before writing anything, and say in your report what was wrong with it.
+The brief's file list still binds. If the failure is in the brief itself (a wrong premise, a
+missing file, a contradiction), STOP and report that instead of working around it.
+
+${SHARED}`,
+  },
 }
 
 /**
@@ -173,6 +195,8 @@ export async function claudeAgentsInit(raw: ClaudeAgentsInitInput): Promise<stri
   const overwrite = input.overwrite === true
   const written: string[] = []
   const skipped: string[] = []
+  const mapping = await configuredWorkerModels(projectDir, "claude-code")
+  const modelFor = (role: ClaudeAgentRole) => mapping[workerRoleTier(role)!] ?? input.models?.[role] ?? CLAUDE_SEAT_MODELS[role]
   await fs.mkdir(path.join(projectDir, ".claude", "agents"), { recursive: true })
 
   for (const role of roles) {
@@ -183,14 +207,14 @@ export async function claudeAgentsInit(raw: ClaudeAgentsInitInput): Promise<stri
       continue
     }
     const spec = SPECS[role]
-    const model = input.models?.[role] ?? CLAUDE_SEAT_MODELS[role]
+    const model = modelFor(role)
     const effort = input.effort?.[role] ?? CLAUDE_SEAT_EFFORT[role]
     await atomicWriteFile(abs, agentMarkdown(role, spec.description, model, effort, spec.instructions))
     written.push(rel)
   }
 
   const seats = roles
-    .map((r) => `${r}=${input.models?.[r] ?? CLAUDE_SEAT_MODELS[r]}/${input.effort?.[r] ?? CLAUDE_SEAT_EFFORT[r]}`)
+    .map((r) => `${r}=${modelFor(r)}/${input.effort?.[r] ?? CLAUDE_SEAT_EFFORT[r]}`)
     .join(", ")
   return toKeyValue({
     status: "ok",
@@ -203,6 +227,8 @@ export async function claudeAgentsInit(raw: ClaudeAgentsInitInput): Promise<stri
       "An explicit model argument overrides it, so this is a binding default, not a lock; the delegation's tier and route_reason remain the record of what ran.",
     hints: skipped.length
       ? "existing definitions were left alone; pass overwrite: true to replace them"
-      : "restart is not required — the host reads .claude/agents on each spawn",
+      // 0.7.1 (field report 2026-10-05): the old hint said no restart was needed; the next
+      // spawn in the same session failed with "Agent type 'foreman-worker' not found".
+      : "new definitions may not load until the next host session; until they do, an 'Agent type not found' spawn falls back to a general-purpose agent with the tier's model, recorded in route_reason",
   })
 }

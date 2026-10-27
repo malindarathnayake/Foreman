@@ -15,7 +15,8 @@
 // would make two differently-prompted reviews look identical in the ledger.
 
 import { reportEconomyInstruction, resolveReportMaxLines } from "./outputBudget.js"
-export const LENS_CATALOG_VERSION = "1"
+// 0.7.0: "2" — the seat prompts gained the report-economy rule in 0.6.30 without a bump.
+export const LENS_CATALOG_VERSION = "2"
 
 export const LENS_IDS = [
   "contract",

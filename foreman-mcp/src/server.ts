@@ -1,8 +1,18 @@
 #!/usr/bin/env node
 import { McpServer } from "@modelcontextprotocol/server"
 import { trustSystemCa } from "./lib/systemCa.js"
-import { pinUnits } from "./lib/reviewPins.js"
-import { readLedger as readLedgerForPins } from "./lib/ledger.js"
+import { projectChangelog, ProjectChangelogInputSchema } from "./tools/projectChangelog.js"
+import { pinUnitsWithReason, pinStatusLine } from "./lib/reviewPins.js"
+import { foremanFileScope } from "./lib/foremanFiles.js"
+import { readLedgerWithStatus as readLedgerForPins } from "./lib/ledger.js"
+
+/** 0.7.0: pins from a readable ledger only; a corrupt ledger is a reason, not a missing phase. */
+async function pinFor(ledgerPath: string, phase: string, units: string[], root: string,
+  progressPathForPins: string, journalPathForPins: string, docsDirForPins: string) {
+  const read = await readLedgerForPins(ledgerPath, { readOnly: true })
+  if (read.corrupt) return { reason: "the ledger could not be read (corrupt)" }
+  return pinUnitsWithReason(read.ledger, phase, units, root, foremanFileScope({ ledgerPath, progressPath: progressPathForPins, journalPath: journalPathForPins, docsDir: docsDirForPins }))
+}
 import { serveStdio, StdioServerTransport } from "@modelcontextprotocol/server/stdio"
 import { z } from "zod"
 import fs from "fs/promises"
@@ -22,6 +32,7 @@ import { handleWriteProgress } from "./tools/writeProgress.js"
 import { handleInvokeWorker } from "./tools/invokeWorker.js"
 import { handleRepoGuard } from "./tools/repoGuard.js"
 import { handleInvokeCouncil } from "./tools/invokeCouncil.js"
+import { SeatModelsSchema } from "./tools/invokeCouncil.js"
 import { LENS_IDS, LENS_CATALOG } from "./lib/lensCatalog.js"
 import { normalizeReview } from "./tools/normalizeReview.js"
 import { verifyCitations } from "./tools/verifyCitations.js"
@@ -68,6 +79,7 @@ import { phaseOwnership, PhaseOwnershipInputSchema } from "./tools/phaseOwnershi
 import { contractProbe, ContractProbeInputSchema } from "./tools/contractProbe.js"
 import { workerStatus, WorkerStatusInputSchema } from "./tools/workerStatus.js"
 import { liveSmoke, LiveSmokeInputSchema } from "./tools/liveSmoke.js"
+import { workflow, WorkflowInputSchema, WORKFLOW_DESCRIPTION } from "./tools/workflow.js"
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -215,6 +227,24 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     }
   )
 
+  // 0.7.0: a repository's own CHANGELOG.md in Keep a Changelog 1.1.0 format.
+  server.registerTool(
+    "project_changelog",
+    {
+      title: "Project Changelog",
+      description:
+        "Keeps the repository's root CHANGELOG.md in Keep a Changelog 1.1.0 format (https://keepachangelog.com/en/1.1.0/). " +
+        "check: lists every format issue with its line (deterministic). init: creates the file with the standard header and an empty [Unreleased]; never overwrites. " +
+        "release { version, date? }: moves [Unreleased] under '## [version] - date'; refuses an empty [Unreleased] or a version not newer than the latest. " +
+        "notes { version }: returns that version's section as a release-body draft — publishing it anywhere is the owner's call. " +
+        "init and release are refused while a worker holds the repository window. Writing the entries is a writer seat's job at a phase gate (see the implementor protocol).",
+      inputSchema: ProjectChangelogInputSchema,
+      outputSchema: TextOutputSchema,
+      annotations: { title: "Project Changelog", readOnlyHint: false, destructiveHint: false },
+    },
+    async (args, _extra) => textResult(await projectChangelog(args, process.cwd(), ledgerPath))
+  )
+
   server.registerTool(
     "changelog",
     {
@@ -262,13 +292,16 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     "read_ledger",
     {
       title: "Read Ledger",
-      description: "Reads the Foreman ledger with bounded output. Table queries are paged (cursor/limit, max 100), phase-filterable, and omit verdict notes unless include_notes:true. Oversized full/metrics reads return guidance instead of flooding host context. Query 'delegation_metrics' derives worker-delegation metrics from the events sidecar. Query 'review_outcomes' reports counted gate passes and escapes per review basis. Query 'reconstruct' rebuilds a read-only recovery worksheet from the append-only sidecars after a ledger loss: the units and attempts they attest, which ones the ledger is missing, and which seat receipts are reclaimable. It writes nothing.",
+      description: "Reads the Foreman ledger with bounded output. Table queries are paged (cursor/limit, max 100), filterable by phase and unit_id (query is never replaced by a unit summary), support include_full_text:true for unabridged messages, and omit verdict notes unless include_notes:true. Oversized full/metrics reads return guidance instead of flooding host context. Query 'delegation_metrics' derives worker-delegation metrics from the events sidecar. Query 'review_outcomes' reports counted gate passes and escapes per review basis. Query 'reconstruct' rebuilds a read-only recovery worksheet from the append-only sidecars after a ledger loss: the units and attempts they attest, which ones the ledger is missing, and which seat receipts are reclaimable. It writes nothing.",
       inputSchema: z.strictObject({
         unit_id: z.string().max(10000).optional(),
         phase: z.string().max(10000).optional(),
         query: z.enum(["verdicts", "rejections", "phase_gates", "reviews", "full", "delegation_metrics", "review_outcomes", "facts", "reconstruct"]).optional(),
         verdict: z.enum(["pass", "fail", "pending", "inconclusive"]).optional(),
         include_notes: z.boolean().optional(),
+        include_history: z.boolean().optional(),
+        include_full_text: z.boolean().optional(),
+        fact_key: z.string().max(80).optional(),
         cursor: z.number().int().min(0).max(1000000).optional(),
         limit: z.number().int().min(1).max(100).optional(),
       }),
@@ -396,9 +429,8 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       const sentPrompt = withReportBudget(args.prompt, args.report_max_lines)
       // 0.6.39: hash the reviewed units' files BEFORE stamping the start, so a change made
       // after the stamp can never be inside the pinned bytes.
-      const reviewPins = args.phase && args.units
-        ? await pinUnits(await readLedgerForPins(ledgerPath, { readOnly: true }), args.phase, args.units, process.cwd())
-        : null
+      const pinResult = args.phase && args.units ? await pinFor(ledgerPath, args.phase, args.units, process.cwd(), progressPath, journalPath, docsDir) : undefined
+      const reviewPins = pinResult && "pinned" in pinResult ? pinResult.pinned : null
       const startedTs = new Date().toISOString()
       const result = await invokeAdvisor(args.cli, sentPrompt, args.timeout_ms, callControls(_extra, `invoke_advisor ${args.cli}`))
       const pinned = args.cli === "gemini" ? GEMINI_ADVISOR_MODEL : args.cli === "codex" ? CODEX_ADVISOR_MODEL : undefined
@@ -407,6 +439,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       // record_review; the ledger checks them against this file, never against the text.
       const meta = advisorRunMeta(args.cli, result, sentPrompt, pinned)
       const extra: string[] = []
+      if (pinResult) extra.push(pinStatusLine(pinResult))
       if (result.modelFallback) extra.push(`model_fallback: ${result.modelFallback.from} -> ${result.modelFallback.to} (${result.modelFallback.reason})`)
       // 0.6.39 (Codex review): the Claude seat records the model it asked for, and a fallback
       // leaves a receipt for the refused Fable attempt too, so the switch is durable.
@@ -455,23 +488,22 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     {
       title: "Write Ledger",
       description: [
-        "Writes one ledger operation; phase always required. Shapes, stage rules: input schema.",
-        "",
-        "Operations:",
-        "  set_unit_status (unit_id) — delegated needs brief ≥20 chars + preflight, optional data.rejection; a ranked correction { kind, from_attempt, files: [\"path\"] } reuses the worker; direct_fix is legacy-only. Past 3 failures: grant or user_override.",
-        "  set_verdict (unit_id) — v:'pass' needs a prior delegation, an attempt after the latest failure (ATTEMPT REQUIRED), past the cap a grant or user_override (cap_override), a ≥5-word note on a no-test phase, no unclassified escape, a live_smoke when declared; v:'fail' is a failed attempt.",
-        "  add_rejection (unit_id) — { r, msg, ts? }: a failed attempt; reopens a passed unit; on a gated unit records an escape (escape_class classifies).",
-        "  record_escape (unit_id) — classifies a post-gate defect; refused if the unit never escaped.",
-        "  close_attempt (unit_id) — delivered | blocked | validation_only; changes no id, counter or cap.",
-        "  authorize_attempts (unit_id) — the owner's decision, once: N attempts past the cap; refused below it or with a grant open; a pass closes it.",
-        "  declare_phase_units — declared id set (cap 200); retire needs a reason; frozen once the gate passes.",
-        "  update_phase_gate — g:'pass' needs every unit passed, declared ids registered, a current seat review with no confirmed finding, no unclassified escape, deliverable receipts cited; user_override waives, recorded.",
-        "  set_phase_scope — once per phase; hot_path/security_boundary need agent_class:'frontier' at the gate.",
-        "  record_review — every finding needs a classification; zero findings need checked[] or completion:'complete'; 'confirmed' blocks the gate; verification needs evidence; deliverable units cite live_smoke run_ids (smoke_receipts). Limit: checked ≤50 entries of ≤400 chars.",
-        "  record_fact — { key, text, source? }: a per-phase fact, replaced by key.",
+        "Writes one ledger operation; phase required. Exact data shapes and stage rules: input schema. Missing authority, fact-link and model-evidence inputs are reported together.",
+        "Live gates: set_owner_gate {id,description?,status:'pending'|'in_progress'|'failed'|'approved',stage?,note?,failure?:{stage,reason},decided_by?,authority?,quote?}. Unit_id optional; approved needs all three, may register.",
+        "set_unit_status (unit_id): delegate using brief_hash from preflight_check, or brief + preflight. Optional guard and inline rejection. Three failures need a grant or cap_override; direct_fix is legacy.",
+        "set_verdict (unit_id): pass needs a delegation, an attempt after failure (ATTEMPT REQUIRED), cleared guard, validation and any declared smoke. Pinned tiers require worker_model + model_evidence.",
+        "add_rejection / record_escape (unit_id): record failure or classify a post-gate defect.",
+        "close_attempt (unit_id): delivered, blocked or validation_only. record_launch (unit_id): aborted_no_work spends no attempt.",
+        "authorize_attempts (unit_id) — the owner's decision, once: extra attempts at the cap.",
+        "declare_phase_units / set_phase_scope: register coverage and phase requirements.",
+        "record_review: every finding needs a classification; checked[] explains coverage (native verifier: top-level data.checked). Scoped records combine at the gate. Limit: checked ≤50 entries of ≤400 chars.",
+        "adjudicate_finding: review_ts + zero-based finding_index, severity/classification, decided_by, reason; preserves the original.",
+        "update_phase_gate: pass requires passed units and current reviews; confirmed findings above LOW block.",
+        "record_fact — { key, text, source? }: append-only versions; reads default to latest, include_history:true shows history.",
+        "Every user_override needs authority, quote, relayed_by for relays, and override_fact_key. authorize_attempts needs authority and quote; its fact link is optional.",
       ].join("\n"),
       inputSchema: z.strictObject({
-        operation: z.enum(["set_unit_status", "set_verdict", "add_rejection", "declare_phase_units", "update_phase_gate", "set_phase_scope", "record_review", "authorize_attempts", "record_escape", "record_fact", "close_attempt"]),
+        operation: z.enum(["set_unit_status", "set_verdict", "add_rejection", "declare_phase_units", "update_phase_gate", "set_phase_scope", "record_review", "authorize_attempts", "record_escape", "record_fact", "close_attempt", "adjudicate_finding", "record_launch", "set_owner_gate"]),
         unit_id: z.string().max(10000).optional(),
         // 0.6.35 (field report 2026-09-25): every write operation requires phase; advertising it
         // as optional let record_fact pass the advertised shape and fail the real one.
@@ -518,7 +550,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         phase: z.string().max(10000),
         unit_id: z.string().max(10000),
         brief: z.string(),
-        tier: z.enum(["cheap", "standard", "premium"]),
+        tier: z.enum(["cheap", "standard", "premium", "frontier"]),
         files: z.array(z.string()).max(100),
         edit_format: z.enum(["unified_diff", "search_replace", "whole_file"]).optional(),
       }),
@@ -541,9 +573,11 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     {
       title: "Repository Guard",
       description:
-        "Runs the shared-tree ownership check around an editing worker and records it on the unit's newest delegation. TWO FILE LISTS, NOT INTERCHANGEABLE: `allowed_files` IS the allow-list compare measures ownership against; `files` only scopes the line-ending probe. Omitted, allowed_files falls back to a correction's inherited set then to `files`; an explicit [] declares a worker that edits nothing; an accidentally empty allow-list is REFUSED, because a guard authorizing nothing can only ever hard-stop. The result reports authorized_from. 'snapshot' captures root, branch, HEAD, stash, every changed path with a content fingerprint, core.autocrlf and line endings before the worker runs, freezing allowed_files onto that baseline; 'compare' re-reads them and names every mutation outside the frozen set — a moved HEAD, a touched index or stash, a changed config, a file changed outside the brief, an already-dirty file overwritten, or a pre-existing uncommitted change that vanished. Both scan the authorized set for non-empty all-NUL files — destroyed, not edited: snapshot refuses (status: damaged), compare records a violation naming them, which the ownership diff cannot (the path is authorized). set_verdict refuses a pass whose guard did not clear (REPOSITORY GUARD). A baseline cannot be re-taken, and compare takes no allowed_files. max_entries bounds compared paths (default 500, max 5000). A git probe that fails, times out or truncates is a refusal, never a clean tree; outside a git work tree it reports n/a and gates nothing. Foreman's own writes (.foreman-* state files with their .corrupt/.tmp side files, and the fenced block in Docs/PROGRESS.md) are never charged to the worker; PROGRESS.md outside the fence still is. On a correction, snapshot copies the from_attempt set when omitted; a different one is refused.",
+        "Runs the shared-tree ownership check around an editing worker and records it on the unit's newest delegation. TWO FILE LISTS, NOT INTERCHANGEABLE: `allowed_files` IS the allow-list compare measures ownership against; `files` only scopes the line-ending probe. Omitted, allowed_files falls back to a correction's inherited set then to `files`; an explicit [] declares a worker that edits nothing; an accidentally empty allow-list is REFUSED, because a guard authorizing nothing can only ever hard-stop. The result reports authorized_from. 'snapshot' captures root, branch, HEAD, stash, every changed path with a content fingerprint, core.autocrlf and line endings before the worker runs, freezing allowed_files onto that baseline; 'compare' re-reads them and names every mutation outside the frozen set — a moved HEAD, a touched index or stash, a changed config, a file changed outside the brief, an already-dirty file overwritten, or a pre-existing uncommitted change that vanished. Both scan the authorized set for non-empty all-NUL files — destroyed, not edited: snapshot refuses (status: damaged), compare records a violation naming them, which the ownership diff cannot (the path is authorized). set_verdict refuses a pass whose guard did not clear (REPOSITORY GUARD). A baseline cannot be re-taken, and compare takes no allowed_files. max_entries bounds compared paths (default 500, max 5000). Failed git probes refuse. Outside git, use mode:hash and exclude_globs for a SHA-256 ownership snapshot; default git mode reports n/a. Foreman's own writes (.foreman-* state files with their .corrupt/.tmp side files, and the fenced block in Docs/PROGRESS.md) are never charged to the worker; PROGRESS.md outside the fence still is. On a correction, snapshot copies the from_attempt set when omitted; a different one is refused.",
       inputSchema: z.strictObject({
         operation: z.enum(["snapshot", "compare"]),
+        mode: z.enum(["git", "hash"]).optional().describe("snapshot only: hash scans all files with SHA-256 without git; compare reuses the frozen mode."),
+        exclude_globs: z.array(z.string().min(1).max(400)).max(100).optional().describe("hash snapshot only: root-relative *, ** and ? exclusions; frozen for compare and corrections."),
         phase: z.string().min(1).max(10000),
         unit_id: z.string().min(1).max(10000),
         files: z.array(z.string().max(4096)).max(100).optional()
@@ -583,6 +617,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         "a merged verdict), limitations, and failed seats; YOU moderate and the USER arbitrates.",
         "A failed, partial, or unparseable seat is never an approval. With no seats configured it",
         "returns status: unavailable and names the next rung of the deliberation ladder.",
+        "seat_models pins an exact model per seat for this call only (a substituted served model fails the seat); require_zdr refuses unless the endpoint is https://openrouter.ai and then demands provider.zdr on every request with redirects refused.",
         `Lenses: ${LENS_IDS.map((id) => `${id} (${LENS_CATALOG[id].question})`).join("; ")}.`,
       ].join(" "),
       inputSchema: z.strictObject({
@@ -593,6 +628,8 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         seats: z.array(z.enum(["a", "b", "c"])).max(3).optional(),
         files: z.array(z.string()).max(50).optional(),
         cross_examine: z.boolean().optional(),
+        seat_models: SeatModelsSchema.optional(),
+        require_zdr: z.boolean().optional(),
       }),
       outputSchema: TextOutputSchema,
       annotations: {
@@ -780,7 +817,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     "session_orient",
     {
       title: "Session Orient",
-      description: "Returns ledger-authoritative Foreman resume state, including action, resume target, phase/unit, gate retry, blockers, and ledger/progress drift. Phase and unit ids order naturally (p2 before p10). last_completed_unit is the completion frontier (newest first-pass timestamp; re-verdicts do not move it); latest_pass_verdict_unit/ts is the newest pass verdict by timestamp. Call first at session start. When the ledger is complete, session_hygiene is clear: stop and tell the user to run the host command (Cursor/Claude: /clear) before starting a different job.",
+      description: "Returns ledger-authoritative Foreman resume state, including action, resume target, phase/unit, gate retry, blockers, and ledger/progress drift. pending_owner_gates includes progress, stage, failure history and the latest approval; until the first gate exists, owner_gates_hint shows how to register B1/B2 with write_ledger operation:'set_owner_gate'. Phase and unit ids order naturally (p2 before p10). last_completed_unit is the completion frontier (newest first-pass timestamp; re-verdicts do not move it); latest_pass_verdict_unit/ts is the newest pass verdict by timestamp. Call first at session start. When the ledger is complete, session_hygiene is clear: stop and tell the user to run the host command (Cursor/Claude: /clear) before starting a different job.",
       inputSchema: z.strictObject({}),
       outputSchema: TextOutputSchema,
       annotations: {
@@ -931,6 +968,20 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     }
   )
 
+  // 0.8.0 (2026-10-07): native procedures are opt-in host surfaces, not Claude scripts.
+  if (host === "codex" || host === "cursor") {
+    server.registerTool("workflow", {
+      title: "Workflow",
+      description: WORKFLOW_DESCRIPTION,
+      inputSchema: WorkflowInputSchema,
+      outputSchema: TextOutputSchema,
+      annotations: { title: "Workflow", readOnlyHint: true, destructiveHint: false },
+    }, async (args) => {
+      const result = await workflow(args, host)
+      return textResult(result, result.startsWith("SCHEMA ERROR") || result.startsWith("WORKFLOW ERROR"))
+    })
+  }
+
   // Claude Code only (0.6.20): install Foreman's saved Workflow scripts into the project.
   if (host === "claude-code") {
     server.registerTool(
@@ -939,7 +990,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         title: "Init Claude Workflows",
         description: [
           "Installs Foreman's saved Workflow scripts into the project's .claude/workflows/ so the host's Workflow tool can run them by name:",
-          "foreman-checkpoint-review (phase review fan; record its report stage:'fan', never a gate seat), foreman-design-panel (independent stances, attack, synthesis with conflicts for the user), foreman-triage (verify field reports in code, design and attack fixes; implementation stays with the unit protocol).",
+          "foreman-checkpoint-review (phase review fan; record its report stage:'fan', never a gate seat), foreman-design-panel (independent stances, attack, synthesis with conflicts for the user), foreman-design-gauntlet (research, hardened design, Codex + SOC + complexity attack, per-finding verification; user arbitrates), foreman-triage (verify field reports in code, design and attack fixes; implementation stays with the unit protocol).",
           "Existing files are skipped unless overwrite:true. A workflow run is paid and user-approved: confirm the workflow, phases and agent count with the user first unless the session opted in. Call once per project.",
         ].join(" "),
         inputSchema: z.strictObject({
@@ -954,17 +1005,19 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     )
   }
 
-  // Claude Code only: write .claude/agents seat definitions with a pinned model per tier.
+  // Claude Code only: write .claude/agents seat definitions with a model alias per tier.
   if (host === "claude-code") {
     server.registerTool(
       "claude_agents_init",
       {
         title: "Init Claude Agents",
         description: [
-          "Claude Code host only. Writes Foreman's three implementation seats to .claude/agents/ as agent",
+          "Claude Code host only. Writes Foreman's four implementation seats to .claude/agents/ as agent",
           "definitions with a MODEL and a REASONING EFFORT pinned in frontmatter: foreman-worker-light",
           "(cheap, sonnet/low), foreman-worker (standard, sonnet/medium), foreman-worker-heavy (premium,",
-          "opus/high). The seats differ by EFFORT rather than by dropping to a weaker model: a wrong",
+          "opus/high), foreman-worker-frontier (frontier, fable/high; the ledger routes a unit there after",
+          "a rejected premium attempt). Models are family aliases the host resolves to the newest",
+          "release. The light/standard seats differ by EFFORT, not model: a wrong",
           "\"mechanical\" edit costs an attempt plus its guard cycle, more than a lesser model saves. Override",
           "either axis per role with `models` and `effort` (low|medium|high|xhigh|max).",
           "Foreman already records the tier and route_reason of every delegation as audit evidence;",

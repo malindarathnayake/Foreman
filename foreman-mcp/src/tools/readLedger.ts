@@ -1,4 +1,5 @@
 import path from "path"
+import { effectiveSeverity, effectiveClassification } from "../lib/reviewPredicates.js"
 import { computeGateUnitsHash, readLedgerWithStatus } from "../lib/ledger.js"
 import { toKeyValue, toTable } from "../lib/toon.js"
 import { renderDelegationMetrics } from "../lib/delegationMetrics.js"
@@ -20,10 +21,17 @@ function compactCell(value: string): { text: string; truncated: boolean } {
 function renderPage(headers: string[], rows: string[][], input: ReadLedgerInput, truncationHint?: string): string {
   const cursor = Math.max(0, Math.min(input.cursor ?? 0, rows.length))
   const limit = Math.max(1, Math.min(input.limit ?? DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT))
-  const selected = rows.slice(cursor, cursor + limit)
+  const selected: string[][] = []
+  let size = 0
+  for (const row of rows.slice(cursor, cursor + limit)) {
+    const length = row.reduce((n, cell) => n + (input.include_full_text ? cell.length : Math.min(cell.length, MAX_CELL_CHARS)), 0) + row.length * 4
+    if (size + length > MAX_OUTPUT_CHARS - 2000) break
+    selected.push(row)
+    size += length
+  }
   let truncatedCells = 0
   const compactRows = selected.map((row) => row.map((cell) => {
-    const compact = compactCell(cell)
+    const compact = input.include_full_text ? { text: cell, truncated: false } : compactCell(cell)
     if (compact.truncated) truncatedCells++
     return compact.text
   }))
@@ -65,10 +73,8 @@ function describeGrant(unit: Unit): string {
 
 /**
  * The recovery worksheet (0.6.26). Deliberately a worksheet and not a writer: a preflight
- * record holds a brief's HASH, and set_unit_status needs the brief TEXT, so nothing here
- * can re-record an attempt on its own. What it can do is replace "reconstruct it from
- * memory" with "transcribe this list", and name exactly which briefs still have to come
- * from the operator.
+ * record may hold the verified brief text as well as its hash. This read-only report
+ * names replayable records; legacy hash-only records still need the operator's brief.
  */
 function renderReconstruct(r: ReconstructReport): string {
   const head = toKeyValue({
@@ -106,10 +112,10 @@ function renderReconstruct(r: ReconstructReport): string {
     receipts,
     "\nHOW TO USE THIS\n" +
     "  1. declare_phase_units for every phase above whose units the ledger is missing.\n" +
-    "  2. For each unrecorded attempt, set_unit_status s:'delegated' with the ORIGINAL brief text.\n" +
-    "     Foreman holds only the hash; if the text you supply hashes differently the write is refused,\n" +
-    "     which is the check working. When the text is genuinely gone, run preflight_check again on the\n" +
-    "     brief you can reconstruct and delegate under the new hash — a re-attested attempt, not a forged one.\n" +
+    "  2. For each unrecorded attempt, set_unit_status s:'delegated' with data.brief_hash to reuse the stored brief.\n" +
+    "     For legacy records, Foreman holds only the hash: supply the ORIGINAL brief text as well.\n" +
+    "     Different text is refused. When the original is gone, run preflight_check on the reconstructed\n" +
+    "     brief and delegate under its new hash — a re-attested attempt, not a forged one.\n" +
     "  3. Re-record verdicts and reviews last, so the gate predicates see a complete unit history.\n" +
     "  Nothing in this report has been written to the ledger.",
   ].join("\n")
@@ -136,7 +142,7 @@ export async function handleReadLedger(filePath: string, input: ReadLedgerInput)
     : Object.entries(ledger.phases)
 
   // If input has phase and unit_id → return single unit as key/value
-  if (input.phase && input.unit_id) {
+  if (input.phase && input.unit_id && input.query === undefined) {
     const unit = ledger.phases[input.phase]?.units[input.unit_id]
     if (!unit) return toKeyValue({ error: "unit not found", phase: input.phase, unit_id: input.unit_id })
     return boundNonPageOutput(toKeyValue({
@@ -168,6 +174,7 @@ export async function handleReadLedger(filePath: string, input: ReadLedgerInput)
       const rows: string[][] = []
       for (const [phaseId, phase] of phaseEntries) {
         for (const [unitId, unit] of Object.entries(phase.units)) {
+          if (input.unit_id && unitId !== input.unit_id) continue
           if (input.verdict && unit.v !== input.verdict) continue
           const row = [phaseId, unitId, unit.tier ?? "", unit.v, unit.via ?? ""]
           if (input.include_notes === true) row.push(unit.note ?? "")
@@ -182,6 +189,7 @@ export async function handleReadLedger(filePath: string, input: ReadLedgerInput)
       const rows: string[][] = []
       for (const [phaseId, phase] of phaseEntries) {
         for (const [unitId, unit] of Object.entries(phase.units)) {
+          if (input.unit_id && unitId !== input.unit_id) continue
           for (const rej of unit.rej) {
             rows.push([phaseId, unitId, rej.r, rej.msg, rej.ts])
           }
@@ -191,7 +199,7 @@ export async function handleReadLedger(filePath: string, input: ReadLedgerInput)
         ["phase", "unit", "reviewer", "message", "timestamp"],
         rows,
         input,
-        'full text: read_ledger({ query: "full", phase: "<phase>" })'
+        'full text: repeat this query with include_full_text:true and cursor/limit'
       )
     }
     case "phase_gates": {
@@ -211,6 +219,7 @@ export async function handleReadLedger(filePath: string, input: ReadLedgerInput)
       const rows: string[][] = []
       for (const [phaseId, phase] of phaseEntries) {
         for (const review of phase.reviews ?? []) {
+          if (input.unit_id && !(review.units ?? Object.keys(review.unit_attempts ?? phase.units)).includes(input.unit_id)) continue
           if (review.findings.length === 0) {
             // Silence is only approval when the seat says what it examined.
             const meta = [
@@ -219,19 +228,20 @@ export async function handleReadLedger(filePath: string, input: ReadLedgerInput)
               review.units ? `units=${review.units.length}` : null,
               review.stage ? `stage=${review.stage}` : null,
             ].filter(Boolean).join("; ")
-            rows.push([phaseId, review.advisor, "", "", meta ? `(no findings; ${meta})` : "(no findings)"])
+            rows.push([phaseId, review.advisor, review.ts, "", "", "", meta ? `(no findings; ${meta})` : "(no findings)"])
             continue
           }
-          for (const f of review.findings) {
-            rows.push([phaseId, review.advisor, f.severity, f.classification ?? "", f.description])
+          for (const [index, f] of review.findings.entries()) {
+            if (input.unit_id && f.units && !f.units.includes(input.unit_id)) continue
+            rows.push([phaseId, review.advisor, review.ts, String(index), effectiveSeverity(f), effectiveClassification(f) ?? "", f.description])
           }
         }
       }
       return renderPage(
-        ["phase", "advisor", "severity", "class", "finding"],
+        ["phase", "advisor", "review_ts", "finding_index", "severity", "class", "finding"],
         rows,
         input,
-        'full text: read_ledger({ query: "full", phase: "<phase>" })'
+        'full text: repeat this query with include_full_text:true and cursor/limit'
       )
     }
     case "delegation_metrics": {
@@ -260,8 +270,14 @@ export async function handleReadLedger(filePath: string, input: ReadLedgerInput)
     case "facts": {
       // 0.6.20: per-phase facts gathered during preflight, reusable by later units.
       const rows: string[][] = []
-      for (const [phaseId, phase] of phaseEntries) for (const f of phase.facts ?? []) rows.push([phaseId, f.key, f.text, f.source ?? "", f.ts])
-      return renderPage(["phase", "key", "fact", "source", "recorded"], rows, input, 'full text: read_ledger({ query: "full", phase: "<phase>" })')
+      for (const [phaseId, phase] of phaseEntries) {
+        const facts = input.include_history ? phase.facts ?? [] : [...new Map((phase.facts ?? []).map((f) => [f.key, f])).values()]
+        for (const f of facts) {
+          if (input.fact_key && f.key !== input.fact_key) continue
+          rows.push([phaseId, f.key, String(f.version ?? 1), f.text, f.source ?? "", f.ts])
+        }
+      }
+      return renderPage(["phase", "key", "version", "fact", "source", "recorded"], rows, input, 'full text: repeat this query with include_full_text:true and cursor/limit')
     }
     case "reconstruct":
       // 0.6.26: read-only recovery worksheet assembled from the append-only sidecars.
@@ -277,7 +293,7 @@ export async function handleReadLedger(filePath: string, input: ReadLedgerInput)
       // Full remains available for small ledgers and phase-scoped reads, but never emits
       // an unbounded payload into the host context.
       return boundNonPageOutput(
-        JSON.stringify(input.phase
+        JSON.stringify(input.unit_id ? { v: ledger.v, ts: ledger.ts, phases: Object.fromEntries(phaseEntries.filter(([, p]) => Object.hasOwn(p.units, input.unit_id!)).map(([id, p]) => [id, { ...p, units: { [input.unit_id!]: p.units[input.unit_id!] }, reviews: (p.reviews ?? []).filter((r) => (r.units ?? Object.keys(r.unit_attempts ?? p.units)).includes(input.unit_id!)) }])) } : input.phase
           ? { v: ledger.v, ts: ledger.ts, phases: { [input.phase]: ledger.phases[input.phase] } }
           : ledger),
         query,

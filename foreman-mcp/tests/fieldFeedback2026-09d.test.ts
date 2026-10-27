@@ -1,3 +1,4 @@
+import { writeLedger, handleWriteLedger } from "./helpers/authorizedLedger.js"
 // Field feedback 2026-09, round 5 (v0.6.5): a silent advisor seat reads as failed;
 // drift blocks only on a contradiction and reports advisories; review currency ignores
 // cross_exam-only records; stage:'verification' with evidence for direct-fix follow-ups;
@@ -12,8 +13,8 @@ import { Client } from "@modelcontextprotocol/client"
 import { InMemoryTransport } from "@modelcontextprotocol/server"
 import { createServer } from "../src/server.js"
 import { renderIncludes } from "../src/lib/skillLoader.js"
-import { ATTEMPT_CAP, readLedger, writeLedger } from "../src/lib/ledger.js"
-import { handleWriteLedger } from "../src/tools/writeLedger.js"
+import { ATTEMPT_CAP, readLedger } from "../src/lib/ledger.js"
+
 import { handleReadLedger } from "../src/tools/readLedger.js"
 import { sessionOrient } from "../src/tools/sessionOrient.js"
 import { formatAdvisorResult } from "../src/tools/invokeAdvisor.js"
@@ -411,14 +412,14 @@ describe("state_drift and progress_advisories", () => {
     await fs.writeFile(progressPath, JSON.stringify({ phases, error_log: [] }), "utf-8")
   }
 
-  it("a pending entry for a later unit is 'ahead', not drift", async () => {
+  it("a pending entry for a later unit is seeded_not_started, not drift", async () => {
     await writeLedger(ledgerPath, { operation: "set_unit_status", phase: "p5", unit_id: "u1", data: { s: "ip" } })
     await writeLedger(ledgerPath, { operation: "set_unit_status", phase: "p7", unit_id: "u4", data: { s: "pending" } })
     await seedProgress([{ phase: "p7", id: "u4", status: "pending" }])
     const orient = await sessionOrient(ledgerPath, progressPath)
     expect(orient).toContain("resume_target: p5/u1")
     expect(orient).toContain("state_drift: none")
-    expect(orient).toContain("progress_advisories: ahead:p7/u4")
+    expect(orient).toContain("progress_advisories: seeded_not_started:p7/u4")
   })
 
   it("an open entry for a passed unit is 'stale'; an unknown unit is 'orphan'", async () => {

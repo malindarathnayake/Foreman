@@ -17,6 +17,7 @@ import fs from "node:fs/promises"
 import path from "node:path"
 import { createHash } from "node:crypto"
 import type { LedgerFile, Unit } from "../types.js"
+import { FOREMAN_STATE_NAMES } from "./foremanFiles.js"
 
 export interface ReviewPin {
   path: string
@@ -46,39 +47,68 @@ async function digest(rootReal: string, rel: string): Promise<string> {
   }
 }
 
+export type PinSet = { phase: string; units: string[]; attempts: Record<string, number>; pins: ReviewPin[] }
+
 /**
- * The pins for these units, or null when any unit's CURRENT attempt has no baseline, or a file
- * escapes the root. 0.6.39 (Codex review): pins name their phase and each unit's attempt, so a
- * receipt cannot be bound in another phase or after its units moved while it was being hashed.
+ * The pins for these units, or the reason there are none. 0.6.39 (Codex review): pins name
+ * their phase and each unit's attempt. 0.7.0 (Codex review): nothing is pinned silently short —
+ * a path that is outside the project, a Foreman state file, or reached through a link that
+ * leaves the root means NO pins (the phase-wide rule applies) with the reason reported, and a
+ * read-only guard (no authorized files) has nothing to pin.
  */
-export async function pinUnits(
-  ledger: LedgerFile, phase: string, units: string[], root: string
-): Promise<{ phase: string; units: string[]; attempts: Record<string, number>; pins: ReviewPin[] } | null> {
+export async function pinUnitsWithReason(
+  ledger: LedgerFile, phase: string, units: string[], root: string,
+  /** 0.7.0 (Codex review): the configured Foreman files (absolute) — state files and the fenced PROGRESS.md. */
+  managed: { state: readonly string[]; fenced: readonly string[] } = { state: [], fenced: [] }
+): Promise<{ pinned: PinSet } | { reason: string }> {
   const p = ledger.phases[phase]
-  if (!p || units.length === 0) return null
+  if (!p) return { reason: `phase '${phase}' is not in the ledger` }
+  if (units.length === 0) return { reason: "no units named" }
   const files = new Set<string>()
   const attempts: Record<string, number> = {}
   for (const id of units) {
-    if (!Object.prototype.hasOwnProperty.call(p.units, id)) return null
+    if (!Object.prototype.hasOwnProperty.call(p.units, id)) return { reason: `unit '${id}' is not registered in phase '${phase}'` }
     // The newest delegation must carry the baseline: an older attempt's file set does not
     // describe what the current attempt changed.
     const latest = ((p.units[id] as Unit).delegations ?? []).at(-1)
-    if (!latest?.guard?.snapshot) return null
+    if (!latest?.guard?.snapshot) return { reason: `unit '${id}' has no guard baseline on its current attempt` }
     // attempt_seq, not the delegation number: a direct fix also moves the unit.
     attempts[id] = (p.units[id] as Unit).attempt_seq ?? latest.attempt
     for (const f of latest.guard.snapshot.allowed) files.add(norm(f))
   }
+  if (files.size === 0) return { reason: "read-only guard: the units authorize no files, so there is nothing to pin" }
   let rootAbs: string
-  try { rootAbs = await fs.realpath(path.resolve(root)) } catch { return null }
-  const kept = [...files].filter((f) => {
+  try { rootAbs = await fs.realpath(path.resolve(root)) } catch { return { reason: "the project root could not be resolved" } }
+  for (const f of files) {
+    const rel = path.relative(rootAbs, path.resolve(rootAbs, f))
+    if (rel === "" || rel === ".." || rel.startsWith(".." + path.sep) || path.isAbsolute(rel)) return { reason: `authorized path '${f}' is outside the project` }
+    if (FOREMAN_STATE_NAMES.has(path.basename(f))) return { reason: `authorized path '${f}' is a Foreman state file` }
     const abs = path.resolve(rootAbs, f)
-    const rel = path.relative(rootAbs, abs)
-    return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel) && !path.basename(f).startsWith(".foreman-")
-  }).sort()
+    const same = (x: string) => process.platform === "win32" ? x.toLowerCase() === abs.toLowerCase() : x === abs
+    if (managed.state.some(same) || managed.fenced.some(same)) return { reason: `authorized path '${f}' is a Foreman-managed file` }
+  }
   const pins: ReviewPin[] = []
-  for (const f of kept) pins.push({ path: f, sha256: await digest(rootAbs, f) })
-  if (pins.some((p) => p.sha256 === "outside-root")) return null
-  return { phase, units: [...new Set(units)].sort(), attempts, pins }
+  for (const f of [...files].sort()) pins.push({ path: f, sha256: await digest(rootAbs, f) })
+  const escaped = pins.find((x) => x.sha256 === "outside-root")
+  if (escaped) return { reason: `authorized path '${escaped.path}' leaves the project through a link` }
+  // 0.7.0 (Codex review): a directory or unreadable file hashes to "unreadable", which can never
+  // change — a pin on it checks nothing. That is a reason, not a pin.
+  const unreadable = pins.find((x) => x.sha256 === "unreadable")
+  if (unreadable) return { reason: `authorized path '${unreadable.path}' is a directory or could not be read` }
+  return { pinned: { phase, units: [...new Set(units)].sort(), attempts, pins } }
+}
+
+/** pinUnitsWithReason, null when nothing is pinned. */
+export async function pinUnits(ledger: LedgerFile, phase: string, units: string[], root: string): Promise<PinSet | null> {
+  const r = await pinUnitsWithReason(ledger, phase, units, root)
+  return "pinned" in r ? r.pinned : null
+}
+
+/** The one line a seat's output carries about its pins. */
+export function pinStatusLine(r: { pinned: PinSet } | { reason: string }): string {
+  return "pinned" in r
+    ? `pins: ${r.pinned.pins.length} file(s) for unit(s) ${r.pinned.units.join(", ")} — record the review with the same data.units`
+    : `pins: none — ${r.reason}; this review is judged by the phase-wide freshness rule`
 }
 
 /** Paths whose content differs from the pin now. */

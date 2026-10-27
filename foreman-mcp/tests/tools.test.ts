@@ -1,3 +1,4 @@
+import { writeLedger } from "./helpers/authorizedLedger.js"
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import fs from "fs/promises"
 import os from "os"
@@ -9,7 +10,7 @@ import { getStackProfile } from "../src/lib/stackProfiles.js"
 import { handleReadLedger } from "../src/tools/readLedger.js"
 import { handleReadProgress } from "../src/tools/readProgress.js"
 import { capabilityCheck } from "../src/tools/capabilityCheck.js"
-import { writeLedger } from "../src/lib/ledger.js"
+
 import { writeProgress } from "../src/lib/progress.js"
 
 async function withNoCliOnPath(fn: () => Promise<void>): Promise<void> {
@@ -263,7 +264,7 @@ describe("handleReadLedger", () => {
     expect(result.length).toBeLessThan(1100)
   })
 
-  it("rejections truncation hint points at the phase-scoped full view, not the per-unit view", async () => {
+  it("rejections truncation hint preserves the requested filters and pagination", async () => {
     await writeLedger(ledgerPath, {
       operation: "add_rejection",
       phase: "p1",
@@ -273,7 +274,7 @@ describe("handleReadLedger", () => {
 
     const result = await handleReadLedger(ledgerPath, { query: "rejections" })
     expect(result).toContain("truncated_cells: 1")
-    expect(result).toContain('hint: full text: read_ledger({ query: "full", phase: "<phase>" })')
+    expect(result).toContain('hint: full text: repeat this query with include_full_text:true and cursor/limit')
     expect(result).not.toContain("phase, unit_id })")
   })
 
@@ -334,7 +335,7 @@ describe("handleReadLedger", () => {
       data: { advisor: "gemini", findings: [{ severity: "high", file: "a.ts", line: "10", description: "boom", classification: "confirmed" }] },
     })
     const result = await handleReadLedger(ledgerPath, { query: "reviews" })
-    expect(result).toContain("phase | advisor | severity | class | finding")
+    expect(result).toContain("phase | advisor | review_ts | finding_index | severity | class | finding")
     expect(result).toContain("gemini")
     expect(result).toContain("confirmed")
     expect(result).toContain("boom")

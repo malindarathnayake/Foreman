@@ -1,3 +1,4 @@
+import { writeLedger, handleWriteLedger } from "./helpers/authorizedLedger.js"
 // 0.6.20 nit path: the finding rides the delegated write (set_unit_status data.rejection),
 // the escape class rides the verdict (set_verdict data.escape_class), and repo_guard snapshot
 // on a correction copies the frozen authorized set from the from_attempt baseline. Every
@@ -10,8 +11,8 @@ import fs from "fs/promises"
 import os from "os"
 import path from "path"
 import { execFileSync } from "child_process"
-import { readLedger, recordRepoGuard, writeLedger } from "../src/lib/ledger.js"
-import { handleWriteLedger } from "../src/tools/writeLedger.js"
+import { readLedger, recordRepoGuard } from "../src/lib/ledger.js"
+
 import { handleRepoGuard } from "../src/tools/repoGuard.js"
 import { appendEvent, readEvents, type SidecarEventInput } from "../src/lib/eventsSidecar.js"
 import { resolveModelRank, type ModelRank } from "../src/lib/modelRank.js"
@@ -323,7 +324,7 @@ describe("repo_guard snapshot on a correction attempt", () => {
 
   it("still refuses a different explicit set through the ledger, and an explicit identical set is not marked inherited", async () => {
     await correctionOnRealGuard()
-    await expect(snap({ allowed_files: ["b.ts"] })).rejects.toThrow(/^RANK CORRECTION: the new guard must preserve the previous repository root and frozen authorized file set\.$/)
+    await expect(snap({ allowed_files: ["b.ts"] })).rejects.toThrow(/^GUARD CORRECTION: the new guard must preserve the previous repository root and frozen authorized file set\.$/)
     expect((await unit()).delegations!.at(-1)!.guard).toBeUndefined()
     const out = await snap({ allowed_files: ["a.ts"] })
     expect(line(out, "status")).toBe("status: recorded")

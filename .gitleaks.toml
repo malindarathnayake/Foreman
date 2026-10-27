@@ -49,6 +49,14 @@ regexes = [
   # tests/councilConfig.test.ts — COUNCIL_TEST_KEY fixture for the seat-config
   # resolution tests (repo vs home store). Deterministic fake, counter-suffixed.
   '''council_test_key_00001''',
+  # tests/councilRouting.test.ts — FOREMAN_API_KEY fixture for the seat_models /
+  # require_zdr routing tests (0.9.0). Deterministic fake, counter-suffixed.
+  '''test-key-routing-0000001''',
+  # tests/councilRouting.test.ts — Langfuse public/secret key fixtures for the
+  # require_zdr tracer test (0.9.0); the host is langfuse.example. The sk-lf-/pk-lf-
+  # prefixes are deliberate so the env looks configured; "synthetic" marks them fake.
+  '''pk-lf-synthetic-0001''',
+  '''sk-lf-synthetic-0001''',
 ]
 paths = [
   # dojo experiment ledger snapshots: base_file_hashes entries are sha256 content

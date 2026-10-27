@@ -1,3 +1,4 @@
+import { writeLedger } from "./helpers/authorizedLedger.js"
 // Review fan (v0.6.13): when a Codex host has no advisor CLI, it reviews with its own
 // subagents instead of running a self-review pass — one read-only reviewer per risk lens,
 // then a verifier that re-derives every claim from the code and writes the single report
@@ -10,7 +11,7 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
-import { readLedger, writeLedger } from "../src/lib/ledger.js"
+import { readLedger } from "../src/lib/ledger.js"
 import { buildVerifierPrompt, buildSeatPrompt, LENS_CATALOG, LENS_IDS, VERIFIER_RESPONSE_SCHEMA } from "../src/lib/lensCatalog.js"
 import { codexAgentsInit, CODEX_AGENT_ROLES } from "../src/tools/codexAgentsInit.js"
 import { getProfile } from "../src/lib/hostProfiles.js"

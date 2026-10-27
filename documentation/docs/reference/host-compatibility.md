@@ -48,6 +48,10 @@ Top can reuse a bounded native worker for fixes and test changes, use compact fo
 
 Complete native review and accepted delta evidence survive host switching with their original same-provider provenance. Creating a native review still uses Codex's native reviewer/verifier procedure. Rank never changes configured seat capability, ownership boundaries, attempt limits, or checkpoint gates.
 
-## Saved workflows on Claude Code
+## Saved workflows
 
-Claude Code's Workflow tool runs many agents from one script. `claude_workflows_init` installs Foreman's three scripts into the project's `.claude/workflows/`: a design panel, a checkpoint review fan, and a field-report triage. The pit-boss confirms a run with you first unless you opted in with `ultracode`. A workflow review is same-model perspective, recorded as `fan`, and never a gate seat. Implementation never runs inside a workflow. Codex, Cursor and generic hosts have no equivalent surface.
+Codex and Cursor expose `workflow`: use `{ name, mode: 'describe' }` to inspect phases, roles, agent estimates and cost, then `{ name, args }` for the numbered procedure. The four workflows are `foreman-design-panel`, `foreman-design-gauntlet`, `foreman-checkpoint-review` and `foreman-triage`. The tool starts no agents; the host follows its instructions after confirming the run with you unless you already opted in. Read-only agents are batched within configured and live limits; without subagents the parent runs sequentially and reports reduced independence.
+
+The native gauntlet uses both Perplexity and Codex web search, reporting partial coverage if either is unavailable. Codex design uses `worker_heavy`'s effective model through a read-only reviewer role. Its external attack uses `invoke_advisor` with Claude or a probed Gemini fallback and records the actual CLI/model and separate receipt. The workflow aggregate is perspective (`stage:'fan'`), never a gate seat. Workflows never implement or write the ledger; only the gauntlet's design and raw advisor output may be saved under `out_dir` by the parent.
+
+Claude Code keeps its existing Workflow scripts installed by `claude_workflows_init`, including its Codex CLI attack. The new Foreman `workflow` tool is not registered on Claude Code or generic hosts.

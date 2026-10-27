@@ -415,6 +415,7 @@ describe("skillTrimming — _common-protocol", () => {
     "error-handling-standard",
     "agent-delegation",
     "advisor-grounding",
+    "project-changelog",
     "context-budget",
     "no-test-attestation",
     "citation-verification",

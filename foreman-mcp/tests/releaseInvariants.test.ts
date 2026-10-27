@@ -69,8 +69,11 @@ describe("packed manifest", () => {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
     })
-    const manifest = JSON.parse(out) as Array<{ files: Array<{ path: string }> }>
-    return manifest[0].files.map((f) => f.path)
+    // npm 11 and earlier print an array of packages; npm 12 prints an object keyed by package name.
+    type Packed = { files: Array<{ path: string }> }
+    const manifest = JSON.parse(out) as Packed[] | Record<string, Packed>
+    const packed = Array.isArray(manifest) ? manifest[0] : Object.values(manifest)[0]
+    return packed.files.map((f) => f.path)
   }
 
   // Under the full suite `npm pack --dry-run` alone can exceed vitest's default 5 s
@@ -135,9 +138,26 @@ describe("release invariants", () => {
   it("package.json version === newest CHANGELOG heading", async () => {
     const pkg = await readPackageJson()
     const changelog = await readRootChangelog()
-    const match = changelog.match(/^## (\d+\.\d+\.\d+)/m)
+    const match = changelog.match(/^## \[(\d+\.\d+\.\d+)\]/m)
     expect(match).not.toBeNull()
     expect(match?.[1]).toBe(pkg.version)
+  })
+
+  // 0.7.0: Foreman's own CHANGELOG.md is held to the same Keep a Changelog 1.1.0 check that
+  // project_changelog applies to the repositories Foreman runs.
+  // 0.7.0: llms.txt said 0.6.33 and the lockfile root 0.6.21 while package.json moved on.
+  it("llms.txt and the lockfile root carry the package.json version", async () => {
+    const pkg = await readPackageJson()
+    const llms = await fs.readFile(new URL("../../llms.txt", import.meta.url), "utf-8")
+    expect(llms.match(/Version: `(\d+\.\d+\.\d+)`/)?.[1]).toBe(pkg.version)
+    const lock = JSON.parse(await fs.readFile(new URL("../package-lock.json", import.meta.url), "utf-8"))
+    expect(lock.version).toBe(pkg.version)
+    expect(lock.packages[""].version).toBe(pkg.version)
+  })
+
+  it("CHANGELOG.md conforms to Keep a Changelog 1.1.0", async () => {
+    const { checkChangelog } = await import("../src/lib/changelogFormat.js")
+    expect(checkChangelog(await readRootChangelog())).toEqual([])
   })
 
   // 0.6.27: the `changelog` TOOL serves a hardcoded array in src/tools/changelog.ts, NOT the root
@@ -153,7 +173,15 @@ describe("release invariants", () => {
     expect(first?.[1]).toBe(pkg.version)
     // and the root markdown and the tool must agree on that newest version
     const md = await readRootChangelog()
-    expect(md.match(/^## (\d+\.\d+\.\d+)/m)?.[1]).toBe(first?.[1])
+    expect(md.match(/^## \[(\d+\.\d+\.\d+)\]/m)?.[1]).toBe(first?.[1])
+  })
+
+  // 0.7.0 (Codex review): five separate 0.6.20 entries made since_version ambiguous.
+  it("the changelog TOOL lists each version once", async () => {
+    const src = await fs.readFile(fileURLToPath(new URL("../src/tools/changelog.ts", import.meta.url)), "utf-8")
+    const versions = [...src.matchAll(/version: "(\d+\.\d+\.\d+)"/g)].map((m) => m[1])
+    expect(versions.length).toBeGreaterThan(50)
+    expect(versions.filter((v, i) => versions.indexOf(v) !== i)).toEqual([])
   })
 
   it("every workflow pins node-version 22", async () => {

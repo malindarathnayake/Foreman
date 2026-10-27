@@ -16,6 +16,7 @@ import fs from "fs/promises"
 import path from "path"
 import { createHash, randomBytes } from "crypto"
 import { z } from "zod"
+import { configuredWorkerModels } from "../lib/workerSeats.js"
 import { loadForemanEnv, type EditFormat, type ForemanEnvConfig } from "../lib/foremanEnv.js"
 import { findSecrets } from "../lib/redaction.js"
 import { appendEvent, boundIdentifier, type SidecarEventInput, type FailureStage as SidecarFailureStage } from "../lib/eventsSidecar.js"
@@ -93,7 +94,7 @@ const InputSchema = z.object({
   phase: z.string().max(10000),
   unit_id: z.string().max(10000),
   brief: z.string(),
-  tier: z.enum(["cheap", "standard", "premium"]),
+  tier: z.enum(["cheap", "standard", "premium", "frontier"]),
   files: z.array(z.string()).max(100),
   edit_format: z.enum(["unified_diff", "search_replace", "whole_file"]).optional(),
 })
@@ -270,6 +271,9 @@ export async function handleInvokeWorker(rawInput: unknown, deps: InvokeWorkerDe
     return `status: refused\n\n${envResult.message}`
   }
   const config = envResult.config
+  const mapping = await configuredWorkerModels(envDir, "generic")
+  const configuredModel = mapping[input.tier]
+  if (configuredModel && configuredModel !== "inherit" && config.tiers[input.tier]) config.tiers[input.tier]!.model = configuredModel
 
   // Past step 1 → the first such call this process emits the egress notice.
   let hostname = ""

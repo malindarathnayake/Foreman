@@ -31,8 +31,9 @@ import { atomicWriteFile } from "../lib/atomicWrite.js"
 import fs from "fs/promises"
 import { toKeyValue } from "../lib/toon.js"
 import { seatReportEconomy } from "../lib/outputBudget.js"
+import { configuredWorkerModels, workerRoleTier } from "../lib/workerSeats.js"
 
-export const CURSOR_AGENT_ROLES = ["foreman-worker-light", "foreman-worker", "foreman-worker-heavy"] as const
+export const CURSOR_AGENT_ROLES = ["foreman-worker-light", "foreman-worker", "foreman-worker-heavy", "foreman-worker-frontier"] as const
 export type CursorAgentRole = (typeof CURSOR_AGENT_ROLES)[number]
 
 /** Cursor's documented portable default: use the parent agent's model. */
@@ -47,6 +48,7 @@ export const CursorAgentsInitInputSchema = z.strictObject({
       "foreman-worker-light": z.string().min(1).max(100).optional(),
       "foreman-worker": z.string().min(1).max(100).optional(),
       "foreman-worker-heavy": z.string().min(1).max(100).optional(),
+      "foreman-worker-frontier": z.string().min(1).max(100).optional(),
     })
     .optional(),
   overwrite: z.boolean().optional(),
@@ -57,6 +59,7 @@ export const CURSOR_SEAT_MODELS: Record<CursorAgentRole, string> = {
   "foreman-worker-light": CURSOR_INHERIT_MODEL,
   "foreman-worker": CURSOR_INHERIT_MODEL,
   "foreman-worker-heavy": CURSOR_INHERIT_MODEL,
+  "foreman-worker-frontier": CURSOR_INHERIT_MODEL,
 }
 
 const SHARED = `Implement only the bounded worker brief you are given.
@@ -77,6 +80,10 @@ you could not do. Do not report success for work you did not verify.
 ${seatReportEconomy()}`
 
 const SPECS: Record<CursorAgentRole, { description: string; instructions: string }> = {
+  "foreman-worker-frontier": {
+    description: "Foreman frontier seat after a rejected premium attempt; configure a verified model pin.",
+    instructions: `Read the premium attempt's rejection history first. Report the host-confirmed model.\n${SHARED}`,
+  },
   "foreman-worker-light": {
     description:
       "Foreman implementation seat, tier cheap. One small, fully specified change: a literal substitution, rename, constant, test name, import path, or a mechanical repeat of a stated pattern.",
@@ -148,6 +155,7 @@ export async function cursorAgentsInit(raw: CursorAgentsInitInput): Promise<stri
   const overwrite = input.overwrite === true
   const written: string[] = []
   const skipped: string[] = []
+  const mapping = await configuredWorkerModels(projectDir, "cursor")
   await fs.mkdir(path.join(projectDir, ".cursor", "agents"), { recursive: true })
 
   for (const role of roles) {
@@ -158,7 +166,7 @@ export async function cursorAgentsInit(raw: CursorAgentsInitInput): Promise<stri
       continue
     }
     const spec = SPECS[role]
-    const model = input.models?.[role] ?? CURSOR_SEAT_MODELS[role]
+    const model = mapping[workerRoleTier(role)!] ?? input.models?.[role] ?? CURSOR_SEAT_MODELS[role]
     await atomicWriteFile(abs, cursorAgentMarkdown(role, spec.description, model, spec.instructions))
     written.push(rel)
   }

@@ -38,6 +38,14 @@ describe("bundled workflow scripts", () => {
     expect(body).not.toContain("stage: 'independent'")
     expect(body).not.toContain("stage: 'native'")
   })
+  it("the design gauntlet is a fan that hands arbitration to the user and never writes the ledger", async () => {
+    const body = await fs.readFile(path.join(BUNDLED_WORKFLOWS_DIR, "foreman-design-gauntlet.js"), "utf-8")
+    expect(body).toContain("stage: 'fan'")
+    expect(body).toContain("-s read-only")
+    expect(body).toContain("Nothing in the repository changes until the user approves")
+    expect(body).not.toMatch(/write_ledger|record_review/)
+    expect(body).not.toMatch(/isolation:\s*['"]worktree['"]/)
+  })
   it("the triage workflow never implements", async () => {
     const body = await fs.readFile(path.join(BUNDLED_WORKFLOWS_DIR, "foreman-triage.js"), "utf-8")
     expect(body).toContain("Implementation is NOT part of this")
@@ -61,7 +69,7 @@ describe("claude_workflows_init", () => {
     await fs.writeFile(path.join(dir, ".claude", "workflows", "foreman-triage.js"), "// user-edited\n")
     const second = await claudeWorkflowsInit({ project_dir: dir })
     expect(second).toMatch(/files_written: none/)
-    expect(second).toContain("files_skipped: .claude/workflows/foreman-checkpoint-review.js,.claude/workflows/foreman-design-panel.js,.claude/workflows/foreman-triage.js")
+    expect(second).toContain("files_skipped: .claude/workflows/foreman-checkpoint-review.js,.claude/workflows/foreman-design-panel.js,.claude/workflows/foreman-design-gauntlet.js,.claude/workflows/foreman-triage.js")
     expect(await fs.readFile(path.join(dir, ".claude", "workflows", "foreman-triage.js"), "utf-8")).toBe("// user-edited\n")
 
     const third = await claudeWorkflowsInit({ project_dir: dir, workflows: ["foreman-triage"], overwrite: true })
@@ -74,7 +82,7 @@ describe("claude_workflows_init", () => {
     try {
       const text = await claudeWorkflowsInit({ project_dir: dir }, empty)
       expect(text).toContain("status: error")
-      expect(text).toContain("missing_bundled: foreman-checkpoint-review,foreman-design-panel,foreman-triage")
+      expect(text).toContain("missing_bundled: foreman-checkpoint-review,foreman-design-panel,foreman-design-gauntlet,foreman-triage")
     } finally {
       await fs.rm(empty, { recursive: true, force: true })
     }

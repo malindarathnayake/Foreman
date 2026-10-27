@@ -9,7 +9,8 @@ import { runExternalCli, runWithStdin } from "../src/lib/externalCli.js"
 
 // A script file, not node -e: Node's Windows argument quoting mangles an inline script
 // passed through cmd /s /c, and the "sleeper" would exit at once.
-const script = path.join(os.tmpdir(), "foreman-tree-sleeper60.js").split(path.sep).join("/")
+// A private mkdtemp directory, not a fixed name in the shared temp root (CodeQL js/insecure-temporary-file).
+const script = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "foreman-tree-")), "foreman-tree-sleeper60.js").split(path.sep).join("/")
 fs.writeFileSync(script, "setTimeout(()=>{},60000); console.log('sleeping')\n")
 const sleeper = process.platform === "win32"
   ? { cmd: "cmd.exe", args: ["/d", "/s", "/c", "node", script] }

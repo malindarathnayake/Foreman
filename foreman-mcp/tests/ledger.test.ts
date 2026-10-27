@@ -1,8 +1,9 @@
+import { writeLedger } from "./helpers/authorizedLedger.js"
 import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
-import { computeGateUnitsHash, readLedger, writeLedger } from "../src/lib/ledger.js"
+import { computeGateUnitsHash, readLedger } from "../src/lib/ledger.js"
 import { appendEvent, type SidecarEventInput } from "../src/lib/eventsSidecar.js"
 
 let tmpDir: string

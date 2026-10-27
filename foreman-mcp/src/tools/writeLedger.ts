@@ -13,6 +13,7 @@ import { delegationBaseline, handleRepoGuard, type RepoGuardPaths } from "./repo
 import { preflightCheck } from "./preflightCheck.js"
 import { readLedger } from "../lib/ledger.js"
 import { findPreflight, preflightPathFor } from "../lib/preflight.js"
+import { isForemanStateFile } from "../lib/foremanFiles.js"
 import type { RepoSnapshot } from "../types.js"
 
 /**
@@ -71,7 +72,7 @@ export async function handleWriteLedger(filePath: string, rawInput: unknown, hos
   let guardNote: string | undefined
   if (parsed.operation === "set_unit_status" && parsed.data.s === "delegated" && parsed.data.guard) {
     // 0.6.38: files promised in the preflight record's creates join the authorized set.
-    const receipt = parsed.data.preflight?.receipt
+    const receipt = parsed.data.brief_hash ?? parsed.data.preflight?.receipt
     const record = receipt ? await findPreflight(preflightPathFor(filePath), receipt, parsed.unit_id, parsed.phase) : null
     const promised = (record?.forward ?? []).map((f) => f.file)
     const prep = await delegationBaseline(context?.guardPaths ?? { ledgerPath: filePath }, parsed.phase, parsed.unit_id, parsed.data.guard, parsed.data.correction?.from_attempt, context?.projectRoot, promised)
@@ -91,7 +92,7 @@ export async function handleWriteLedger(filePath: string, rawInput: unknown, hos
     timestamp: ledger.ts,
     status: "ok",
   }
-  const combined = [warning, truncated, guardNote, compareNote].filter(Boolean).join(" | ")
+  const combined = [warning, truncated, guardNote, compareNote, ...afterWriteNotes(parsed, ledger)].filter(Boolean).join(" | ")
   if (combined) result.warning = combined
   // 0.6.21: a delegation's attempt id is what the worker's heartbeat and close_attempt name.
   if (parsed.operation === "set_unit_status" && parsed.data.s === "delegated") {
@@ -218,4 +219,47 @@ async function appendTerminalSidecarEvent(
   } catch (err) {
     result.sidecar_warning = (err as Error).message
   }
+}
+
+/**
+ * 0.7.0: informational notes read from the ledger after a successful write. Never refusals.
+ * G1 — a pass verdict whose current attempt compared clean with no authorized change observed.
+ * G2 — a declared worker ID that also appears on another unit, or on an earlier attempt of the
+ * same unit outside its correction chain (field data: one worker served whole phases in glog).
+ * IDs are declared by the host, not authenticated; the note says "declared".
+ */
+function afterWriteNotes(op: WriteLedgerInput, ledger: LedgerFile): string[] {
+  if (op.operation !== "set_verdict" && op.operation !== "set_unit_status") return []
+  const phase = ledger.phases[op.phase]
+  const unit = phase?.units[op.unit_id]
+  const latest = unit?.delegations?.at(-1)
+  if (!phase || !unit || !latest) return []
+  const notes: string[] = []
+  if (op.operation === "set_verdict" && op.data.v === "pass" && latest.attempt === unit.attempt_seq) {
+    const g = latest.guard
+    if (g && g.result === "ok" && !g.override && g.snapshot.allowed.some((p) => !isForemanStateFile(p)) && g.edited === 0) {
+      notes.push("no authorized change was observed for this attempt between its baseline and comparison — the work happened before the baseline, or the worker changed nothing (informational)")
+    }
+  }
+  const id = latest.worker_id
+  if (id) {
+    const chain = new Set<number>([latest.attempt])
+    let link = latest.correction?.from_attempt
+    while (link !== undefined && !chain.has(link)) {
+      chain.add(link)
+      link = unit.delegations?.find((d) => d.attempt === link)?.correction?.from_attempt
+    }
+    const seen: string[] = []
+    for (const [uid, u] of Object.entries(phase.units)) {
+      for (const d of u.delegations ?? []) {
+        if (d.worker_id !== id) continue
+        if (uid === op.unit_id && chain.has(d.attempt)) continue
+        seen.push(`${op.phase}/${uid}#${d.attempt}${d.session_id ? ` (session ${d.session_id})` : ""}`)
+      }
+    }
+    if (seen.length) {
+      notes.push(`declared worker ID '${id}' is also recorded on ${seen.slice(0, 5).join(", ")}${seen.length > 5 ? ` (+${seen.length - 5} more)` : ""} — the protocol expects a fresh worker per unit, and per attempt unless it is a correction (informational)`)
+    }
+  }
+  return notes
 }

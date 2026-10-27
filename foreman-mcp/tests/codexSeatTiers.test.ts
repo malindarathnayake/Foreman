@@ -24,9 +24,9 @@ afterEach(async () => {
 const roleToml = (role: string) => fs.readFile(path.join(dir, ".codex", "agents", `${role}.toml`), "utf-8")
 
 describe("codex_agents_init writes the tiered implementation seats", () => {
-  it("ships three implementation seats plus the read-only roles", () => {
+  it("ships four implementation seats plus the read-only roles", () => {
     expect(CODEX_AGENT_ROLES).toEqual([
-      "explorer", "worker_light", "worker", "worker_heavy", "reviewer", "verifier",
+      "explorer", "worker_light", "worker", "worker_heavy", "worker_frontier", "reviewer", "verifier",
     ])
   })
 

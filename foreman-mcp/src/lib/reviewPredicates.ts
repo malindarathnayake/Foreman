@@ -5,9 +5,17 @@
  * instead of growing applyOperation. Pure functions over ledger data: no I/O, no
  * imports from ledger.ts.
  */
-import type { Phase, PhaseReview, VerificationEvidence } from "../types.js"
+import type { Phase, PhaseReview, ReviewFinding, VerificationEvidence } from "../types.js"
 import { NativeReviewEvidenceSchema } from "../types.js"
 import { boundIdentifier, type SidecarEvent } from "./eventsSidecar.js"
+
+/** The original finding is immutable; later decisions are an ordered audit trail. */
+export function effectiveSeverity(f: ReviewFinding): ReviewFinding["severity"] {
+  return [...(f.adjudications ?? [])].reverse().find((a) => a.severity !== undefined)?.severity ?? f.final_severity ?? f.severity
+}
+export function effectiveClassification(f: ReviewFinding): ReviewFinding["classification"] {
+  return [...(f.adjudications ?? [])].reverse().find((a) => a.classification !== undefined)?.classification ?? f.classification
+}
 
 // ─── Review enforcement helpers (round 6) ────────────────────────────────────
 // Shared by the phase gate, review retention, and the verification predicates so all
@@ -27,8 +35,8 @@ export function reviewIncompleteness(r: PhaseReview): string | null {
   if (r.completion === "partial" || r.completion === "failed") return `completion=${r.completion}`
   if (r.stage === "verification" && r.evidence?.kind === "worker_delta") {
     if (r.completion !== "complete") return "worker_delta requires completion=complete"
-    if (!r.checked?.length || r.checked.some((entry) => !entry.trim())) return "worker_delta verifier requires a non-empty checked list"
-    if (r.findings.some((finding) => finding.classification === "unverified")) return "worker_delta has unresolved unverified findings"
+    if (!r.checked?.length || r.checked.some((entry) => !entry.trim())) return "worker_delta verifier requires a non-empty top-level data.checked list"
+    if (r.findings.some((finding) => effectiveClassification(finding) === "unverified")) return "worker_delta has unresolved unverified findings"
     const { tests, probe } = r.evidence
     if (tests.outcome === "pass" && (!tests.command.trim() || !tests.result.trim())) return "worker_delta tests require a non-empty command and result"
     if (probe.outcome === "pass" && (!probe.method.trim() || !probe.result.trim())) return "worker_delta probe requires a non-empty method and result"
@@ -42,12 +50,12 @@ export function reviewIncompleteness(r: PhaseReview): string | null {
     if (ids.size !== reviewers.length || ids.has(verifier_id)) return "native reviewers and verifier must have distinct agent IDs"
     if (new Set(reviewers.map((seat) => seat.lens)).size !== reviewers.length) return "native reviewers must cover distinct lenses"
     if (reviewers.some((seat) => seat.completion !== "complete" || seat.checked.length === 0)) return "native reviewer coverage is incomplete"
-    if (!r.checked?.length || r.checked.some((entry) => !entry.trim())) return "native verifier requires a non-empty checked list"
-    if (r.findings.some((finding) => finding.classification === "unverified")) return "native review has unresolved unverified findings"
+    if (!r.checked?.length || r.checked.some((entry) => !entry.trim())) return "native verifier requires a non-empty top-level data.checked list (beside data.native)"
+    if (r.findings.some((finding) => effectiveClassification(finding) === "unverified")) return "native review has unresolved unverified findings"
   }
   // Reviews recorded before 0.6.4 could carry unclassified findings; the gate blocks only
   // on 'confirmed', so an unclassified real finding slipped past.
-  const unclassified = r.findings.filter((f) => f.classification === undefined).length
+  const unclassified = r.findings.filter((f) => effectiveClassification(f) === undefined).length
   if (unclassified > 0) return `${unclassified} finding(s) without a classification`
   if (r.findings.length === 0 && !(r.checked && r.checked.length > 0) && r.completion !== "complete") {
     return "zero findings with no examined list"
@@ -56,7 +64,7 @@ export function reviewIncompleteness(r: PhaseReview): string | null {
 }
 
 export function hasConfirmed(r: PhaseReview): boolean {
-  return r.findings.some((f) => f.classification === "confirmed")
+  return r.findings.some((f) => effectiveClassification(f) === "confirmed")
 }
 
 export function effectiveStage(r: PhaseReview): NonNullable<PhaseReview["stage"]> {
@@ -248,7 +256,7 @@ export function trimReviews(reviews: PhaseReview[], phase: Phase): PhaseReview[]
   // record, and every covering record that would block if it carried.
   const protectedSet = new Set(
     reviews.filter((r) =>
-      baselines.has(r.ts) || verifications.includes(r) || coverage.carries.has(r) ||
+      r.findings.some((f) => f.adjudications?.length) || baselines.has(r.ts) || verifications.includes(r) || coverage.carries.has(r) ||
       (r.ts >= verdictTs && blocksGate(r, current, phase)) ||
       (coverage.byRecord.has(r) && (hasConfirmed(r) || reviewIncompleteness(r) !== null)))
   )
@@ -318,7 +326,7 @@ export function workerDeltaBlocker(
   }
   if (!evidence.verifier_id?.trim()) return "worker_delta requires a distinct verifier_id"
   if (allReviews.some((r) => r.ts >= baseline.ts && r.ts <= upperTs &&
-    r.findings.some((f) => f.classification === "confirmed" && f.severity !== "low"))) {
+    r.findings.some((f) => effectiveClassification(f) === "confirmed" && effectiveSeverity(f) !== "low"))) {
     return "confirmed finding(s) above LOW since the baseline review"
   }
   const changed: Array<{ unit_id: string; attempt: number }> = []
@@ -420,7 +428,7 @@ export function verificationBlocker(
   }
   const serious = allReviews
     .filter((r) => r.ts >= baseline.ts && r.ts <= upperTs)
-    .flatMap((r) => r.findings.filter((f) => f.classification === "confirmed" && f.severity !== "low"))
+    .flatMap((r) => r.findings.filter((f) => effectiveClassification(f) === "confirmed" && effectiveSeverity(f) !== "low"))
   if (serious.length > 0) return `${serious.length} confirmed finding(s) above LOW since the baseline review`
   const changed = Object.entries(phaseObj.units).filter(([, u]) => u.v_ts !== undefined && u.v_ts > baseline.ts)
   if (changed.length === 0) return "no unit was re-verdicted after the baseline review"

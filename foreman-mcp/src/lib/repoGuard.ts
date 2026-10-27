@@ -70,7 +70,11 @@ interface GitResult {
 }
 
 async function git(dir: string, args: string[], maxStdout?: number): Promise<GitResult> {
-  const r = await runExternalCli("git", ["-C", dir, ...args], GIT_TIMEOUT_MS, maxStdout ? { maxStdout } : undefined)
+  // 0.7.0 [CWE-88]: every path argument is LITERAL. Without this, `:/x` (pathspec magic) reached
+  // outside the directory and `[ab].ts` matched as a wildcard, so a staged change to a file with
+  // brackets in its name could be read from the wrong index entry. Global, so it covers every
+  // probe; it changes only how path arguments are matched.
+  const r = await runExternalCli("git", ["--literal-pathspecs", "-C", dir, ...args], GIT_TIMEOUT_MS, maxStdout ? { maxStdout } : undefined)
   // Trailing whitespace only. `git status --porcelain` encodes status in the first two
   // columns, so a modified file's record begins with a space; trimming both ends would
   // eat it and every path would come back missing its first character.
@@ -90,6 +94,10 @@ export function invalidPathReason(p: string): string | null {
   if (p.startsWith("-")) return "path starts with '-' and would be read as a git option"
   if (p.includes("\0") || p.includes("\n")) return "path contains a control character"
   if (/^[a-zA-Z]:[\\/]/.test(p) || p.startsWith("/") || p.startsWith("\\")) return "path is absolute"
+  // 0.7.0: `D:brief.md` is relative to drive D's current directory, not to the project.
+  if (process.platform === "win32" && /^[a-zA-Z]:/.test(p)) return "path is drive-relative"
+  // 0.7.0: on Windows `name:stream` addresses an alternate data stream of `name`.
+  if (process.platform === "win32" && p.includes(":")) return "path contains ':' (a Windows stream name)"
   const parts = p.split(/[\\/]/)
   if (parts.some((seg) => seg === "..")) return "path escapes the project with '..'"
   return null
@@ -462,6 +470,9 @@ export function compareSnapshots(
   const violations: string[] = []
   const flag = (p: string, message: string) => { violations.push(message); paths?.add(p) }
   const allowed = new Set((before.allowed ?? []).map(normalizePath))
+  if ((before.mode ?? "git") !== (after.mode ?? "git") || JSON.stringify(before.exclude_globs ?? []) !== JSON.stringify(after.exclude_globs ?? [])) {
+    violations.push("snapshot mode or exclude_globs changed; comparison cannot clear the frozen baseline")
+  }
 
   if (before.root !== after.root) {
     violations.push(`different repository: baseline was taken in '${before.root}', comparison ran in '${after.root}'`)
@@ -557,4 +568,30 @@ export function compareSnapshots(
     }
   }
   return violations
+}
+
+/**
+ * 0.7.0 (field data: 21 of 78 glog attempts were compared with nothing changed in their
+ * authorized files): how many AUTHORIZED paths differ in observed state between two snapshots.
+ * Informational only — it never gates. It cannot see a same-size rewrite of a file over 8 MB
+ * (fingerprinted by size), an edit that was reverted, or bytes staged before the baseline; it
+ * counts observations, not work. Fenced files compare their content outside Foreman's block
+ * and ignore the status column, which Foreman's own fence write changes.
+ */
+export function authorizedChanges(before: RepoSnapshot, after: RepoSnapshot, rel: RelativeScope = EMPTY_RELATIVE_SCOPE): number {
+  const b = new Map(before.entries.filter((e) => !isForemanStateFile(e.path, rel)).map((e) => [e.path, e]))
+  const a = new Map(after.entries.filter((e) => !isForemanStateFile(e.path, rel)).map((e) => [e.path, e]))
+  let n = 0
+  for (const p of new Set((before.allowed ?? []).map(normalizePath))) {
+    const was = b.get(p)
+    const now = a.get(p)
+    if (!was && !now) continue
+    if (!was || !now) { n++; continue }
+    if (rel.fenced.has(p) && was.fenced && now.fenced && was.fwt !== undefined && now.fwt !== undefined) {
+      if (was.fwt !== now.fwt || was.idx !== now.idx) n++
+      continue
+    }
+    if (was.wt !== now.wt || was.idx !== now.idx || was.code !== now.code) n++
+  }
+  return n
 }

@@ -1,3 +1,4 @@
+import { writeLedger, handleWriteLedger } from "./helpers/authorizedLedger.js"
 // Field feedback 2026-09, round 2 (v0.6.1): schema-error hints, required preflight
 // attestation, SPEC_GAP / GATE_OVERRIDE journal codes, advisor stderr trimming,
 // run_tests output shaping.
@@ -8,8 +9,8 @@ import path from "path"
 import { Client } from "@modelcontextprotocol/client"
 import { InMemoryTransport, type McpServer } from "@modelcontextprotocol/server"
 import { createServer } from "../src/server.js"
-import { readLedger, writeLedger } from "../src/lib/ledger.js"
-import { handleWriteLedger } from "../src/tools/writeLedger.js"
+import { readLedger } from "../src/lib/ledger.js"
+
 import { handleWriteProgress } from "../src/tools/writeProgress.js"
 import { formatSchemaError } from "../src/lib/schemaError.js"
 import { formatAdvisorResult } from "../src/tools/invokeAdvisor.js"
@@ -53,7 +54,9 @@ describe("schema errors — one hint per field, expected shape appended", () => 
     expect(text).toContain("  data.v: ")
     expect(text).toContain("  data.via: ")
     expect(text).toContain("  data.note: ")
-    expect(text).toContain("Expected data shape: { v: 'pass'|'fail'|'pending'|'inconclusive', via?: 'worker'|'pitboss-direct'|'n/a', worker_id?: string (≥1 chars, ≤400 chars), note?: string (≤10000 chars), user_override?: boolean, escape_class?: 'original_defect'|'remediation_defect'|'test_gap'|'process'|'new_scope' }")
+    expect(text).toContain("Expected data shape: { v: 'pass'|'fail'|'pending'|'inconclusive'")
+    expect(text).toContain("worker_model?: string")
+    expect(text).toContain("override_fact_key?: string")
   })
 
   it("handleWriteLedger surfaces the formatted error instead of a Zod dump", async () => {

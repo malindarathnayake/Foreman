@@ -270,7 +270,7 @@ describe("write_ledger record_review soft fields", () => {
     expect(result).toContain("; data.native.reviewers[0].checked[1] was 452 chars (limit 400), kept")
     const review = (await readLedger(ledgerPath)).phases.p1.reviews!.at(-1)!
     // The ledger prefixes a native record's limitations with its same-provider note; the cut text follows it.
-    expect(review.limitations).toMatch(/^Native Codex subagents; same-provider review, not cross-vendor independence\. L+…\[truncated \d+ chars\]$/)
+    expect(review.limitations).toMatch(/^Native codex subagents; same-provider review, not cross-vendor independence\. L+…\[truncated \d+ chars\]$/)
     expect(review.native!.reviewers[0].checked[1]).toHaveLength(400)
     expect(review.native!.reviewers[0].checked[1]).toMatch(TRUNCATION_MARKER_RE)
   })
@@ -278,7 +278,7 @@ describe("write_ledger record_review soft fields", () => {
   it("a whitespace-only checked[] entry over the limit still reads as blank on stage:'native'", async () => {
     await expect(handleWriteLedger(ledgerPath, {
       operation: "record_review", phase: "p1", data: { ...NATIVE_BASE.data, checked: [" ".repeat(401)] },
-    }, "codex")).rejects.toThrow(/NATIVE REVIEW INCOMPLETE: native verifier requires a non-empty checked list/)
+    }, "codex")).rejects.toThrow(/NATIVE REVIEW INCOMPLETE: native verifier requires a non-empty top-level data.checked list/)
     await expect(fs.access(ledgerPath)).rejects.toThrow()
   })
 

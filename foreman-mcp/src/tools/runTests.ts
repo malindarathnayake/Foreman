@@ -5,12 +5,15 @@ import path from 'path'
 
 export const DEFAULT_ALLOWED_RUNNERS = ["npm", "pytest", "go", "cargo", "dotnet", "make", "gradle", "gradlew", "gofmt", "golangci-lint"]
 const BUFFER_CAP_MULTIPLIER = 4
+/** 0.7.1 (field report 2026-10-05): the refusal named only the defaults and hid the setting that extends them. */
+export const ALLOWLIST_HINT = "hint: add a runner for this server with FOREMAN_TEST_ALLOWLIST=<name>[,<name>...] in its environment, then restart the server"
 const resolvedRunners = new Map<string, SpawnPlan>()
 
 const NATIVE_EXTS = new Set(['.exe', '.com'])
 const CMD_EXTS = new Set(['.cmd', '.bat'])
 
-function getAllowedRunners(): string[] {
+/** The runners run_tests accepts now: the defaults plus FOREMAN_TEST_ALLOWLIST. */
+export function getAllowedRunners(): string[] {
   const extra = process.env.FOREMAN_TEST_ALLOWLIST
   if (extra) {
     return [
@@ -255,7 +258,7 @@ export function pinnedToolchain(
   const rel = path.relative(projectRoot, abs)
   const refuse = (reason: string) => ({
     ok: false as const,
-    error: `runner not in allowlist\nrunner: ${runner}\nreason: ${reason}\nallowed_runners: ${DEFAULT_ALLOWED_RUNNERS.join(", ")}`,
+    error: `runner not in allowlist\nrunner: ${runner}\nreason: ${reason}\nallowed_runners: ${allowed.join(", ")}\n${ALLOWLIST_HINT}`,
   })
   if (rel.startsWith('..') || path.isAbsolute(rel)) return refuse('a pinned runner must live inside the project root')
   const base = path.basename(abs).replace(/\.(exe|cmd|bat)$/i, '')
@@ -280,7 +283,7 @@ export async function runTests(
   if (pinned && !pinned.ok) return `error: ${pinned.error}`
   if (!pinned && !allowedRunners.includes(runner)) {
     return Promise.resolve(
-      `error: runner not in allowlist\nrunner: ${runner}\nallowed_runners: ${DEFAULT_ALLOWED_RUNNERS.join(", ")}`
+      `error: runner not in allowlist\nrunner: ${runner}\nallowed_runners: ${allowedRunners.join(", ")}\n${ALLOWLIST_HINT}`
     )
   }
 
@@ -306,7 +309,7 @@ export async function runTests(
     ? { ok: true, plan: { command: pinned.command, args: [] } }
     : await resolveRunner(runner)
   if (!resolution.ok) {
-    return `error: ${resolution.error}\nallowed_runners: ${DEFAULT_ALLOWED_RUNNERS.join(", ")}`
+    return `error: ${resolution.error}\nallowed_runners: ${allowedRunners.join(", ")}`
   }
 
   return new Promise((resolve) => {

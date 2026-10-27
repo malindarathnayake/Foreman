@@ -7,7 +7,7 @@ description: Install the release tarball, verify the binary, and know what to do
 
 # Install
 
-Node.js 22 or newer. Check with `node --version`.
+Node.js 22.23.4+, 24.22.1+ or 26.12.1+. Earlier releases in each line carry the Brotli decoder flaw CVE-2026-111497. Check with `node --version`.
 
 ## From the release tarball
 

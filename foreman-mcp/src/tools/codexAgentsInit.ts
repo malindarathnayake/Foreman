@@ -4,8 +4,9 @@ import { z } from "zod"
 import { atomicWriteFile } from "../lib/atomicWrite.js"
 import { toKeyValue } from "../lib/toon.js"
 import { seatReportEconomy } from "../lib/outputBudget.js"
+import { configuredWorkerModels, workerRoleTier, DEFAULT_WORKER_MODELS } from "../lib/workerSeats.js"
 
-export const CODEX_AGENT_ROLES = ["explorer", "worker_light", "worker", "worker_heavy", "reviewer", "verifier"] as const
+export const CODEX_AGENT_ROLES = ["explorer", "worker_light", "worker", "worker_heavy", "worker_frontier", "reviewer", "verifier"] as const
 export type CodexAgentRole = (typeof CODEX_AGENT_ROLES)[number]
 
 export const CodexAgentsInitInputSchema = z.object({
@@ -21,6 +22,7 @@ export const CodexAgentsInitInputSchema = z.object({
       worker: z.string().min(1).optional(),
       worker_light: z.string().min(1).optional(),
       worker_heavy: z.string().min(1).optional(),
+      worker_frontier: z.string().min(1).optional(),
       reviewer: z.string().min(1).optional(),
       verifier: z.string().min(1).optional(),
     })
@@ -53,9 +55,9 @@ ${ECONOMY}`
  * version is not interchangeable. Override per role with the models input when an id rotates.
  */
 export const CODEX_SEAT_MODELS: Partial<Record<CodexAgentRole, string>> = {
-  worker_light: "gpt-5.6-terra",
-  worker: "gpt-6-sol",
-  worker_heavy: "gpt-6-astra",
+  worker_light: DEFAULT_WORKER_MODELS.codex.cheap,
+  worker: DEFAULT_WORKER_MODELS.codex.standard,
+  worker_heavy: DEFAULT_WORKER_MODELS.codex.premium,
 }
 
 const WORKER_LIGHT_INSTRUCTIONS = `Implement one small, fully specified change.
@@ -160,6 +162,7 @@ export async function codexAgentsInit(raw: CodexAgentsInitInput): Promise<string
   const maxThreads = input.max_threads ?? 6
   const maxDepth = input.max_depth ?? 1
   const roles = input.roles ?? [...CODEX_AGENT_ROLES]
+  const mapping = await configuredWorkerModels(projectDir, "codex")
   const overwrite = input.overwrite ?? false
   const warnings: string[] = []
   const written: string[] = []
@@ -238,6 +241,11 @@ export async function codexAgentsInit(raw: CodexAgentsInitInput): Promise<string
       sandboxMode: "workspace-write",
       instructions: WORKER_HEAVY_INSTRUCTIONS,
     },
+    worker_frontier: {
+      description: "Frontier implementation seat after a rejected premium attempt; configure a verified model pin.",
+      sandboxMode: "workspace-write",
+      instructions: "Read the premium attempt's rejection history before implementing. Report the host-confirmed model.\n" + WORKER_HEAVY_INSTRUCTIONS,
+    },
     reviewer: {
       description: "Read-only adversarial reviewer for one risk lens of a review fan.",
       sandboxMode: "read-only",
@@ -263,7 +271,7 @@ export async function codexAgentsInit(raw: CodexAgentsInitInput): Promise<string
       description: spec.description,
       sandboxMode: spec.sandboxMode,
       instructions: spec.instructions,
-      model: input.models?.[role] ?? CODEX_SEAT_MODELS[role],
+      model: (workerRoleTier(role) ? mapping[workerRoleTier(role)!] : undefined) ?? input.models?.[role] ?? CODEX_SEAT_MODELS[role],
     })
     await atomicWriteFile(abs, body)
     written.push(rel)

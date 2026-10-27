@@ -65,16 +65,17 @@ describe("preflight receipt on the delegation", () => {
 })
 
 describe("per-phase facts and orphan retirement", () => {
-  it("record_fact keeps bounded facts per phase, replaces by key, and read_ledger lists them", async () => {
+  it("record_fact retains every version and read_ledger lists the latest facts", async () => {
     await write({ operation: "record_fact", phase: "p1", data: { key: "cf.settings.node", text: "Settings lives under AccountSettings.<dataset>", source: "bin/p111-gql-discover.py" } })
     const { warning } = await write({ operation: "record_fact", phase: "p1", data: { key: "cf.settings.node", text: "AccountSettings.<dataset>.settings" } })
-    expect(warning).toContain("(1/50)")
+    expect(warning).toContain("version 2")
     for (let i = 0; i < 55; i++) await write({ operation: "record_fact", phase: "p1", data: { key: `k${i}`, text: `fact ${i}` } })
     const facts = (await readLedger(ledgerPath)).phases.p1.facts!
-    expect(facts).toHaveLength(50)
+    expect(facts).toHaveLength(57)
+    expect(facts.slice(0, 2).map((f) => f.version)).toEqual([1, 2])
     expect(facts.at(-1)!.key).toBe("k54")
-    const text = await handleReadLedger(ledgerPath, { query: "facts", phase: "p1" })
-    expect(text).toContain("total_rows: 50")
+    const text = await handleReadLedger(ledgerPath, { query: "facts", phase: "p1", limit: 100 })
+    expect(text).toContain("total_rows: 56")
     expect(text).toContain("k54")
   })
   it("write_progress retire_unit removes an orphan entry with a reason and refuses an unknown one", async () => {

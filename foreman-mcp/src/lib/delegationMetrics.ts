@@ -37,7 +37,7 @@ const PARSE_APPLY_CODES = new Set<FailureStage>([
 const BUILD_CODES = new Set<FailureStage>(["BLD_ERR"])
 const SEMANTIC_CODES = new Set<FailureStage>(["W_REJ"])
 
-const TIER_ORDER: Record<Tier, number> = { cheap: 0, standard: 1, premium: 2 }
+const TIER_ORDER: Record<Tier, number> = { cheap: 0, standard: 1, premium: 2, frontier: 3 }
 
 // ─── Delegation grouping ────────────────────────────────────────────────────────
 interface DelegationGroup {

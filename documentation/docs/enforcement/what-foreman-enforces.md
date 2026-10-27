@@ -65,10 +65,14 @@ The **ledger validation** is TypeScript in `lib/ledger.ts`. It runs on every `wr
 | `set_unit_status { s: "delegated" }` | the brief's hash has no passing `preflight_check` record for this unit and phase, or the unit's contract block changed or was deleted since that preflight | `PREFLIGHT RECEIPT` | none — run `preflight_check` |
 | same | the unit's contract block does not parse | `CONTRACT INVALID` | none — fix the block |
 | same | `data.guard` was given and the baseline was refused; nothing is recorded | `GUARD BLOCKED` | fix the cause named in the message |
+| same | a correction's baseline does not keep the earlier root and authorized set | `GUARD CORRECTION` | keep the inherited set |
 | same | the spec's `Test:` line does not select the Go package of an authorized file | `CHECKPOINT REACH` | `user_override: true`, recorded as `reach_override` |
 | same | another unit holds the repository window | `WINDOW BUSY` | record its verdict or `close_attempt` first |
+| same | the unit's previous attempt was rejected at `tier: "premium"` and this delegation is neither `tier: "frontier"` nor a correction | `TIER LADDER` | `user_override: true` |
 | `repo_guard { operation: "snapshot" }` | the authorized file set would be empty by accident | `refused` | pass `allowed_files`, or `[]` to declare a read-only guard |
 | same | an authorized file is non-empty and entirely NUL bytes | `damaged` | restore the file |
+| `repo_guard { operation: "compare" }` | the unit moved to a later attempt while the comparison ran | `GUARD BLOCKED` | compare again against the current baseline |
+| same | a path is absolute, drive-relative (`D:x`), escapes with `..`, starts with `-`, or on Windows contains `:` | `refused` | name a path inside the project |
 | `set_verdict { v: "pass" }` | the attempt's ownership guard did not clear, or an earlier attempt's violation is neither resolved nor waived | `REPOSITORY GUARD` | `user_override: true`, recorded as `guard_override` on each open violation |
 | same | a declared smoke plan or deliverable has no passing `live_smoke` for this attempt, or its digests moved | `SMOKE REQUIRED`, `DELIVERABLES` | `user_override: true`, recorded as `smoke` |
 | same | a file or test promised under `creates` still does not exist | `FORWARD CITATIONS UNMET` | none — create it |

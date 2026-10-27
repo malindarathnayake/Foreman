@@ -2,7 +2,7 @@ import fs from "fs/promises"
 import path from "path"
 import { changedPins, unitMovedAfter } from "./reviewPins.js"
 import { createHash } from "crypto"
-import type { RepoSnapshot, CapGrant, Delegation, DelegationGuard, EscapeClass, ForwardObligation, FrozenCheckpoint, GateEvidence, LedgerFile, Phase, PhaseReview, ReviewFinding, Unit, WriteLedgerInput } from "../types.js"
+import type { AuthorizationEvidence, OwnerGate, OwnerGateApproval, RepoSnapshot, CapGrant, Delegation, DelegationGuard, EscapeClass, ForwardObligation, FrozenCheckpoint, GateEvidence, LedgerFile, Phase, PhaseReview, ReviewFinding, Unit, WriteLedgerInput } from "../types.js"
 import type { HostId } from "./hostProfiles.js"
 import { detectTestFiles } from "./detectTestFiles.js"
 import { atomicWriteFile } from "./atomicWrite.js"
@@ -13,7 +13,7 @@ import {
   latestVerdictTs, reviewIncompleteness, isSuperseded, REVIEW_RETENTION, trimReviews,
   normalizedPaths, samePaths, workerDeltaBlocker, verificationIneligibility,
   prospectiveVerification, prospectiveWorkerDelta, MAX_DELTA_PER_BASELINE,
-  hasConfirmed, isFullyCurrent, seatCoverage, type Coverage,
+  effectiveSeverity, effectiveClassification, hasConfirmed, isFullyCurrent, seatCoverage, type Coverage,
 } from "./reviewPredicates.js"
 import {
   applyEscape, classifyEscape, classifyGate, commitIndependence, coveringGate, independenceDecision, recordGatePass, unclassifiedEscapes,
@@ -24,6 +24,7 @@ import { checkpointReach, readCheckpoint, reachMessage } from "./checkpoint.js"
 import type { ProbeRecord, SmokeReceipt } from "../types.js"
 import { unitContract, digestPaths, digestFile, digestReferences, referencePaths } from "./specContract.js"
 import { eventsPathFor } from "./foremanFiles.js"
+import { resolveWorkerSeat, workerModelMatches } from "./workerSeats.js"
 
 /** Receipts file access for one write: read on demand, consumption applied after the operation succeeds. */
 export interface ReceiptsAccess {
@@ -149,11 +150,7 @@ function ensurePhase(ledger: LedgerFile, phase: string): void {
 // separate checkpoints over weeks is not treated as one non-converging attempt series.
 export const ATTEMPT_CAP = 3
 
-/**
- * Total characters of fact text a single phase retains (0.6.26). The ledger is rewritten
- * whole on every write, so unbounded facts are a real cost; a budget across the store lets
- * one 8000-character incident record in without letting fifty of them in.
- */
+/** Historical display budget, retained for compatibility; fact history is never evicted. */
 export const PHASE_FACTS_BUDGET = 24_000
 
 /** Derives the scalars once for a unit written before v0.6.4. Never mutates rej[] or delegations[]. */
@@ -410,6 +407,63 @@ async function disciplineAdherenceGate(
 
 // ─── Apply mutation ───────────────────────────────────────────────────────────
 // Returns an optional warning string to surface in the tool result.
+type AuthorizationInput = { authority?: AuthorizationEvidence["authority"]; quote?: string; relayed_by?: string; override_fact_key?: string }
+
+function authorizationErrors(phase: Phase | undefined, data: AuthorizationInput, requireFact = true): string[] {
+  const errors: string[] = []
+  if (!data.authority) errors.push("AUTHORITY REQUIRED: data.authority must be direct, relayed, or standing_delegation (relayed also requires data.relayed_by).")
+  if (!data.quote?.trim()) errors.push("AUTHORITY REQUIRED: data.quote must contain the owner's authorization or standing delegation.")
+  if (data.authority === "relayed" && !data.relayed_by?.trim()) errors.push("AUTHORITY REQUIRED: relayed authorization requires data.relayed_by.")
+  if (data.authority && data.authority !== "relayed" && data.relayed_by) errors.push("AUTHORITY REQUIRED: data.relayed_by is accepted only with authority:'relayed'.")
+  const fact = data.override_fact_key ? phase?.facts?.filter((f) => f.key === data.override_fact_key).at(-1) : undefined
+  if ((requireFact || data.override_fact_key) && !fact) errors.push("OVERRIDE FACT REQUIRED: data.override_fact_key must name an existing record_fact in this phase containing the owner decision.")
+  return errors
+}
+
+function authorizationFor(phase: Phase | undefined, data: AuthorizationInput, requireFact = true): AuthorizationEvidence {
+  const errors = authorizationErrors(phase, data, requireFact)
+  if (errors.length) throw new Error(errors.join("\n"))
+  const fact = data.override_fact_key ? phase?.facts?.filter((f) => f.key === data.override_fact_key).at(-1) : undefined
+  return { authority: data.authority!, quote: data.quote!, ...(data.relayed_by ? { relayed_by: data.relayed_by } : {}),
+    ...(fact ? { override_fact_key: fact.key, fact_version: fact.version ?? 1, fact_text: fact.text } : {}) }
+}
+
+/** Collect independent input requirements before any ledger mutation. Policy gates still run below. */
+async function operationInputErrors(ledger: LedgerFile, operation: WriteLedgerInput, host: HostId, root: string): Promise<string[]> {
+  const phase = ledger.phases[operation.phase]
+  const errors = "user_override" in operation.data && operation.data.user_override === true
+    ? authorizationErrors(phase, operation.data, operation.operation !== "authorize_attempts") : []
+  if (operation.operation === "set_verdict" && operation.data.v === "pass") {
+    const data = operation.data
+    const unit = phase?.units[operation.unit_id]
+    const worker = unit?.delegations?.find((d) => d.attempt === unit.attempt_seq)
+    const supplied = data.worker_model !== undefined || data.model_evidence !== undefined
+    if (!worker && supplied) errors.push("WORKER MODEL: evidence must bind to the current worker delegation.")
+    if (worker) {
+      const required = worker.required_model === undefined ? (await resolveWorkerSeat(root, host, worker.tier)).model : worker.required_model
+      const model = supplied ? data.worker_model : worker.worker_model
+      const evidence = supplied ? data.model_evidence : worker.model_evidence
+      if (required || supplied) {
+        if (!model?.trim()) errors.push(`WORKER MODEL: data.worker_model is required${required ? `; tier ${worker.tier} requires ${required}` : ""}.`)
+        if (!evidence?.trim()) errors.push("WORKER MODEL: data.model_evidence is required (host report or transcript location and observed model).")
+        if (required && model && !workerModelMatches(required, model)) errors.push(`WORKER MODEL: tier ${worker.tier} requires ${required}; data.worker_model '${model}' does not match.`)
+      }
+    }
+  }
+  if (operation.operation === "set_owner_gate") {
+    const { data } = operation
+    const target = operation.unit_id ? phase?.units[operation.unit_id] : phase
+    const prior = target?.pending_owner_gates?.find((g) => g.id === data.id) ?? target?.owner_gate_history?.filter((g) => g.id === data.id).at(-1)
+    if (!data.description && !prior?.description) errors.push("OWNER GATE: registering a gate requires data.description.")
+    if (data.status === "failed" && !data.failure) errors.push("OWNER GATE: status:'failed' requires data.failure { stage, reason }; each supplied failure records one failure event.")
+    if (data.status === "approved") {
+      if (!data.decided_by) errors.push("OWNER GATE: approval requires data.decided_by.")
+      errors.push(...authorizationErrors(phase, data, false))
+    }
+  }
+  return errors
+}
+
 async function applyOperation(
   ledger: LedgerFile,
   operation: WriteLedgerInput,
@@ -463,9 +517,16 @@ async function applyOperation(
         // stores the text beside the hash it already computed, so a delegation may send the
         // RECEIPT ALONE and Foreman reads the text back. The hash is re-derived from the stored
         // text and must equal the receipt, so a tampered sidecar cannot smuggle a different brief.
+        if (data.brief_hash) {
+          if (data.preflight?.receipt && data.preflight.receipt !== data.brief_hash) throw new Error("PREFLIGHT RECEIPT: data.brief_hash and data.preflight.receipt disagree.")
+          if (!receipts?.preflightFile) throw new Error("PREFLIGHT RECEIPT: no preflight store is available.")
+          const record = await findPreflightAny(receipts.preflightFile, data.brief_hash, unit_id, phase)
+          if (!record || (record.status !== "pass" && !(data.user_override && record.reach_only))) throw new Error("PREFLIGHT RECEIPT: no current passing record for this phase, unit and data.brief_hash.")
+          data.preflight = { ...data.preflight, receipt: data.brief_hash, symbols_grepped: record.symbols, self_consistent: true }
+        }
         let briefText = data.brief
         if ((!briefText || briefText.trim().length < 20) && data.preflight?.receipt && receipts?.preflightFile) {
-          const stored = await findPreflight(receipts.preflightFile, data.preflight.receipt, unit_id, phase)
+          const stored = await findPreflightAny(receipts.preflightFile, data.preflight.receipt, unit_id, phase)
           if (stored?.brief && briefHash(stored.brief) === data.preflight.receipt) briefText = stored.brief
         }
         if (!briefText || briefText.trim().length < 20) {
@@ -511,7 +572,7 @@ async function applyOperation(
                   // edit, a re-wrap, a trimmed line, a smart quote.
                   : `PREFLIGHT RECEIPT: the brief text in this call differs from the one preflight_check hashed — it hashes to ${hash}, the receipt names ${data.preflight.receipt}. ` +
                     "Even one changed character (a re-wrap, a trimmed line, a substituted quote) produces a different hash. " +
-                    "Send the brief exactly as preflight_check saw it, or run preflight_check again on the brief you are actually delegating and use the brief_hash it returns."
+                    "Omit data.brief and send data.brief_hash to reuse the stored text, or run preflight_check again on the changed brief."
               )
             }
             let record = await findPreflight(receipts.preflightFile, hash, unit_id, phase)
@@ -644,6 +705,21 @@ async function applyOperation(
         // 0.6.19: a new attempt on a unit its gate still covers is a contradiction of that
         // gate. Recorded before the attempt is allocated, while the snapshot still matches.
         if (unit.v === "pass") applyEscape(ledger.phases[phase], unit_id, unit, "post_gate_attempt", now)
+        // 0.9.1 (field report 2026-10-12): a unit failed at the premium seat (opus) and was retried
+        // there six more times, because the only rule said "escalate on evidence" and nothing named
+        // a seat above premium. On every profile a rejected premium attempt now sends the next one to
+        // the frontier seat. Checked after the inline rejection so this write's finding counts.
+        const seat = await resolveWorkerSeat(receipts?.projectRoot ?? process.cwd(), host, data.tier)
+        if (!data.correction && data.user_override !== true && data.tier !== "frontier") {
+          const previous = unit.delegations?.at(-1)
+          if (previous?.tier === "premium" && previous.outcome === "rejected") {
+            throw new Error(
+              `TIER LADDER: unit '${unit_id}' attempt #${previous.attempt} failed at tier premium. The next attempt runs at the frontier seat: ` +
+              "use the configured frontier seat and record tier: 'frontier' (capability_check reports its model and any missing agent). " +
+              "Retrying below frontier needs the owner's decision: data.user_override: true."
+            )
+          }
+        }
         // D2a delegation cap, on server-authored counters since 0.6.4 (see
         // ensureAttemptState): two reviewers rejecting one attempt still fire it once.
         let allocated: { attempt: number; cap_grant_id?: number }
@@ -670,6 +746,7 @@ async function applyOperation(
         unit.delegations ??= []
         unit.delegations.push({
           brief: briefText,
+          required_model: seat.model ?? null,
           tier: data.tier,
           route_reason: data.route_reason,
           ts: now,
@@ -693,7 +770,7 @@ async function applyOperation(
           if (data.correction) {
             const prior = unit.delegations.find((x) => x.attempt === data.correction!.from_attempt)
             if (!prior?.guard || prior.guard.snapshot.root !== g.root || !samePaths(prior.guard.snapshot.allowed, g.allowed)) {
-              throw new Error("RANK CORRECTION: the new guard must preserve the previous repository root and frozen authorized file set.")
+              throw new Error("GUARD CORRECTION: the new guard must preserve the previous repository root and frozen authorized file set.")
             }
           }
           unit.delegations[unit.delegations.length - 1].guard = { snapshot: g, snapshot_ts: now }
@@ -751,6 +828,25 @@ async function applyOperation(
         }
         if (current.worker_id && current.worker_id !== data.worker_id) throw new Error("WORKER ID: an existing worker identity cannot be rebound.")
         current.worker_id = data.worker_id
+      }
+      const currentWorker = ledger.phases[phase].units[unit_id].delegations?.find((d) => d.attempt === ledger.phases[phase].units[unit_id].attempt_seq)
+      if (data.worker_model !== undefined || data.model_evidence !== undefined) {
+        if (!currentWorker) throw new Error("WORKER MODEL: evidence must bind to the current worker delegation.")
+        if (!data.worker_model || !data.model_evidence) throw new Error("WORKER MODEL: provide both data.worker_model and data.model_evidence (host report or transcript location and observed model).")
+        currentWorker.worker_model = data.worker_model
+        currentWorker.model_evidence = data.model_evidence
+      }
+      if (data.v === "pass") {
+        // Older attempts predate frozen model requirements. Resolve their declared tier
+        // once on upgrade; null on newer records explicitly means an unpinned seat.
+        if (currentWorker && currentWorker.required_model === undefined) {
+          currentWorker.required_model = (await resolveWorkerSeat(receipts?.projectRoot ?? process.cwd(), host, currentWorker.tier)).model ?? null
+        }
+        const pending = ledger.phases[phase].units[unit_id].pending_owner_gates ?? []
+        if (pending.length) throw new Error(`OWNER GATES PENDING: ${pending.map((g) => g.id).join(", ")}; record set_owner_gate status:'approved' with owner authority first.`)
+        if (currentWorker?.required_model && (!currentWorker.worker_model || !currentWorker.model_evidence || !workerModelMatches(currentWorker.required_model, currentWorker.worker_model))) {
+          throw new Error(`WORKER MODEL: tier ${currentWorker.tier} requires ${currentWorker.required_model}; set_verdict pass needs data.worker_model and data.model_evidence confirming that model.`)
+        }
       }
       // Pass verdict requires prior delegation — cannot skip the worker pattern
       if (data.v === "pass") {
@@ -851,7 +947,7 @@ async function applyOperation(
                   : "no comparison was recorded after the worker returned"
               throw new Error(
                 `REPOSITORY GUARD: unit '${unit_id}' attempt #${unit.attempt_seq} has a repository snapshot but ${detail}. ` +
-                "Run repo_guard { operation: 'compare', phase, unit_id, allowed_files } after the worker returns and before the verdict. " +
+                "Run repo_guard { operation: 'compare', phase, unit_id } after the worker returns and before the tests and the verdict (compare takes no allowed_files: the authorized set is frozen on the baseline). " +
                 "A violation is a hard stop: preserve the evidence and escalate to the owner — do not attempt automatic recovery. " +
                 "data.user_override: true records the waiver on the delegation as guard_override."
               )
@@ -1135,6 +1231,8 @@ async function applyOperation(
       // Gate pass requires every unit in the phase to carry a pass verdict
       if (data.g === "pass") {
         const units = ledger.phases[phase].units
+        const ownerGates = [...(ledger.phases[phase].pending_owner_gates ?? []), ...Object.values(units).flatMap((u) => u.pending_owner_gates ?? [])]
+        if (ownerGates.length) throw new Error(`OWNER GATES PENDING: ${ownerGates.map((g) => g.id).join(", ")}; record set_owner_gate status:'approved' with owner authority before passing the phase.`)
         const unitIds = Object.keys(units)
         // Declared-unit coverage first: a declared id with no registered unit is a
         // partially-implemented phase, not a passable one. Sequenced before the
@@ -1292,10 +1390,10 @@ async function applyOperation(
           }
           const describe = (r: PhaseReview, f: ReviewFinding) => `${r.advisor}: ${(f.file || "?").slice(0, 120)}:${f.line || "?"} ${f.description.slice(0, 80)}`
           const confirmed = participating.flatMap((r) =>
-            r.findings.filter((f) => f.classification === "confirmed" && f.severity !== "low" && live(r, f)).map((f) => describe(r, f))
+            r.findings.filter((f) => effectiveClassification(f) === "confirmed" && effectiveSeverity(f) !== "low" && live(r, f)).map((f) => describe(r, f))
           )
           const advisoryLow = participating.flatMap((r) =>
-            r.findings.filter((f) => f.classification === "confirmed" && f.severity === "low" && live(r, f)).map((f) => describe(r, f))
+            r.findings.filter((f) => effectiveClassification(f) === "confirmed" && effectiveSeverity(f) === "low" && live(r, f)).map((f) => describe(r, f))
           )
           if (advisoryLow.length > 0) {
             gatePhase.advisory_findings = { ts: new Date().toISOString(), findings: advisoryLow.slice(0, 20) }
@@ -1537,7 +1635,10 @@ async function applyOperation(
           )
         }
       }
-      const reviewTs = new Date().toISOString()   // per-review timestamp, distinct from the file ts
+      for (const f of data.findings) {
+        if ((f.final_severity !== undefined || (f.verifier_severity && f.verifier_severity !== f.severity)) && !f.decided_by) throw new Error("FINDING DECISION: severity decisions or disagreements require data.findings[].decided_by.")
+      }
+      const reviewTs = new Date(Math.max(Date.now(), ...(p.reviews ?? []).map((r) => Date.parse(r.ts) + 1).filter(Number.isFinite))).toISOString()
       // 0.6.19 (slice 4): a seat receipt binds this record to one Foreman-launched advisor
       // run. Every check reads the receipts file Foreman wrote, never the record's text.
       let provenance: PhaseReview["provenance"]
@@ -1657,7 +1758,7 @@ async function applyOperation(
         completion: data.completion,
         checked: data.checked,
         limitations: data.stage === "native"
-          ? `Native Codex subagents; same-provider review, not cross-vendor independence.${data.limitations ? ` ${data.limitations}` : ""}`
+          ? `Native ${host} subagents; same-provider review, not cross-vendor independence.${data.limitations ? ` ${data.limitations}` : ""}`
           : data.limitations,
         stage: data.stage,
         // 0.6.19: presence of basis_version is the legacy switch for the independence bound.
@@ -1677,12 +1778,7 @@ async function applyOperation(
       })
       // Round 6: bounded history that never evicts a record the gate is blocking on.
       p.reviews = trimReviews(p.reviews, p)
-      if (scope !== undefined) {
-        const rest = Object.keys(p.units).filter((id) => !scope!.includes(id)).sort()
-        const note = `REVIEW SCOPE: record covers ${scope.length} of ${Object.keys(p.units).length} unit(s)` +
-          (rest.length > 0 ? `; not covered by this record: ${rest.slice(0, 10).join(", ")}${rest.length > 10 ? ` (+${rest.length - 10} more)` : ""}` : "") + "."
-        warning = warning ? `${warning} | ${note}` : note
-      }
+      // Scope completeness is evaluated at the gate, across all participating records.
       return warning
     }
     case "record_escape": {
@@ -1714,6 +1810,63 @@ async function applyOperation(
         `ESCAPE BLOCKED: no unclassified escape on '${unit_id}'; pass data.source:'later' to record an out-of-band defect on a gated unit.`
       )
     }
+    case "adjudicate_finding": {
+      const { phase, data } = operation
+      const p = ledger.phases[phase]
+      const matches = p?.reviews?.filter((r) => r.ts === data.review_ts) ?? []
+      if (matches.length !== 1) throw new Error("ADJUDICATION BLOCKED: review_ts must identify exactly one retained review in this phase.")
+      const f = matches[0].findings[data.finding_index]
+      if (!f) throw new Error("ADJUDICATION BLOCKED: finding_index is a zero-based index in that review's findings.")
+      if (data.severity === undefined && data.classification === undefined) throw new Error("ADJUDICATION BLOCKED: supply severity or classification.")
+      const { review_ts: _review, finding_index: _index, ...decision } = data
+      ;(f.adjudications ??= []).push({ ts: new Date().toISOString(), ...decision })
+      p.g = "pending"
+      p.s = "ip"
+      return `finding ${data.finding_index} adjudicated: ${effectiveSeverity(f)} / ${effectiveClassification(f)}; original finding retained`
+    }
+    case "record_launch": {
+      const { phase, unit_id, data } = operation
+      const u = ledger.phases[phase]?.units[unit_id]
+      if (!u) throw new Error("LAUNCH BLOCKED: register the unit before recording a launch.")
+      if (u.delegations?.some((d) => d.worker_id === data.worker_id)) throw new Error("LAUNCH BLOCKED: worker_id already belongs to an attempt; use close_attempt for recorded work.")
+      if (u.launches?.some((l) => l.worker_id === data.worker_id)) throw new Error("LAUNCH BLOCKED: this worker launch is already recorded.")
+      ;(u.launches ??= []).push({ ts: new Date().toISOString(), ...data })
+      return "aborted_no_work launch recorded; no attempt or grant consumed and no verdict changed"
+    }
+    case "set_owner_gate": {
+      const { phase, data } = operation
+      ensurePhase(ledger, phase)
+      const p = ledger.phases[phase]
+      const target = operation.unit_id ? p.units[operation.unit_id] : p
+      if (!target) throw new Error("OWNER GATE: unit is not registered in this phase.")
+      const open = target.pending_owner_gates?.find((g) => g.id === data.id)
+      const prior = open ?? target.owner_gate_history?.filter((g) => g.id === data.id).at(-1)
+      // 0.9.4: approval may register the gate in the same call; re-approving a closed gate is refused.
+      if (data.status === "approved" && !open && prior?.status === "approved") throw new Error(`OWNER GATE: '${data.id}' is already approved; reopen it with status 'pending' or 'in_progress' first.`)
+      if (data.status === "approved" && !data.decided_by) throw new Error("OWNER GATE: approval requires data.decided_by.")
+      const description = data.description ?? prior?.description
+      if (!description) throw new Error("OWNER GATE: pending gates require data.description.")
+      const now = new Date().toISOString()
+      const failureCount = (prior?.failure_count ?? 0) + (data.failure ? 1 : 0)
+      const lastFailure = data.failure ? { ts: now, ...data.failure } : prior?.last_failure
+      const priorApproval: OwnerGateApproval | undefined = prior?.approval
+        ?? (prior?.status === "approved" && prior.decided_by && prior.authorization ? { ts: prior.ts, decided_by: prior.decided_by, authorization: prior.authorization } : undefined)
+      const approval = data.status === "approved" ? { ts: now, decided_by: data.decided_by!, authorization: authorizationFor(p, data, false) } : priorApproval
+      const gate: OwnerGate = { id: data.id, description, status: data.status, ts: now,
+        stage: data.stage ?? (data.status === "failed" ? data.failure?.stage : undefined) ?? prior?.stage,
+        note: data.note ?? prior?.note,
+        failure_count: failureCount,
+        ...(lastFailure ? { last_failure: lastFailure } : {}),
+        ...(data.decided_by ? { decided_by: data.decided_by } : {}),
+        ...(data.status === "approved" ? { authorization: approval!.authorization } : {}),
+        ...(approval ? { approval } : {}) }
+      ;(target.owner_gate_history ??= []).push(gate)
+      target.pending_owner_gates = (target.pending_owner_gates ?? []).filter((g) => g.id !== data.id)
+      if (data.status !== "approved") target.pending_owner_gates.push(gate)
+      p.g = "pending"
+      p.s = "ip"
+      return `owner gate '${data.id}' ${data.status}; failures: ${failureCount}${lastFailure ? ` (last at ${lastFailure.stage})` : ""}`
+    }
     case "close_attempt": {
       // 0.6.21: a non-failure ending, labelled once, bound to an explicit attempt. Orthogonal
       // to attempt ids, epoch_failed, needs_attempt, the cap, the guard and the verdict.
@@ -1732,26 +1885,13 @@ async function applyOperation(
       return `attempt #${data.attempt} closed as ${data.outcome} (lifetime ${counts}); attempt ids, the failure cap and needs_attempt are unchanged`
     }
     case "record_fact": {
-      // 0.6.20: bounded per-phase facts, newest last; the same key replaces its older entry.
       const { phase, data } = operation
       ensurePhase(ledger, phase)
       const p = ledger.phases[phase]
-      p.facts = (p.facts ?? []).filter((f) => f.key !== data.key)
-      p.facts.push({ ts: new Date().toISOString(), key: data.key, text: data.text, ...(data.source ? { source: data.source } : {}) })
-      if (p.facts.length > 50) p.facts = p.facts.slice(-50)
-      // 0.6.26 (field report 2026-09-11): the per-fact cap used to bite hardest on the fact
-      // most worth keeping — an incident record. The cap is now on the store, not the entry:
-      // one long fact is allowed, and it is paid for by evicting the oldest facts rather than
-      // by truncating the text. Newest wins, which is what an incident needs.
-      let evicted = 0
-      const bytesOf = (f: { text: string; key: string; source?: string }) => f.text.length + f.key.length + (f.source?.length ?? 0)
-      while (p.facts.length > 1 && p.facts.reduce((n, f) => n + bytesOf(f), 0) > PHASE_FACTS_BUDGET) {
-        p.facts.shift()
-        evicted++
-      }
-      return `fact '${data.key}' recorded on phase '${phase}' (${p.facts.length}/50)` +
-        (evicted > 0 ? `; ${evicted} older fact(s) evicted to stay inside the ${PHASE_FACTS_BUDGET}-character phase budget` : "") +
-        '; read_ledger { query: "facts", phase } lists them'
+      p.facts ??= []
+      const version = p.facts.filter((f) => f.key === data.key).reduce((v, f) => Math.max(v, f.version ?? 1), 0) + 1
+      p.facts.push({ ts: new Date().toISOString(), ...data, version })
+      return `fact '${data.key}' version ${version} recorded; prior versions retained. read_ledger query:'facts' shows latest; include_history:true shows all versions.`
     }
     case "authorize_attempts": {
       const { phase, unit_id, data } = operation
@@ -1789,6 +1929,7 @@ async function applyOperation(
         remaining: data.attempts,
         consumed: [],
         reason: data.reason,
+        authorization: authorizationFor(ledger.phases[phase], data, false),
       })
       if (unit.cap_grants.length > 20) unit.cap_grants = unit.cap_grants.slice(-20)
       return (
@@ -1841,7 +1982,16 @@ export async function writeLedger(
       sidecarReader ??
       (async () => (await readEvents(eventsPathFor(filePath))).events)
 
+    const inputErrors = await operationInputErrors(ledger, operation, host, receipts?.projectRoot ?? context?.projectRoot ?? process.cwd())
+    if (inputErrors.length) throw new Error(inputErrors.join("\n"))
+    const auth = "user_override" in operation.data && operation.data.user_override === true
+      ? authorizationFor(ledger.phases[operation.phase], operation.data, operation.operation !== "authorize_attempts") : undefined
     let warning = await applyOperation(ledger, operation, reader, host, modelRank, receipts)
+    if (auth) {
+      const unitId = "unit_id" in operation ? operation.unit_id : undefined
+      ;(ledger.phases[operation.phase].authorizations ??= []).push({ ...auth, ts: new Date().toISOString(), operation: operation.operation,
+        ...(unitId ? { unit_id: unitId, attempt: ledger.phases[operation.phase].units[unitId]?.attempt_seq } : {}) })
+    }
     // 0.6.19: a bound receipt is spent in the receipts file BEFORE the ledger is written:
     // a torn state loses a receipt, never double-spends one. [CWE-345]
     for (const c of receipts?.consumed ?? []) await appendConsumed(receiptsFile!, c.id, c.phase, c.review_ts, c.reclaimed)
@@ -1879,6 +2029,10 @@ export async function recordRepoGuard(
   unitId: string,
   patch: DelegationGuard | {
     result: "ok" | "violation"; violations?: string[]; violation_paths?: string[]; damaged?: string[]; baseline_hash?: string
+    /** 0.7.0: the attempt the comparison started for; a mismatch is refused. */
+    expected_attempt?: number
+    /** 0.7.0: informational count of authorized paths that changed (see DelegationGuard.edited). */
+    edited?: number
     /** 0.6.34: earlier attempts whose violation this comparison found restored. */
     resolves?: number[]
   }
@@ -1914,7 +2068,7 @@ export async function recordRepoGuard(
         const prior = delegations.find((d) => d.attempt === latest.correction?.from_attempt)
         if (!prior?.guard || prior.guard.snapshot.root !== patch.snapshot.root ||
           !samePaths(prior.guard.snapshot.allowed, patch.snapshot.allowed)) {
-          throw new Error("RANK CORRECTION: the new guard must preserve the previous repository root and frozen authorized file set.")
+          throw new Error("GUARD CORRECTION: the new guard must preserve the previous repository root and frozen authorized file set.")
         }
       }
       // 0.6.22: acquire the repository window. Another unit's open window refuses the baseline.
@@ -1941,7 +2095,14 @@ export async function recordRepoGuard(
           "the attempt advanced during the comparison. Compare again against the current baseline."
         )
       }
-      const { baseline_hash: _bound, resolves, ...guardPatch } = patch
+      const attemptNow = unit.attempt_seq ?? latest.attempt
+      if (patch.expected_attempt !== undefined && patch.expected_attempt !== attemptNow) {
+        throw new Error(
+          `GUARD BLOCKED: this comparison started for unit '${unitId}' attempt #${patch.expected_attempt} but the unit is now on attempt #${attemptNow}; ` +
+          "the attempt advanced during the comparison. Compare again against the current baseline."
+        )
+      }
+      const { baseline_hash: _bound, expected_attempt: _for, resolves, ...guardPatch } = patch
       latest.guard = { ...latest.guard, ...guardPatch, checked_ts: new Date().toISOString() }
       // 0.6.34: resolution is recorded only on an earlier, still-open violation; the caller's
       // list cannot clear a guard that is overridden, already resolved, or not a violation.
@@ -2041,3 +2202,18 @@ export async function recordSmoke(filePath: string, phase: string, unitId: strin
   })
 }
 export type { SmokeReceipt }
+
+/**
+ * 0.7.0 (Codex review): run a project write only while no worker holds the repository window,
+ * with the check and the write under the ledger lock that delegations take — so a window cannot
+ * open between the check and the write. Used by project_changelog.
+ */
+export async function whileWindowClosed<T>(filePath: string, fn: () => Promise<T>): Promise<{ value: T } | { refused: string }> {
+  return withLedgerLock(filePath, async () => {
+    const read = await readLedgerWithStatus(filePath, { readOnly: true })
+    if (read.corrupt) return { refused: "the ledger could not be read (corrupt); not writing while the repository window is unknown" }
+    const w = read.ledger.window
+    if (w) return { refused: `unit '${w.unit_id}' in phase '${w.phase}' holds the repository window; a write now would be charged to that attempt` }
+    return { value: await fn() }
+  })
+}

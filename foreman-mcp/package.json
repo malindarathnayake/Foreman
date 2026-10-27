@@ -1,6 +1,6 @@
 {
   "name": "@malindarathnayake/foreman-mcp",
-  "version": "0.6.39",
+  "version": "0.9.4",
   "description": "Foreman MCP server — workflow orchestrator for planning and implementation skills",
   "type": "module",
   "main": "dist/server.js",
@@ -17,7 +17,7 @@
     "url": "git+https://github.com/malindarathnayake/foreman.git"
   },
   "engines": {
-    "node": ">=22"
+    "node": "^22.23.4 || ^24.22.1 || >=26.12.1"
   },
   "license": "Apache-2.0",
   "publishConfig": {
@@ -31,9 +31,9 @@
     "start": "node dist/server.js"
   },
   "dependencies": {
-    "@modelcontextprotocol/server": "^2.0.0",
+    "@modelcontextprotocol/server": "^2.4.0",
     "context-crush": "file:vendor/context-crush",
-    "zod": "^4.5.2"
+    "zod": "^4.6.6"
   },
   "bundleDependencies": [
     "@modelcontextprotocol/server",
@@ -41,7 +41,7 @@
     "context-crush"
   ],
   "devDependencies": {
-    "@modelcontextprotocol/client": "^2.0.0",
+    "@modelcontextprotocol/client": "^2.4.0",
     "@types/node": "^22.0.0",
     "typescript": "^5.8.0",
     "vitest": "^3.2.0"

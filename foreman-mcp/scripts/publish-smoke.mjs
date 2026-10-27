@@ -51,6 +51,7 @@ export const EXPECTED_TOOLS = [
   "bundle_status",
   "host_status",
   "changelog",
+  "project_changelog",
   "ethos",
   "read_ledger",
   "read_progress",
@@ -87,6 +88,15 @@ export const EXPECTED_TOOLS = [
 ]
 
 const JSONRPC_TIMEOUT_MS = 60_000
+
+// 0.8.0 (2026-10-07): the default list remains Claude Code; host-only tools are explicit.
+export function expectedToolsForHost(host) {
+  if (host === "claude-code") return [...EXPECTED_TOOLS]
+  const common = EXPECTED_TOOLS.filter((name) => !["claude_agents_init", "claude_workflows_init"].includes(name))
+  if (host === "codex") return [...common, "codex_agents_init", "workflow"]
+  if (host === "cursor") return [...common, "cursor_agents_init", "workflow"]
+  return common
+}
 
 function log(message) {
   console.log(`[publish-smoke] ${message}`)
@@ -199,7 +209,19 @@ function runToolsListCheck(shimPath, cwd, env) {
         send("tools/call", { name: "ethos", arguments: {} }, 4)
       } else if (message.id === 4 && message.result) {
         ethosResult = message.result
-        finish(resolve, { initializeResult, toolsListResult, activationResult, ethosResult })
+        if (env.FOREMAN_HOST === "codex" || env.FOREMAN_HOST === "cursor") {
+          send("tools/call", { name: "workflow", arguments: { name: "foreman-design-panel", args: { question: "Should a diagnostic cache have a fixed bound?", stances: ["simplicity"] } } }, 5)
+        } else {
+          finish(resolve, { initializeResult, toolsListResult, activationResult, ethosResult })
+        }
+      } else if (message.id === 5 && message.result) {
+        const workflowResult = message.result
+        const body = workflowResult?.content?.[0]?.text ?? ""
+        if (workflowResult.isError || !body.includes("1. Confirm foreman-design-panel") || !body.includes("Result schema:")) {
+          finish(reject, new Error("Installed workflow procedure did not render: " + body.slice(0, 400)))
+        } else {
+          finish(resolve, { initializeResult, toolsListResult, activationResult, ethosResult, workflowResult })
+        }
       } else if (message.id !== undefined && message.error) {
         finish(reject, new Error(`Server returned a JSON-RPC error: ${JSON.stringify(message.error)}`))
       }
@@ -333,6 +355,14 @@ async function main() {
     }
 
     log(`tools/list matched all ${expectedNames.length} expected tools`)
+
+    for (const host of ["codex", "cursor", "generic"]) {
+      const check = await runToolsListCheck(shimPath, runCwd, { ...childEnv, FOREMAN_HOST: host })
+      const names = check.toolsListResult.tools.map((tool) => tool.name).sort()
+      const expected = expectedToolsForHost(host).sort()
+      if (JSON.stringify(names) !== JSON.stringify(expected)) throw new Error(`Installed ${host} tool registry drifted`)
+      log(`${host}: ${names.length} tools matched${host === "generic" ? "; workflow absent" : "; workflow procedure rendered"}`)
+    }
 
     // ── R3: the runtime reads Markdown and assets from the package at run time ──
     const activationText = activationResult?.content?.[0]?.text ?? ""

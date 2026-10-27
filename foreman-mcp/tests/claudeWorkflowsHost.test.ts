@@ -26,8 +26,8 @@ async function tools(host: HostId, dir: string): Promise<string[]> {
   return (await client.listTools()).tools.map((t) => t.name)
 }
 
-describe("saved workflows are a Claude Code surface only", () => {
-  it("the claude-code preamble names the hook, the confirmation, and the fan-not-seat rule; other hosts say there is no surface", () => {
+describe("saved workflow host routing", () => {
+  it("keeps Claude scripts, adds native procedures on Codex/Cursor and leaves generic unsupported", () => {
     const cc = hostRuntimePreamble("claude-code")
     expect(cc).toContain("**Workflows:**")
     expect(cc).toContain("claude_workflows_init")
@@ -37,9 +37,15 @@ describe("saved workflows are a Claude Code surface only", () => {
     expect(cc).toContain("Never implement inside a workflow")
     for (const host of KNOWN_HOSTS.filter((h) => h !== "claude-code")) {
       const text = hostRuntimePreamble(host)
-      expect(text, host).toContain("**Workflows:** No saved-workflow surface on this host")
       expect(text, host).not.toContain("claude_workflows_init")
-      expect(getProfile(host).placeholders.workflows).not.toContain("foreman-")
+      if (host === "generic") {
+        expect(text).toContain("**Workflows:** No saved-workflow surface on this host")
+        expect(getProfile(host).placeholders.workflows).not.toContain("foreman-")
+      } else {
+        expect(text).toContain("workflow mode:'describe'")
+        expect(text).toContain("Confirm the workflow, phases and agent count")
+        expect(text).toContain("stage:'fan', never a gate seat")
+      }
     }
   })
   it("host_status reports the surface on claude-code only", () => {

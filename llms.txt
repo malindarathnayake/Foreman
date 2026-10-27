@@ -8,7 +8,7 @@ or routing policy. It orchestrates protocols, records state, and refuses invalid
 transitions (a unit cannot pass without a recorded delegation; a phase cannot
 pass while any unit is not `pass`).
 
-Package: `@malindarathnayake/foreman-mcp` · Version: `0.6.33` · Runtime: Node.js `>=22`
+Package: `@malindarathnayake/foreman-mcp` · Version: `0.9.4` · Runtime: Node.js `^22.23.4 || ^24.22.1 || >=26.12.1`
 
 This file is written for an AI agent that just connected to the server. It is
 an operating packet, not a feature list — read the whole thing before your
@@ -16,11 +16,12 @@ first tool call.
 
 ## 1. Public tool surface (contract)
 
-Tool count: 36
+Tool count: 37
 
 - bundle_status — Returns the Foreman bundle version and override info.
 - host_status — Returns the active Foreman host and the model slugs used for worker/advisor invocation.
 - changelog — Returns the Foreman changelog, optionally since a version.
+- project_changelog — Keeps the repository's root CHANGELOG.md in Keep a Changelog 1.1.0 format: check, init, release, notes.
 - ethos — Serves the canonical engineering-ethos document (proportionality tiers, three pillars, review checklist), rendered with the active stack profile.
 - read_ledger — Reads bounded Foreman ledger slices; tabular queries support phase/verdict filters plus cursor/limit pagination, and oversized full reads fail with recovery guidance. `query: "reconstruct"` builds a read-only recovery worksheet from the append-only sidecars after a ledger loss: units and attempts they attest, what the ledger is missing, which seat receipts are reclaimable. It writes nothing.
 - read_progress — Reads the planning checklist. It is descriptive only; `session_orient` is the resume authority.

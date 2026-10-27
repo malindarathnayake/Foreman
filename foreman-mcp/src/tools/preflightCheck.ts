@@ -18,10 +18,11 @@ import fs from "fs/promises"
 import path from "path"
 import { z } from "zod"
 import {
-  appendPreflight, briefHash, checkCitations, consistencyFlags, directiveCoverage, extractDirective, missingSymbols, normalizeObligations, ownershipSweep,
+  appendPreflight, briefHash, checkCitations, specNamedTestSymbols, consistencyFlags, directiveCoverage, extractDirective, missingSymbols, normalizeObligations, ownershipSweep,
   PREFLIGHT_POLICY_VERSION, type PreflightRecord,
 } from "../lib/preflight.js"
-import { absenceMessage, checkpointReach, lookupCheckpoint, reachMessage } from "../lib/checkpoint.js"
+import { absenceMessage, checkpointReach, lookupCheckpoint, parseClauses, reachMessage } from "../lib/checkpoint.js"
+import { ALLOWLIST_HINT, getAllowedRunners } from "./runTests.js"
 export { extractDirective }
 import { toKeyValue, toTable } from "../lib/toon.js"
 import { readLedgerWithStatus } from "../lib/ledger.js"
@@ -118,11 +119,19 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
   let reachOmitted = false
   let reachKind: "ok" | "omitted" | "unknown" | "none" = "none"
   let checkpointSha: string | undefined
+  // 0.7.1 (field report 2026-10-05): a `python scripts/...` checkpoint surfaced only at the
+  // verdict, when run_tests refused it. Name each clause run_tests would refuse at planning
+  // time. Advisory: a runner can be allowed without a spec change.
+  let refusedRunners: string[] = []
   if (specPath) {
     const { def, absence } = await lookupCheckpoint(specPath, input.unit_id)
     if (absence) reachStatus = absenceMessage(absence, specPath, input.unit_id)
     if (def) {
       checkpointSha = def.digest
+      const allowed = getAllowedRunners()
+      refusedRunners = [...new Set(def.commands.flatMap(parseClauses)
+        .map((c) => c.raw.trim().split(/\s+/)[0] ?? "")
+        .filter((r) => r && !/[\\/]/.test(r) && !allowed.includes(r)))]
       const scope = [...new Set([...def.files, ...input.files.map((f) => f.replace(/\\/g, "/").replace(/^\.\//, ""))])]
       const reach = await checkpointReach(root, def, scope)
       reachKind = reach.status
@@ -184,7 +193,11 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
   }
   const flags = consistencyFlags(input.brief)
   const forward = normalizeObligations(input.creates)
-  const cites = await checkCitations(root, input.brief, forward, input.files)
+  // 0.7.0: only the SERVER's spec can exempt a test-shaped name (never a caller-chosen spec_path
+  // or directive); when it cannot be read, nothing is exempt.
+  let serverSpec = ""
+  if (specPath) { try { serverSpec = await fs.readFile(specPath, "utf-8") } catch { serverSpec = "" } }
+  const cites = await checkCitations(root, input.brief, forward, input.files, specNamedTestSymbols(input.symbols, serverSpec))
   const dead = cites.filter((c) => c.status === "dead")
   const drifted = cites.filter((c) => c.status === "drifted")
   const promised = cites.filter((c) => c.status === "forward")
@@ -215,6 +228,7 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
     dead_citations: dead.length,
     forward_citations: promised.length,
     checkpoint_reach: reachStatus,
+    ...(refusedRunners.length ? { checkpoint_runners_refused: refusedRunners.join(",") } : {}),
     contract: contractStatus,
     drifted_citations: drifted.length,
     directive_sentences: coverage.sentences,
@@ -225,7 +239,7 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
     ownership_outside_declared_files: ownership.outside.length,
     ownership_scanned: `${ownership.scanned}${ownership.truncated ? " (truncated)" : ""}`,
     next: status === "pass"
-      ? "Record the delegation with preflight: { receipt: brief_hash, symbols_grepped: <the array>, self_consistent: true } after reading the advisories below; the ledger checks the receipt against this record."
+      ? "Record the delegation with data: { s: 'delegated', brief_hash: <this brief_hash> } after reading the advisories below. Omit brief: the stored text and preflight attestation are reused and checked for this phase and unit."
       : "Fix the brief (missing symbols, dead citations" + (probeMissing ? "; register the unit's foreman-contract block and run contract_probe for each claim" : "") + (reachOmitted ? "; widen the spec's Test line or narrow its Files so the checkpoint selects every authorized package" : "") + ") and run preflight_check again; the ledger refuses a delegation without a passing record for the brief it carries" + (reachOmitted && !otherFailure ? " (reach is the only failure here: the owner may delegate with user_override, recorded as reach_override)" : "") + ".",
   })
   const sections: string[] = [head]
@@ -234,6 +248,7 @@ export async function preflightCheck(raw: PreflightCheckInput, preflightFile: st
   if (drifted.length) sections.push(`\nDRIFTED CITATIONS (advisory: fix the line before the worker reads it)\n${toTable(["citation", "kind", "detail"], drifted.map((c) => [c.raw, c.kind, c.detail]))}`)
   if (promised.length) sections.push(`\nFORWARD CITATIONS (promised under creates; the pass verdict refuses until each file exists and each test is declared in it)\n${toTable(["citation", "kind", "detail"], promised.map((c) => [c.raw, c.kind, c.detail]))}`)
   if (correcting === undefined && coverage.uncovered.length) sections.push(`\nDIRECTIVE SENTENCES WITH NO ECHO IN THE BRIEF (advisory: each is an omission or a paraphrase that dropped its identifiers)\n${coverage.uncovered.slice(0, 40).map((s) => `- ${s}`).join("\n")}`)
+  if (refusedRunners.length) sections.push(`\nCHECKPOINT RUNNERS run_tests WOULD REFUSE (advisory: the verdict would rest on a shell run with no Foreman receipt)\n${refusedRunners.map((r) => `- ${r}`).join("\n")}\n${ALLOWLIST_HINT}, or change the spec's Test line to an allowed runner`)
   if (flags.length) sections.push(`\nCONTRADICTION MARKERS (advisory)\n${flags.map((f) => `- ${f.kind}: ${f.detail}`).join("\n")}`)
   if (ownership.outside.length) sections.push(`\nFILES OUTSIDE THE DECLARED SET THAT REFERENCE THE TYPE (advisory: at_risk = dispatch site with a default arm and no introduced member named; present = the member is already handled there)\n${toTable(["file", "status", "references", "members_present", "dispatch", "default_arm"], ownership.outside.map((h) => [h.file, h.status, h.references.join(" "), h.members_present.join(" ") || "-", String(h.dispatch), String(h.default_arm)]))}`)
   return sections.join("\n")

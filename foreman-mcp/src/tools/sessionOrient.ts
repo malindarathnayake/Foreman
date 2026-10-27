@@ -2,7 +2,7 @@ import { ATTEMPT_CAP, computeGateUnitsHash, readLedgerWithStatus } from "../lib/
 import { readProgress } from "../lib/progress.js"
 import { toKeyValue } from "../lib/toon.js"
 import { naturalSort } from "../lib/naturalSort.js"
-import type { Phase, ProgressFile, Unit } from "../types.js"
+import type { OwnerGate, Phase, ProgressFile, Unit } from "../types.js"
 import type { HostId } from "../lib/hostProfiles.js"
 import { unsupportedCapabilities } from "../lib/capabilitySet.js"
 import { modelRankSummary, resolveModelRank, type ModelRank } from "../lib/modelRank.js"
@@ -10,11 +10,29 @@ import { applySessionHygiene, hygieneForOrient } from "../lib/sessionHygiene.js"
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
+function ownerGateHint(phase: string): string {
+  return `Register each live gate with write_ledger({operation:'set_owner_gate',phase:${JSON.stringify(phase)},data:{id:'B1',description:'Owner approval for the live run',status:'pending'}}); repeat for B2. Add unit_id for a unit gate. Update status:'in_progress' with stage/note; failure:{stage:'Deploy',reason:'...'} records one failure and is retained across retries. Approval needs status:'approved', decided_by, authority and quote (relayed also needs relayed_by) and may register the gate in the same call; a reopened gate keeps its approval.`
+}
+
+function describeOwnerGate(gate: OwnerGate): string {
+  const state = gate.status === "in_progress" ? "in progress" : gate.status
+  const failures = gate.failure_count ? `failed ${gate.failure_count === 1 ? "once" : `${gate.failure_count} times`}${gate.last_failure ? ` at ${gate.last_failure.stage}` : ""}` : undefined
+  const a = gate.approval
+  const quote = a ? (a.authorization.quote.length > 120 ? `${a.authorization.quote.slice(0, 117)}...` : a.authorization.quote) : ""
+  const approved = a ? `; approved by ${a.decided_by} (${a.authorization.authority}${a.authorization.relayed_by ? ` via ${a.authorization.relayed_by}` : ""}, ${a.ts}): "${quote}"` : ""
+  return `${[state, failures].filter(Boolean).join(", ")} — ${gate.description}${gate.stage ? `; stage: ${gate.stage}` : ""}${gate.note ? `; ${gate.note}` : ""}${gate.last_failure ? `; last failure: ${gate.last_failure.reason}` : ""}${approved}`
+}
+
+/** Only a pending gate waits on the owner; in-progress and failed gates are the agent's work and do not replace the next action. */
+function awaitsOwner(gate: OwnerGate): boolean {
+  return gate.status === "pending"
+}
+
 function isPhaseDone(phase: Phase): boolean {
   // A phase is "done" when its gate has passed.
   // (Phase.s is "ip" by default and rarely transitions to "done" in practice;
   //  gate result is the authoritative completion signal.)
-  return phase.g === "pass"
+  return phase.g === "pass" && !(phase.pending_owner_gates?.length) && !Object.values(phase.units).some((u) => u.pending_owner_gates?.length)
 }
 
 function unitHasActiveRejections(unit: Unit): boolean {
@@ -92,6 +110,8 @@ export async function readSessionState(
       stale_gates: "none",
       state_drift: progressTarget ? `progress:${progressTarget};ledger:no_phases` : "none",
       progress_advisories: "none",
+      pending_owner_gates: "none",
+      owner_gates_hint: ownerGateHint("<phase>"),
       attempt_grants: "none",
       missing_declared_units: "none",
     } }
@@ -212,7 +232,7 @@ export async function readSessionState(
   // stale one for an earlier unit, and no write could clear it. Drift now blocks only on
   // a contradiction the file cannot honestly hold: a unit marked complete that the ledger
   // has not passed (declared-but-unregistered counts as not passed). Everything else is
-  // an advisory: stale (open in progress, passed in the ledger), ahead (open, later than
+  // an advisory: stale (open in progress, passed in the ledger), seeded_not_started (open, later than
   // the target), orphan (not a ledger unit at all).
   const contradictions: string[] = []
   const stale: string[] = []
@@ -246,7 +266,7 @@ export async function readSessionState(
       ? null
       : `${label}:${naturalSort(list).slice(0, 5).join(",")}${list.length > 5 ? `(+${list.length - 5})` : ""}`
   const progress_advisories =
-    [advisory("stale", stale), advisory("ahead", ahead), advisory("orphan", orphan)]
+    [advisory("stale", stale), advisory("seeded_not_started", ahead), advisory("orphan", orphan)]
       .filter((s): s is string => s !== null)
       .join(";") || "none"
 
@@ -323,6 +343,29 @@ export async function readSessionState(
         : "the comparison cleared; validate the output and record the verdict."
   }
 
+  // 0.9.4 (field report 2026-10-13): only gates waiting on the owner replace the next action, and
+  // blocked_on names them by id; the full text appears once, in pending_owner_gates.
+  const openGates = phaseKeys.flatMap((id) => {
+    const p = ledger.phases[id]
+    return [...(p.pending_owner_gates ?? []).map((gate) => ({ ref: `${id}/${gate.id}`, phase: id, unit: undefined as string | undefined, gate })),
+      ...Object.entries(p.units).flatMap(([uid, u]) => (u.pending_owner_gates ?? []).map((gate) => ({ ref: `${id}/${uid}/${gate.id}`, phase: id, unit: uid as string | undefined, gate })))]
+  })
+  const pendingOwner = openGates.map((g) => `${g.ref}: ${describeOwnerGate(g.gate)}`)
+  const inPhase = openGates.filter((g) => g.phase === current_phase)
+  const waiting = inPhase.filter((g) => awaitsOwner(g.gate) && (g.unit === undefined || g.unit === current_unit || action === "retry_phase_gate"))
+  if (waiting.length) {
+    action = "await_owner_gates"
+    blocked_on = waiting.map((g) => g.ref).join(", ")
+  } else if (action === "retry_phase_gate" && inPhase.length) {
+    // The phase gate refuses while any gate is open; finishing those gates is the next step.
+    action = "resume_owner_gates"
+    blocked_on = inPhase.map((g) => g.ref).join(", ")
+  }
+  const anyGateRecorded = openGates.length > 0 || phaseKeys.some((id) => {
+    const p = ledger.phases[id]
+    return !!p.owner_gate_history?.length || Object.values(p.units).some((u) => !!u.owner_gate_history?.length)
+  })
+
   return { progress, summary: {
     ...modelRankSummary(modelRank),
     status,
@@ -348,6 +391,9 @@ export async function readSessionState(
     stale_gates: staleGates.length === 0 ? "none" : staleGates.join(","),
     state_drift,
     progress_advisories,
+    ...(stale.length ? { progress_advisories_hint: `Clear stale entries with write_progress operation:'update_status', data:{phase, unit_id, status:'complete', notes:'Reconciled to ledger pass'} for ${naturalSort(stale).slice(0, 5).join(", ")}; the ledger already records these units passed.` } : {}),
+    pending_owner_gates: pendingOwner.join("; ") || "none",
+    ...(anyGateRecorded ? {} : { owner_gates_hint: ownerGateHint(current_phase === "null" ? "<phase>" : current_phase) }),
     missing_declared_units,
     ...openAttempt,
   } }

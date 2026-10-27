@@ -1,575 +1,1301 @@
 # Changelog
 
-## 0.6.39 - 2026-09-28
+All notable changes to this project will be documented in this file.
 
-The six items left open after 0.6.38, with the plan checked by a Fable review against the code and two real runs (glog-mcp: 32 units, 68 delegations; hubble-api: 11 units, 26 delegations) before any code was written.
+The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
+and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-- **A long seat no longer idles the pit-boss.** Any delegation in the phase staled a 10–12 minute seat's receipt. `invoke_advisor` and `invoke_council` take `phase` and `units`; Foreman hashes those units' authorized files (from their guard baselines, before the seat starts) onto the receipt. A `record_review` whose `data.units` fall inside the pinned units is judged per unit: a covered unit that moved after the seat started, or a pinned file whose bytes changed, still refuses it; other units may be delegated meanwhile. Pins are derived from the ledger, confined to the project root and never include Foreman's own files. Without pins or `data.units`, the phase-wide rule is unchanged.
-- **Long calls stop when they should.** On Windows a timed-out advisor or test run killed only the `cmd.exe` wrapper; the CLI underneath kept the pipes open and the call hung past its timeout (reproduced: the old code never returned, the new one returns in 1.7 s with nothing left running). Timeouts and cancels now kill the whole process tree (`taskkill /T`, or the process group elsewhere), and a call returns a bounded time after the child exits even if a grandchild holds the pipes. `run_tests` gets the same treatment. The host's cancel signal (a cancelled request or a disconnect) now stops `invoke_advisor`, `invoke_worker` and `invoke_council`, recorded as failure class `cancelled`, never bindable as a review. Worker and council HTTP calls have an overall deadline (`FOREMAN_WORKER_TOTAL_TIMEOUT_MS`, default 30 minutes) besides the gap-between-chunks budget. Progress notifications are sent every 20 s when the host asks for them.
-- **Compression is 6× faster.** One 5,000-line `run_tests` log took about 5 s alone and 24 s under load. The time was in the vendored compressor's bit count, which went through a string about 11.6 million times; it now counts arithmetically. Output is byte-identical (compared on the fixture); 4.9 s became 0.8 s. The compression and `writeTools` timeouts in the suite were this.
-- **Fewer calls per unit.** Measured: a median of 9–11 bookkeeping calls per unit. `set_unit_status` accepts `preflight_check: { symbols, files, creates }` and runs the preflight in that write (a failing one refuses the delegation with its full report). A pass verdict on an attempt whose baseline has no comparison yet runs the comparison first; the protocol still compares before the tests.
-- **The bounded-reuse refusal, explained.** In the glog-mcp run the TLS restart reloaded the rank with no permissions and no `declare_model` followed, and the phase was `security_boundary`, which refuses every correction; the rank check ran first and named the wrong cause. The `security_boundary` / `hot_path` check now runs first, and `claude-opus-5-5` maps to middle rank (it resolved to unknown).
-- **Adversarial review (Codex gpt-6-astra, xhigh) before release; eight of nine findings fixed, each reproduced first.** Pins now name their phase and each unit's attempt, and a pinned receipt bound in another phase or after its units moved is refused rather than falling back to the phase-wide rule; pins come only from the current attempt's baseline; a path that leaves the root through a symlink or junction is never pinned [CWE-22]. A POSIX grandchild that ignored SIGTERM survived the escalation: the SIGKILL now outlives the call and reaches the group after its leader exits. A call whose output pipes were still held after the child exited was reported as a clean exit; it now reports a timeout with an "output incomplete" note, and `run_tests` reports it as not passed. The verdict-time compare runs in the baseline's own repository. A Claude fallback writes a receipt for the refused Fable attempt and records the requested model on both. Declined: re-hashing pinned files at the gate, because unpinned reviews are not re-hashed either and it falsely blocks the fix-then-verify flow. Known: on Windows a detached grandchild that outlives its parent cannot be killed by tree, since the tree is gone; the call still returns.
-- **Claude seats run Fable 5.1, Opus if Fable is unavailable.** The Claude CLI advisor is pinned to `claude-fable-5-1` (probe: the CLI reported serving it). When the CLI refuses the model, the seat retries once on `claude-opus-5-5` and the output says `model_fallback`. On Claude Code the last-resort review seats two Fable subagents, or Opus when the host cannot run Fable.
+## [Unreleased]
 
-## 0.6.38 - 2026-09-27
+## [0.9.4] - 2026-10-27
 
-Foreman trusts the operating system's certificate store. `contract_probe` could not reach an internal Graylog until the operator found `NODE_USE_SYSTEM_CA=1`, added it to Foreman's env and reconnected; the contract gate, correctly, cannot be overridden. Node verifies TLS against its bundled Mozilla list, not the OS store, so every team with its own PKI hit the same wall. At startup the server now adds the OS store to Node's default trust (Node 22.19+ or 24.5+; global fetch honours it). Nothing is disabled: a certificate no store vouches for still fails, and there is no skip-verification option. `FOREMAN_TRUST_SYSTEM_CA=0` opts out; on an older Node the startup line says to use `NODE_USE_SYSTEM_CA=1` or `NODE_EXTRA_CA_CERTS`. A certificate failure in `contract_probe` now names its cause (`fetch failed` hid it) and the fix, and `host_status` reports `os_cert_store`.
+### Security
 
-## 0.6.37 - 2026-09-27
+- The supported Node.js range is now `^22.23.4 || ^24.22.1 || >=26.12.1`. Earlier releases carry the Brotli decoder flaw CVE-2026-111497.
+- `@modelcontextprotocol/server` and `@modelcontextprotocol/client` 2.4.0 and `zod` 4.6.7 replace 2.0.0 and 4.4.3 (GHSA-jm63-cq47-j5jp, GHSA-46jr-4wx8-v453, GHSA-rvq5-wwqv-78pq, GHSA-mrhx-c7xc-m3w5). Foreman serves over stdio only, so the HTTP-transport and bearer-auth advisories did not apply; the zod memory advisory did.
 
-The compaction prompt asks the host to check its own usage. After 0.6.35 each phase gate still added an optional line, and the pit-boss relayed it as "Run /compact now" at 5% session usage. Foreman runs as a separate MCP process and cannot see the context meter; the host can. The protocol and the phase-gate line now say: if this session's context usage is above 80%, ask the user to run `/compact` or start a new session and resume with `session_orient`; below 80%, or when the usage is not visible, do not mention it. A finished unit or phase is never a reason on its own. `/clear` is still suggested once every phase gate has passed, before a different job.
+### Changed
 
-## 0.6.36 - 2026-09-27
+- Owner gates can be registered and approved in one `set_owner_gate` call. Approving a gate that is already approved is refused.
+- A reopened gate keeps its latest approval (who approved it, under what authority, with which quote), and session orientation shows it.
+- Only `pending` owner gates replace the next action with `await_owner_gates`. In-progress and failed gates no longer hide `implement_unit`. A phase-gate retry blocked by open gates now reports `resume_owner_gates`.
+- `blocked_on` lists gate ids rather than repeating each gate's text, and `owner_gates_hint` is shown only until the first gate is recorded. The `write_ledger` description lists the approval fields.
+- The tier-ladder refusal (`TIER LADDER`) is documented with the other `set_unit_status` refusals.
 
-Second field report (Claude Code pit-boss with Codex seats: three review rounds on one phase, about eight calls per test-only unit), deliberated with Codex (gpt-6-astra, xhigh). The slice cuts calls and stops old findings from blocking; it adds no setting. A severity floor on what reviewers report, a separate review-reopen counter and a resume tool were rejected.
+## [0.9.3] - 2026-10-13
 
-- **A finding can name its units and retire with them.** An old whole-phase review kept blocking the gate on a finding about one unit because it still carried other, unchanged units. A finding recorded with `units: [...]` now blocks only while its review still carries one of those units, so re-covering the fixed unit retires it; a shared-file finding names every affected unit and blocks until all are re-covered. Findings without `units` behave as before. Finding units must be registered.
-- **A confirmed LOW is advisory at the gate.** Verification already ignored LOW; the gate did not, and review rounds never converged on LOWs. The gate now passes over a confirmed LOW, lists it, and records it on the phase as `advisory_findings`, unresolved. The protocol requires confirming the severity as well as the finding: a reachable authorization, secret or data-loss defect is never LOW.
-- **Re-reviews are scoped to what changed.** The shared, implementor and Codex protocols now say a re-review after fixes covers the units whose attempts changed since the last complete review (their files plus the callers, contracts and test oracles they touch), gets that review's findings to rule on, and is recorded with `data.units`. A partial or timed-out review is not a baseline.
-- **The baseline can ride the delegation.** `set_unit_status` with `data.guard: { files, allowed_files }` takes the repository baseline in the same locked write as the attempt and the window, so a refused baseline refuses the delegation instead of leaving an unguarded attempt. A correction inherits its set with `guard: {}`. An explicit `repo_guard snapshot` afterwards is answered from that baseline. Compare stays a separate call before the tests run.
-- **Correction briefs are not scored for coverage.** `preflight_check` takes `correcting_attempt` (an attempt the ledger holds); coverage reads `n/a` and every other check still runs.
-- **Restart orientation names the open attempt.** When an attempt still holds the repository window, `session_orient` reports it (`open_attempt`, with stage, compare result and earlier open violations) and the next check, and says not to re-delegate.
-- **The snapshot says who gets charged.** Changes outside the authorized files during the window, including manual edits outside Foreman's PROGRESS fence, are charged to the attempt whoever made them.
-- **The receipt-only delegation is the documented form.** The implementor example no longer asks for a 1–3 line brief summary; the preflight receipt carries the full checked brief.
-- **Known and not fixed.** A seat receipt is still judged by ledger time, so any delegation during a 10-minute seat stales it; pinning receipts to the reviewed content needs its own design. Long calls still have no cancellation, no overall deadline, and a Windows timeout kills only the wrapper.
+### Added
 
-## 0.6.35 - 2026-09-25
+- Owner gates support in-progress and failed states, current stage and notes, and retained failure counts and failure reasons across retries, approval and reopening. Session orientation includes an explicit registration example for B1/B2 on every profile.
 
-Field report from a full spec-to-gate run (hubble-api BDI-219: 4 phases, 11 units), deliberated with Codex (gpt-6-astra, xhigh) and traced before fixing. Of its nine items, two were bugs; Codex found two more gaps next to them. Three proposed fixes were rejected for adding settings or weakening a check (a severity floor at the gate, unit-scoped seat staleness, automatic advisor fallback).
+### Fixed
 
-- **Compaction prompts stop interrupting.** Every unit pass and every council run told the pit-boss to stop and ask the user to compact; one run hit seven, one straight after a real `/compact`. Foreman cannot see the context size, so it was guessing on every event. Now a unit pass says nothing, a phase gate pass adds one optional line suggesting `/compact`, completion suggests `/clear`, and no hygiene field is emitted otherwise.
-- **Preflight hashes every unit's contract block.** It read the block only in `has_api` phases while delegation compared it whenever one existed, so a non-API unit with a contract looped on "changed since preflight (none -> …)". The field workaround was deleting the contract. An invalid block now fails preflight instead of passing it and refusing at delegation.
-- **Deleting a contract block after preflight is refused.** The delegation check ran only when the block still existed, so removing it dropped the contract, and a non-API unit whose contract declared a smoke could pass without one.
-- **Seat freshness is judged from when the seat started.** Receipts were stamped when the seat finished, so a unit changed and re-verdicted while the seat was reading passed as reviewed. Receipts from `invoke_advisor` and `invoke_council` now carry `started_ts`; older receipts fall back to `ts`.
-- **`write_ledger` advertises what it enforces.** `phase` is required on every operation and is now required in the schema; `record_fact` has its description line; array minimums render (`(min 2, max 5)` for native reviewers); record_review's stage rules sit beside the data shapes, inside the description clip.
-- **Advisor failures say why.** A non-zero exit is classified from structured state and the stderr tail (never the echoed prompt) as `timed_out`, `auth_failed`, `budget_exceeded` or `model_rejected`, with a one-line fix, in the output and on the receipt. `FOREMAN_CLAUDE_ADVISOR_BUDGET_USD` overrides the Claude seat's $1 cap (finite, positive, at most 25; the default is unchanged). `capability_check` now says its Codex result is local login state: `codex login status` reported logged in while every request returned 401.
-- **Less preflight noise, same checks.** Fenced blocks are skipped when scoring directive coverage only; citations and the checkpoint's `Test:` lines still read them. A checkpoint on a runner Foreman does not parse (dotnet, pytest, make) reads "not checked: <runner> test selection is not parsed" instead of "unknown" plus a per-file list. A bare prose path resolves when exactly one of the unit's listed files ends with it.
-- **The spec generator stops writing contracts the ledger refuses.** Files the worker commits as source are not deliverables; URLs in claims are literal (`${ENV:NAME}` expands in headers only).
-- **Known and not fixed.** Long tool calls still ignore the host's cancellation signal, the chat transport has no overall deadline, a Windows timeout kills only the `cmd.exe` wrapper, and one compression of a 5,000-line log takes about 24 s.
+- Pass refusals collect missing authorization, override fact links, worker model and model evidence in one response. Owner-gate approval and registration also report their missing conditional fields together.
 
-## 0.6.34 - 2026-09-25
+## [0.9.2] - 2026-10-13
 
-Research sweep and Codex adversarial review (gpt-6-astra) of the resulting change list; every finding below was reproduced or traced before it was fixed.
+### Added
 
-- **A guard violation could be laundered by an ordinary re-delegation.** Attempt 1 changes a file outside its brief and compare records the violation; an ordinary `delegated` write opens attempt 2, its snapshot baselines the already-violated tree, compare against that baseline is ok, and `set_verdict pass` succeeded with the stray change in place and no override recorded. The verdict read only the newest guarded delegation. Now each compare records the paths a violation named (`violation_paths`) and re-checks every earlier open violation against its OWN baseline; when those paths are back to their original bytes the violation is marked `resolved` by that attempt, and a pass is refused while any earlier violation is neither resolved nor waived. Authorizing the stray file on the next attempt does not clear it. A restored path is not charged to the current attempt as a new breach. `user_override` waives each open violation and records it where it happened. A correction accepts a violation that has been resolved.
-- **Escalation rules agreed with each other.** The host profiles let a fix worker move up a tier when `route_reason` "cites the rejection"; the implementor protocol forbids escalating on an unchanged brief. The profiles now require a refined brief or an advisor diagnosis, and say a rejection alone is not evidence.
-- **Codex `worker` seat pinned to `gpt-6-sol`.** It answered a live probe on codex-cli 0.157.0 after being refused on 0.153.4; `gpt-6-terra` is still refused, so the light seat stays on 5.6. Existing `.codex/agents/worker.toml` files keep their pin until `codex_agents_init` rewrites that role.
-- **`host_status` on Codex reports what is on disk.** It printed the shipped seat table as if it were the active pins. The table is now `seat_defaults`, beside `seat_pins_on_disk` read from `.codex/agents/*.toml`, and `tool_timeout_sec` read from the `[mcp_servers.foreman]` table. Codex documents a 60 s default, which cuts off `invoke_advisor` (900 s budget), councils and workers, so an unset or shorter value comes with advice to set 1200.
-- **Review prompts carry evidence, not the author's verdict.** The shared advisor-grounding section now excludes the worker's completion report, its summary of what it fixed, commit messages and "fixed / all tests pass" claims from an initial review prompt; framing a change as a fix measurably lowers what a reviewer finds (arXiv 2603.18740). Lighttask still sends its grounding report and plan, and verifiers still receive reviewer findings.
-- **Server instructions.** Hosts now defer tool loading, so the initialize instructions may be the only Foreman text a session sees before acting. They are conditional (426 characters): use Foreman when the user asks for it or a ledger exists, a missing ledger is not a reason to start one, and worker and reviewer seats ignore Foreman state.
-- **Fixed:** `invoke_council` threw `deps is not defined` rendering its result; the host for the post-council compact yield is now passed into the renderer.
-- **Known and not fixed.** Long tool calls ignore the host's cancellation signal, the chat transport has no overall deadline, and a Windows timeout kills only the `cmd.exe` wrapper, not the CLI beneath it. A timed-out advisor report can lose its findings to lossy compression. Scheduled for the next release.
+- Shared ledger operations `adjudicate_finding`, `record_launch` for `aborted_no_work`, and `set_owner_gate`, with retained decisions and resume guidance on all profiles.
+- Append-only fact versions, authorization provenance with override fact links, per-finding severity decisions, and worker model evidence checked against configured tier pins.
+- Non-git SHA-256 repository snapshots with frozen exclude globs; worker model mappings and missing-agent diagnostics, with frontier seats across profiles.
 
-## 0.6.33 - 2026-09-18
+### Fixed
 
-Mermaid 11 lexes `--` as an edge, so an unquoted flowchart label containing a flag (`D -- no / --force --> O`) is a lexical error. `preview_diagram` now quotes those labels on write and the preview server quotes them again on `/api/source`, so a hand-edited `.mmd` cannot ship the same bomb. Already-quoted labels, unlabeled arrows, pipe labels, node text, and comments are left alone.
+- Unit-filtered rejection/review reads now return the requested records, including full-text paging and review/finding identifiers. Delegation accepts `brief_hash` alone.
+- Native verifier validation names `data.checked`; scoped review coverage warnings are deferred to gate evaluation. Stale progress advisories explain how to clear them, and checkpoint parsing recognizes PowerShell suites.
 
-## 0.6.32 - 2026-09-17
+## [0.9.1] - 2026-10-12
 
-Cursor Agent CLI as the spawn and review path on cursor host mode. 0.6.31 wrote Task seats and left advisors on synthetic Task slugs (`gpt-5.6-sol-ultra` / `gemini-3.1-pro`) that `capability_check` reported as available without probing a binary; Task does not exist in Cursor Agent CLI (`agent` / `cursor-agent`), so that path could not run headless. `invoke_advisor` now accepts `cli: "cursor"`: Foreman resolves `agent` then `cursor-agent` (Windows `.cmd` via `cmd.exe`, `.ps1` via `powershell.exe`), runs `agent -p --mode=ask --trust --output-format text` with the prompt in a tempfile (Windows cmd argv cap), and never passes `--approve-mcps` so the child cannot load Foreman MCP. `capability_check` probes `agent status --format json` and reads `isAuthenticated`; it no longer pretends Task is Codex or Gemini. Receipts are provider unknown (Cursor is a router): one Cursor seat is `receipted`, not `receipted_external`; a second seat needs a different vendor CLI. The Cursor profile tells the pit-boss to spawn workers with `agent -p --force --trust` (optional `-w`) and to fall back to Task + `cursor_agents_init` seats only when the Agent CLI is missing. The editor UI CLI is `cursor` (`--add-mcp` for registration) and is not the agent. Model inherit: no stale slug. `cli: "cursor"` is advertised only under `--host=cursor`; Claude Code and Codex keep the `claude|codex|gemini` enum, descriptions, and profile text.
+A unit that fails at the premium seat on Claude Code now moves to Fable instead of retrying at Opus.
 
-## 0.6.31 - 2026-09-17
+### Added
 
-Seat tiers on Cursor host mode. The Cursor profile told every worker to be Task + generalPurpose + a hardcoded model slug (`claude-4.6-sonnet-medium-thinking`), so every seat was the same model and `tier: "premium"` was a promise the operator kept by hand; that slug had already rotated out of the host's Task enum. Claude Code and Codex already resolve the tier to a seat definition (`claude_agents_init`, `codex_agents_init`). Cursor has the same mechanism — a custom subagent file whose frontmatter carries its model — so `cursor_agents_init` (registered only when `--host=cursor`) writes the three implementation seats to `.cursor/agents/`: `foreman-worker-light`, `foreman-worker`, `foreman-worker-heavy`, each carrying the shared-tree rule, a ban on Foreman write tools, and the report-economy bound. Default model is `inherit` (the pit-boss's model): Cursor ids rotate, and a guessed slug would reproduce the stale-hardcode this exists to remove; override per role with `models` when an id is verified. Writes Cursor-native files, not `.claude/agents/`: Claude Code aliases (`sonnet`/`opus` plus a separate `effort` key) are not Cursor model syntax, and a dual-host repo can keep both trees (`.cursor/` wins on name collision). The cursor worker instruction now names the seat table and falls back to `generalPurpose` with no model argument when the definitions are absent. A binding DEFAULT, not a lock: the Task tool's `model` argument still overrides the frontmatter, and the delegation's tier/`route_reason` remain the record of what actually ran. Fan-out text now names Cursor's isolated copies instead of an unspecified sandbox. Advisors are unchanged in this release.
+- `claude_agents_init` writes a fourth seat, `foreman-worker-frontier` (`fable`, effort `high`), and the ledger tier accepts `frontier`.
 
-## 0.6.30 - 2026-09-15
+### Changed
 
-Report economy: a length budget the caller sets, and the measurement that showed a bare one is harmful. Foreman already capped every path that flows through it (2 MB worker response, 16 MB council response, 16 KB advisor stdout), but those are crash guards three orders of magnitude from the length that makes a review unreadable, so nothing bounded a merely verbose seat. invoke_advisor takes report_max_lines, the council lens seats and the cross-examiner carry the same rule, and the generated Claude and Codex seat definitions bake the default in; the value resolves caller argument, then FOREMAN_REPORT_MAX_LINES, then 15, clamped to a ceiling of 200. The seat is TOLD the number and never asked to choose one: "be brief unless you judge more is needed" collapses to "be as long as you want", because a model writing more always reads to itself as thorough, so the escapes are a closed list it must name (a security finding's blast radius and upgrade path, a migration or rollback ordering, an explicit request for detail) rather than a judgement it may exercise. Measured before shipping, against one review prompt on gemini-3.1-pro-preview: the unbounded arm gave 7 findings in 486 words, and a first instruction reading only "report in at most 15 lines" gave 4 findings in 99 words — it met the bound by DROPPING findings, a correctness regression wearing a conciseness win. The shipped wording orders the trade out loud: report every finding, the budget buys prose and never silence, cut the words around the findings and never the findings, and write OVERRUN: finding count and keep going when the findings alone overflow. Three runs of that version returned 9, 6 and 7 findings in 229, 153 and 139 words, all inside the bound. invoke_advisor appends the budget before anything hashes or measures the prompt, so prompt_sha256 and bytes_in attest to what actually left the machine and record_review's packet_hash check moves with it. The bound is advisory at the wire by design: truncating a review at N lines would drop findings for real, which is a correctness bug rather than a display one. Also added to the ethos doc as a cross-pillar rule and to the advisor protocol beside the existing input-economy instruction.
+- On Claude Code, after a rejected or failed `premium` attempt the next delegation must record `tier: "frontier"`; anything lower is refused (`TIER LADDER`) unless the owner sets `user_override`. A correction that reuses the same worker is exempt. Codex is unchanged, because its premium seat is already the top model.
+- Seat models are family aliases (`sonnet`, `opus`, `fable`) that the host resolves to the newest release; the host falls back from `fable` to `opus` when the account cannot serve it.
+- The checkpoint-review workflow text says `record_review` is a ledger write operation, not a tool.
 
-## 0.6.29 - 2026-09-12
+## [0.9.0] - 2026-10-11
 
-Per-seat reasoning effort, and the seats stop differing by model quality. 0.6.28 pinned a model per implementation seat in .claude/agents frontmatter; the reasoning-effort key was left out because it could not be verified, and writing a guessed key would have produced a definition claiming behaviour it did not have. It is `effort`, taking low|medium|high|xhigh|max or an integer — established from the installed CLI's own frontmatter parser and its validator table, the documented frontmatter schema, and Anthropic's official plugin marketplace shipping agent files that set it. The three seats now differ by EFFORT rather than by dropping to a weaker model: foreman-worker-light is sonnet/low, foreman-worker sonnet/medium, foreman-worker-heavy opus/high, each axis overridable per role. A Foreman worker implements code against a binding brief, and a wrong mechanical edit costs a whole attempt plus its guard cycle, which is dearer than the tokens a lesser model saves. Also established and now respected: the host parses that frontmatter with a STRICT schema, so an unknown key is an error rather than an ignored line; the generator emits only name, description, model and effort, and a test pins the emitted key set against the accepted list.
+Per-review model pinning and fail-closed Zero Data Retention routing for `invoke_council`.
 
-## 0.6.28 - 2026-09-12
+### Added
 
-Seat tiers on Claude Code. Foreman has always RECORDED a delegation's capability tier and route_reason as audit evidence, but on Claude Code the host profile carried one hardcoded line (Use Agent tool with model sonnet), so every seat was the same model and tier premium was a promise the operator kept by hand and restated each session. On Codex the tier was already CONFIG: codex_agents_init writes role TOMLs with a pinned model per seat. Claude Code has the same mechanism, an agent definition whose frontmatter carries its model, so claude_agents_init writes the three implementation seats to .claude/agents/: foreman-worker-light (cheap/haiku), foreman-worker (standard/sonnet), foreman-worker-heavy (premium/opus), each overridable per role and each carrying the shared-tree rule. The claude-code worker instruction now names the seat table and falls back to the old sonnet line when the definitions are absent. A binding DEFAULT, not a lock: the Agent tool's model argument still overrides the frontmatter, and the delegation's tier and route_reason remain the record of what actually ran. The declared rank also says what the worker seat defaults to: a weight-3 orchestrator is told not to spawn frontier workers for ordinary implementation, keyed on rank rather than model name so Astra at xhigh gets the same reminder Fable does. Also fixed: the changelog TOOL serves a hardcoded array, not the root CHANGELOG.md, and two releases were written to the markdown only, so an operator asking what was new was told nothing since 0.6.25 while two releases of fixes sat unread. A release invariant now reads the tool and requires its newest entry to equal package.json and to agree with the markdown.
+- `invoke_council` takes `seat_models` (an exact `vendor/model` id per seat for that call only; router slugs and `:variant` suffixes are refused) and `require_zdr`. Global seat configuration is unchanged.
+- With `require_zdr`, the call is refused before anything is sent unless the endpoint is `https://openrouter.ai`; every seat, retry and cross-examination request then carries `provider: { zdr: true, require_parameters: true }`, redirects are refused, and Langfuse tracing is off for that call.
+- Council output names the routing mode and a per-seat, per-lens routing table: requested model, served model, served provider and ZDR status.
 
-## 0.6.27 - 2026-09-11
+### Changed
 
-A researcher protocol, at lighttask scale. Long-running experimental work — tuning a decomposition prompt until a model reads video frames correctly, or bringing a deterministic engine to a correctness and latency bar — did not fit the phase/unit/verdict spine: a negative result is not a failed unit, an inconclusive run has no verdict, and an abandoned direction is not a rejected attempt. That work either bent the implementation ledger out of shape or lived in scrollback a compaction destroyed.
+- A pinned seat whose served model is missing, conflicting or different from the pin fails that call (`model_substituted`); a substituted cross-examination reply is discarded. Pins that would put two seats on one model are refused.
+- Seat receipts record the model the endpoint reports serving (`model_served`) instead of echoing the configured model; an unpinned seat with no reported model still records the configured one.
 
-- **`researcher`.** One skill, one activator, one tracker. No ledger, no delegation, no verdict, no new record types. The loop is question -> hypothesis -> bounded variant -> evidence -> decision -> checkpoint. It gates nothing; it records and disciplines, and says so.
-- **The rule that carries it.** The evaluation set and the verdict method are declared BEFORE the run. Deciding what "better" means after seeing the output is how a favoured variant wins on a moved goalpost, and it is the failure mode that makes weeks of iterative work unreliable. A thread whose author cannot state what better means has found its first result.
-- **Three verdict methods, because two workloads.** `deterministic` for engines, parsers and calculators: pass/fail per case plus the measurement that matters, where a correctness regression outranks any speed gain. `scored` for prompts and model outputs: the rubric, its version, and who scored it — a model scoring its own output is recorded as exactly that, evidence and not ground truth. `observed` for early exploration, explicitly provisional; a thread cannot close on it.
-- **Index, not archive (the galaxy-map pattern).** `Docs/research.md` is a thin index — objective, baseline, one row per run, decisions, one checkpoint — and each run gets its own file under `Docs/research/<thread>/`. Resume reads index -> checkpoint -> the one or two runs the checkpoint names, never the whole thread. Two rules come straight from the `spec-man` atlas: the map holds references, not payloads; and where the index and a run file disagree, the run file wins. Large artifacts are referenced by path and digest, never pasted.
-- **Discipline the protocol enforces on itself.** One change per variant. The same evaluation set across compared variants, or it is two anecdotes rather than a comparison. Negative results kept. Recorded results never rewritten — corrections supersede, with a reason, and the predecessor stays. A run that failed to execute is `invalid`, not a result. A surprising result is re-run before it is believed, and non-determinism in a deterministic engine stops the protocol until the cause is known.
-- **Promotion leaves the protocol.** When a result becomes shipped code it goes to `lighttask` or the full pipeline, with its origin variant recorded. The research verdict is not an implementation verdict: promoted work still needs its spec, its delegation, its ownership guard and its review. A measurement is not a gate.
-- **Rank survives a mid-session Foreman restart.** The declared orchestrator rank lived only in a process-local `let`, so restarting Foreman from `/mcp` dropped the operator to weight 0 and no workflow permissions — and `declare_model` compared the journal's session id against `""`, which matches nothing, so it threw and left `init_session` (which appends an entire spurious session) as the only recovery. The declaration was durable in the journal the whole time; nothing read it back. `rehydrateRank` now does, fail-closed on every doubt: the session must still be open, the rank must recompute from the DECLARED model (a forged weight in a hand-edited journal grants nothing), and `env.host` — server-authored beside os/node/foreman — must equal the current host. A journal written before 0.6.27 carries no host and never rehydrates, preserving the original rule that a declaration made under another host describes another host. `declare_model` also adopts the open same-host session when the process holds no session id.
-- **A rehydrated rank restores orientation, never authorization.** It reports its rank and session but grants ZERO workflow permissions until a `declare_model` in this process confirms the current model — the operator may have changed model during the restart and Foreman cannot tell, and granting relaxations on that guess is exactly the wrongly-allowed failure the rank policy exists to prevent. `model_rank_source` says so on every read path. Confirming is one call, and no longer costs a spurious session.
-- **Found by adversarial review (Codex gpt-6-astra, xhigh), all reproduced before fixing.** A matching session id bypassed the host check entirely, so a process on one host could rewrite a session stamped with another (two servers racing `init_session` can both hold `s1`). The persisted rank's derived permission booleans were adopted verbatim, making a hand-edited journal an authorization grant. A structurally valid but shapeless journal (`{}`, `{"sessions":null}`) threw inside `createServer` and stopped the entire MCP server from starting, taking every unrelated tool with it. The researcher protocol claimed promoted work still needs worker delegation and an ownership guard, which the `lighttask` destination does not provide — it permits direct implementation — so the promotion text now states what each destination actually enforces.
-- **Known and not fixed.** Journal writes are whole-file read-modify-write under a process-local lock, so two Foreman processes over one journal can lose an update. Pre-existing; the permission-confirmation rule above removes its privilege consequence, but the lost update itself remains until journal writes take an interprocess lock.
-- **A HEAD move Foreman itself made is attributable.** "Commit the ledger at every verdict" and "nothing moves HEAD between snapshot and compare" are both right and they collided: committing your own ledger reported a violation on work nobody did wrong. 0.6.21 vetoed `pitboss_paths` because *content cannot attribute a write to an actor* — but a commit is not content, it carries a manifest of the paths it touched, so attribution is by construction and the veto's reason does not reach it. The guard already excused Foreman's own writes in the WORKING TREE; the identical writes are now excusable once committed. Fail closed on anything that is not a plain advance: `after` must DESCEND from `before` (a reset, amend, rebase or checkout has no ancestry path and still fails), and every path in the range must be Foreman-owned — one source file and the whole move is a violation, naming the file. Reported as `head_advanced`, never silently. Residual, stated: a worker that commits only Foreman files now clears, because the evidence is identical to the pit-boss's own commit.
-- **The brief is sent to Foreman once, not twice.** It was pasted to `preflight_check` to be checked and again to the ledger to be kept — roughly 4k tokens each, per unit. `preflight_check` now stores the text beside the hash it already computed, so a delegation may carry `preflight.receipt` with NO `brief` field at all and Foreman reads the text back. The hash is re-derived from the stored text and must equal the receipt, so a tampered sidecar cannot smuggle a different brief. The record is Foreman-owned and already excluded from the repository guard, which is why this needs no new path parameter and none of the traversal, symlink, encoding or guard-collision surface a path would have brought.
-- **The citation parser stops reading prose as citations.** `-run TestFoo` written in a sentence was extracted as a selector and refused the preflight as a dead citation; a brief is prose, and the real checkpoint comes from the spec's `Test:` line, parsed separately. A bare operand now counts only inside a code span, where the author marked it as a command; a quoted operand counts anywhere, because quoting is itself the mark. Either way the span is blanked before the identifier scan, so a prose mention does not come back as a dead test name instead. Separately, a correct-but-abbreviated path (`cases/list.html:73` for `internal/web/cases/list.html`) resolved only against the repository root. It now also resolves against the unit's OWN declared directories — bounded and meaningful, unlike the repo-wide suffix matching an earlier deliberation rejected on the grounds that uniqueness is not correctness. Exactly one candidate resolves and the report names the full path it bound to; two or more is ambiguous and stays dead, naming them.
-- **Not built, deliberately.** No research ledger, no autonomy machinery, no execution-isolation model, no migration tool. An architecture council (Codex gpt-6-astra, Gemini 3.1 Pro) deliberated a much larger design whose central question was what makes an experiment mechanically reversible; the answer for this workload is that prompt tuning has nothing to reverse. The larger design is recorded in `Docs/design-researcher-role.md` and is not being built on spec.
+## [0.8.0] - 2026-10-08
 
-## 0.6.26 - 2026-09-11
+### Added
 
-Seventh field report. An interrupted write left the ledger 4.2 MB of NUL bytes and destroyed every record since the last commit; the same event left a 46 KB source file entirely NUL, which surfaced hours later only because a mutation anchor that had matched stopped matching. Every append-only sidecar came through untouched. The recovery then hit a second layer of problems: a guard that authorized nothing and hard-stopped on every edit, seat receipts that outlived the records citing them, an oracle fooled by a guard that ran zero tests, and three advisories that named the wrong cause.
+- `workflow` on Codex and Cursor: shared definitions for design panels, design gauntlets, checkpoint review fans and field-report triage, with validated arguments, phase/result schemas, agent estimates and bounded native procedures. Runs require user opt-in, never implement or write the ledger, and return perspective (`stage:'fan'`). The native gauntlet requests Perplexity and Codex web research and attacks through a separately receipted Claude/Gemini advisor. Claude Code keeps its existing scripts; generic hosts do not expose the new tool.
 
-- **Durability, the root cause.** The ledger, journal and progress writes already went to a tmp file and renamed over the target, but nothing flushed the data first. A rename is atomic with respect to file IDENTITY, not to the bytes behind it: the directory entry can reach the disk while the data blocks are still in the page cache, and a crash in that window leaves the destination at the right size filled with NUL — exactly what was observed. `atomicWriteFile` now fsyncs the tmp file before the rename and fsyncs the containing directory after it (POSIX only, best-effort; NTFS orders the rename's metadata itself). The hash-chained sidecars (`.foreman-events.jsonl`, `.foreman-preflight.jsonl`, `.foreman-seats.jsonl`) append through a durable helper that flushes before returning, so a torn final line is rare rather than merely survivable. Not built: converting the ledger to append-only with compaction — a larger change than this report justifies, and the missing fsync accounts for the loss on its own.
-- **The guard never authorizes nothing.** `repo_guard snapshot` takes two file lists: `files` scopes the line-ending probe, `allowed_files` IS the allow-list `compare` freezes. A caller who passed only `files` got `authorized_files: 0`, after which every change the worker made was "outside the brief" — a HARD STOP clearable only by `user_override`. That is a guard failing OPEN into a refusal: it cannot catch an ownership breach when everything is a breach, and it trains the owner to waive. `allowed_files` omitted now falls back to a correction's inherited set and then to `files`, an explicit `[]` declares a worker that edits nothing, and everything empty is refused. The snapshot reports `authorized_from` on every call, so the provenance of the allow-list is never implicit. The non-git `n/a` boundary still answers first.
-- **A zeroed file is destroyed, not edited.** Nothing detected the 46 KB of NUL: the file still had its size and mtime, and a grep on it reports a missing SYMBOL rather than a missing file. `repo_guard` now scans the authorized set for non-empty all-NUL files — the scan stops at the first non-zero byte, which for real source is byte 0. At `snapshot` it refuses (`status: damaged`) so no worker is spawned onto a destroyed tree; at `compare` it is a violation under its own name, which the ownership diff alone cannot produce because the path IS authorized.
-- **Seat receipts are reclaimable when their record is gone.** Receipts are append-only and survived the loss; the review records citing them did not. Both seats stayed bound, `record_review` refused ("one receipt covers one record"), and a 225k-token gate review with nine confirmed findings became permanently unrecordable. The consumption line already carried the phase and review timestamp, so the ledger can now check whether the consuming record is still there: present, the double-spend refusal stands and names the record; absent, the receipt rebinds and the reclaim is written into the receipts chain, so it is never mistaken for a second spend.
-- **`verify_oracle` refuses to conclude from a run that executed nothing.** A mutation that renamed a test came back `survived`, because `-run` then matched nothing and `go test` exited 0 having observed precisely nothing — the `-run`-matches-nothing trap living inside the probe whose job is to measure the suite. Zero tests is now `invalid` on both sides: a baseline that runs no tests is red before any mutation is written, and a mutated run that executes nothing is invalid rather than a survivor. Asymmetric on purpose — a false survivor costs an investigation, a false kill certifies a control the suite cannot see — so evidence that a test ran always beats a zero-test marker (`./...` over a tree where one package has no test files). A survivor from an additive mutation (the replacement still contains the original) is labelled as possibly a no-op rather than a gap.
-- **Middle rank takes bounded corrections.** Middle rank was mechanical-only, so a behavioural correction forced a fresh worker carrying none of the previous attempt's context — strictly more risk than reusing the worker that had just done the work. The policy was choosing the riskier option in the name of caution. Every other reuse predicate still gates the write: same declared session, same recorded worker id, a cleared ownership guard, a non-hot-path and non-security-boundary phase, correction files inside the attempt's frozen authorized set, and the failure cap. `focused_validation` and `delta_review` stay top-rank only.
-- **Three advisories that named the wrong cause.** `checkpoint_reach: none` reported "the unit's directive has no Test: line" for every absent definition, including for a unit whose directive ended in exactly such a line; the three causes (spec unreadable, unit not found in the spec, no Test line) are distinguished now and the message names the spec path Foreman actually read. `preflight_check`'s dead-citation hint said "list it under creates", which reads as brief prose — `creates` is a PARAMETER of the call, and the hint now shows its shape. `set_unit_status`'s brief-hash mismatch printed two hashes and left the cause to be guessed; a mismatch has exactly one cause, and the refusal says it: the brief text in the call is not the text `preflight_check` hashed.
-- **Recovery is transcription, not reconstruction.** `read_ledger { query: "reconstruct" }` reads the append-only sidecars, diffs them against the ledger, and prints a worksheet: which units and attempts they attest, which the ledger has lost, and which seat receipts are reclaimable. It writes nothing, deliberately — a preflight record holds a brief's HASH and `set_unit_status` needs the text, so re-recording an attempt still needs the operator. Guessing the rest would produce a ledger that looks complete and attests to nothing.
-- **Smaller.** `normalize_review` returning zero findings from non-empty text now states the grammar it requires (an explicit CRITICAL/HIGH/MEDIUM/LOW or P0-P3 token, and that blocker/major/nit are not severity tokens) instead of four bare numbers. `record_fact` raises the per-fact cap from 2000 to 8000 characters and budgets the phase's fact store instead of the entry, so an incident record — the fact most worth keeping — fits, paid for by evicting the oldest facts.
+## [0.7.2] - 2026-10-07
 
-## 0.6.25 - 2026-09-11
+Supply-chain hygiene. No change to Foreman's behavior.
 
-Sixth field report and a Codex deliberation (docs/codex-deliberation-2026-09-11-reach.md). A unit passed its gate with broken goldens under `internal/web/handlers/testdata/` because its checkpoint was `go test ./internal/ops/ && go test ./internal/cfsource/graphql/`: neither package can see those files. Foreman knows the unit's files and the checkpoint command, so the omission is a static check.
+### Security
 
-- **Fixed in shipped code.** A direct fix allocates an attempt without a delegation, so the 0.6.24 verdict lookup by exact attempt found no "current delegation" and the contract-changed, forward-declaration and deliverable checks vanished on a direct-fix attempt; the newest delegation's frozen obligations now bind it, and `live_smoke` reads the same.
-- **Checkpoint reach.** The delegation freezes the unit's checkpoint from the SERVER's spec (its `Files:` and every `Test:` line, digested) and refuses (`CHECKPOINT REACH`) when the Go package selection omits the conventional owning package of an authorized file (a `.go` file's directory; a `testdata/**` fixture's parent package). `preflight_check` reports the same over the spec's Files unioned with the call's `files`, and a record whose ONLY failure is reach may be delegated with the owner's `user_override`, recorded on the delegation as `reach_override` with the files it covered. `set_verdict pass` refuses when the spec's definition moved (`CHECKPOINT CHANGED`) or when the guard's frozen authorized set is wider than the frozen checkpoint selects. Bounded on purpose: only `go [-C dir] test` selectors are understood (`./x`, `./x/`, `./x/...`, `./...`, `.`), with nested-module exclusion; option values are never selectors, `-run`/`-tags`/`-c` are reported as filters, a bare import path or any other runner makes the clause opaque, and an opaque clause blocks every refusal because the check can no longer claim the complete checkpoint excludes a file. Files with no owning package are reported, never refused. The refusal says what it is: a package-selection check; cross-package readers and assertion coverage are not inferred.
-- **Not built, by the deliberation.** An executed checkpoint receipt (it would survive editing the golden after the run: the guard skips authorized paths by design); a mandatory oracle in any form (Foreman cannot connect a failing guard to a named control: a mutation of an audit label in the control's file kills just as well); directory-valued controls; dependency inference; shell interpretation.
+- The documentation workflow's GitHub Actions (`checkout`, `setup-node`, `upload-pages-artifact`, `deploy-pages`) are pinned to commit SHAs at their current major versions. Its deploy job holds `pages: write` and `id-token: write`, so a moved tag could have published the site.
+- A test fails CI when any GitHub Action is not pinned to a full commit SHA with its tag as a comment.
+- A test scans the text Foreman ships to models and installs into projects (protocols, docs, workflow scripts) for injection phrases, hidden or bidi characters, pipes into a shell, long encoded runs, and URL hosts outside an allowlist.
 
-## 0.6.24 - 2026-09-10
+## [0.7.1] - 2026-10-05
+
+Field report 2026-10-05 (a resume session on 0.7.0), the small fixes, plus a new saved workflow.
+
+### Added
+
+- `foreman-design-gauntlet` saved workflow (Claude Code only, installed by `claude_workflows_init`): research sweeps and repository grounding, one hardened design written to `out_dir`, a parallel attack by the Codex CLI (read-only), a SOC lens and an over-complexity lens, one independent verifier per finding (capped by `max_verifiers`, highest severity first) and a completeness critic. The pit-boss deliberates the result and the user arbitrates before anything in the repository changes. Its result is perspective (`stage:'fan'`), never a gate seat: the Codex attack runs from a workflow agent, not through `invoke_advisor`. Research falls back to web search when Perplexity is not connected, and the design stage falls back to the host model when the requested design model is refused.
+- `preflight_check` reports `checkpoint_runners_refused` and a section naming each runner in the unit's spec Test line that `run_tests` would refuse, so a `python scripts/...` checkpoint shows up at planning time instead of at the verdict.
+
+### Changed
+
+- `run_tests` refusals list the runners in force, including `FOREMAN_TEST_ALLOWLIST` additions, and say how to add one.
+- `claude_agents_init` no longer says a restart is not required: definitions written in a session may not load until the next one. The Claude Code spawn rule now falls back to a general-purpose agent with the model of the tier when the spawn fails with "Agent type ... not found", recorded in `route_reason`.
+- The `preflight.receipt` schema description says it is required once the project has run `preflight_check`, corrections included, unless the same call carries `data.preflight_check`.
+- `session_orient`'s `progress_advisories` label `ahead` is now `seeded_not_started`. Update anything that matches the old text.
+
+### Fixed
+
+- Preflight no longer refuses a brief that names one of Foreman's own state files, such as `.foreman-heartbeat.jsonl` before the first heartbeat, as a dead citation.
+- Draft-marker advisories skip `TBD`, `TODO` and the other markers when they appear inside backticks or double quotes.
+
+## [0.7.0] - 2026-10-01
+
+0.7.0 follows 0.6.39; there is no 0.6.40. The 0.6.x patch numbers had become hard to read (`v0.6.4` looks like `v0.6.40`) and 0.6.30–0.6.39 carried behavior changes as patches. Published releases before this one: v0.6.27, v0.6.29 and v0.6.39 — the changes listed under 0.6.30–0.6.38 first reached users in v0.6.39. Scope was set by a planning workflow, reviewed by Fable and deliberated with Codex.
+
+### Added
+
+- `project_changelog` tool: `check` validates a repository's `CHANGELOG.md` against Keep a Changelog 1.1.0 (deterministic, no model), `init` creates one with the standard header, `release` moves `[Unreleased]` under a new version, and `notes` returns one version's section for release notes. The implementor protocol adds entries for each phase at its gate through a writer seat, then a reviewer seat fixes wording; publishing anywhere is always the owner's call.
+- `invoke_advisor` and `invoke_council` print a `pins:` line: the number of pinned files, or why nothing was pinned (no baseline on the current attempt, read-only guard, a path outside the project or a Foreman state file, an unreadable ledger).
+- `repo_guard compare` reports `authorized_changed`, the number of authorized paths whose observed state changed, and notes when it is zero; a pass verdict notes it too. Informational only: it cannot see a same-size rewrite of a file over 8 MB or an edit that was reverted.
+- A note when a declared worker ID is also recorded on another unit, or on an earlier attempt of the same unit outside its correction chain.
+- A hint for new untracked files in a guard violation: preserve them; removal or restoration is the owner's call.
+
+### Changed
+
+- Foreman's own `CHANGELOG.md` uses Keep a Changelog 1.1.0; all 62 earlier entries were converted.
+- Comparisons are bound to the attempt they started for; one that lands after the unit moved to a later attempt is refused.
+- The guard-mismatch refusal is labelled `GUARD CORRECTION` instead of `RANK CORRECTION`, and the repository-guard refusal no longer tells you to pass `allowed_files` to compare.
+- A test-shaped name in a brief (for example the type `TestOpts`) no longer fails preflight when it is listed in `symbols`, appears as a whole word in the server's spec, and is not used as a test in the brief. A file path is no longer also read as a test name.
+- The implementor protocol states the two-write minimum (delegation with preflight and guard, then the pass verdict) while keeping `repo_guard compare` before the tests; a fresh worker per unit; and what to do with a wrong allow-list noticed before spawning.
+- The council lens catalog version is `2`.
+- On an older Node, the OS-certificate-store notice recommends upgrading Node or `NODE_EXTRA_CA_CERTS` (it wrongly suggested `NODE_USE_SYSTEM_CA`).
+- Not changed: the multi-unit fix round and any refusal for "no authorized change observed" are deferred to 0.8.0; `design_ui` and Gherkin scenarios to 0.7.1.
+
+### Fixed
+
+- Review pins silently dropped authorized files named `.foreman-*` and paths outside the project, and still counted as pinned; an empty pin set could qualify a review with nothing checked. Pinning now reports the reason and falls back to the phase-wide rule. A directory or unreadable authorized path, and a Foreman-managed file under a configured name, are reasons too, not pins.
+- The test-name exemption above still checks a name the brief uses as a test in context: after test vocabulary through a list ("Tests TestAlpha and TestBravo"), as a rename target, or before an outcome ("TestAlpha, TestBravo fail"). A constructor (`new TestOpts()`) and a parenthesis on the next line are not calls.
+- The implementor protocol's delegation example is a complete call (brief, `preflight_check` and `guard` in `data`); the old one would be refused once preflight had run.
+- The `changelog` tool listed 0.6.20 five times; it is one entry now, with the same text.
+
+### Security
+
+- Repository-guard git probes match paths literally (`--literal-pathspecs`): `:/x` no longer reaches outside the directory and `[ab].ts` is no longer a wildcard [CWE-88].
+- On Windows, drive-relative paths (`D:brief.md`) and any `:` (alternate data stream syntax) are refused [CWE-22].
+- Preflight path checks for citations and `creates` resolve links: a junction or symlink inside the repository that leads outside it is an escape. A directory named `..fixtures` is no longer mistaken for one [CWE-22].
+
+## [0.6.39] - 2026-09-28
+
+The six items left open after 0.6.38. Before any code was written, a Fable review checked the plan against the code and two real runs (glog-mcp: 32 units, 68 delegations; hubble-api: 11 units, 26 delegations).
+
+### Added
+
+- A long seat no longer idles the pit-boss. Previously, any delegation in the phase staled a 10–12 minute seat's receipt. `invoke_advisor` and `invoke_council` take `phase` and `units`, and Foreman hashes those units' authorized files onto the receipt, taken from their guard baselines before the seat starts. A `record_review` whose `data.units` fall inside the pinned units is judged per unit. It is still refused when a covered unit moved after the seat started or a pinned file's bytes changed. Other units may be delegated in the meantime. Pins are derived from the ledger, confined to the project root and never include Foreman's own files. Without pins or `data.units`, the phase-wide rule is unchanged.
+- The host's cancel signal (a cancelled request or a disconnect) now stops `invoke_advisor`, `invoke_worker` and `invoke_council`. The call is recorded as failure class `cancelled` and can never be bound as a review.
+- Worker and council HTTP calls have an overall deadline, `FOREMAN_WORKER_TOTAL_TIMEOUT_MS` (default 30 minutes), in addition to the gap-between-chunks budget.
+- Progress notifications are sent every 20 s when the host asks for them.
+- `set_unit_status` accepts `preflight_check: { symbols, files, creates }` and runs the preflight in the same write. A failing preflight refuses the delegation with its full report. Measured: a median of 9–11 bookkeeping calls per unit.
+
+### Changed
+
+- Compression is 6× faster: 4.9 s became 0.8 s. One 5,000-line `run_tests` log used to take about 5 s alone and 24 s under load. The time went into the vendored compressor's bit count, which passed through a string about 11.6 million times; it now counts arithmetically. Output is byte-identical (compared on the fixture). The compression and `writeTools` timeouts in the test suite were caused by this.
+- A pass verdict on an attempt whose baseline has no comparison yet now runs the comparison first. The protocol still compares before the tests.
+- Claude seats run Fable 5.1, or Opus when Fable is unavailable. The Claude CLI advisor is pinned to `claude-fable-5-1`; a probe showed the CLI reported serving it. When the CLI refuses the model, the seat retries once on `claude-opus-5-5` and the output says `model_fallback`. On Claude Code, the last-resort review seats two Fable subagents, or two Opus subagents when the host cannot run Fable.
+- Not changed: pinned files are not re-hashed at the gate. Unpinned reviews are not re-hashed either, and doing it would falsely block the fix-then-verify flow. This adversarial-review finding was declined.
+- Known limitation: on Windows, a detached grandchild that outlives its parent cannot be killed by tree, because the tree is gone. The call still returns.
+
+### Fixed
+
+- Long calls stop when they should. On Windows, a timed-out advisor or test run killed only the `cmd.exe` wrapper. The CLI underneath kept the pipes open, so the call hung past its timeout. Reproduced: the old code never returned, and the new one returns in 1.7 s with nothing left running. Timeouts and cancels now kill the whole process tree (`taskkill /T` on Windows, the process group elsewhere). A call returns a bounded time after the child exits, even if a grandchild still holds the pipes. `run_tests` gets the same treatment.
+- The bounded-reuse refusal now names the right cause. In the glog-mcp run, the TLS restart reloaded the rank with no permissions and no `declare_model` call followed. The phase was `security_boundary`, which refuses every correction, but the rank check ran first and named the wrong cause. The `security_boundary` / `hot_path` check now runs first. `claude-opus-5-5`, which resolved to unknown, now maps to middle rank.
+- An adversarial review before release (Codex gpt-6-astra, xhigh) produced nine findings. Eight were fixed, each reproduced first. One fix: pins now name their phase and each unit's attempt. A pinned receipt bound in another phase, or after its units moved, is refused instead of falling back to the phase-wide rule.
+- Pins come only from the current attempt's baseline (adversarial review).
+- A POSIX grandchild that ignored SIGTERM survived the escalation. The SIGKILL now outlives the call and reaches the group after its leader exits (adversarial review).
+- A call whose output pipes were still held after the child exited was reported as a clean exit. It now reports a timeout with an "output incomplete" note, and `run_tests` reports it as not passed (adversarial review).
+- The verdict-time compare runs in the baseline's own repository (adversarial review).
+- A Claude fallback writes a receipt for the refused Fable attempt and records the requested model on both receipts (adversarial review).
+
+### Security
+
+- [CWE-22] A path that leaves the project root through a symlink or junction is never pinned (adversarial review).
+
+## [0.6.38] - 2026-09-27
+
+Foreman trusts the operating system's certificate store. `contract_probe` could not reach an internal Graylog until the operator found `NODE_USE_SYSTEM_CA=1`, added it to Foreman's env and reconnected. The contract gate correctly cannot be overridden. Node verifies TLS against its bundled Mozilla list, not the OS store, so every team with its own PKI hit the same wall.
+
+### Added
+
+- `host_status` reports `os_cert_store`.
+
+### Security
+
+- At startup, the server adds the OS certificate store to Node's default trust (Node 22.19+ or 24.5+; global fetch honours it). Nothing is disabled: a certificate that no store vouches for still fails, and there is no option to skip verification.
+- `FOREMAN_TRUST_SYSTEM_CA=0` opts out. On an older Node, the startup line says to use `NODE_USE_SYSTEM_CA=1` or `NODE_EXTRA_CA_CERTS`.
+- A certificate failure in `contract_probe` now names its cause and the fix. The old message, `fetch failed`, hid the cause.
+
+## [0.6.37] - 2026-09-27
+
+After 0.6.35, each phase gate still added an optional compaction line, and the pit-boss relayed it as "Run /compact now" at 5% session usage. Foreman runs as a separate MCP process and cannot see the context meter, but the host can.
+
+### Changed
+
+- The compaction prompt asks the host to check its own usage. The protocol and the phase-gate line now say: if this session's context usage is above 80%, ask the user to run `/compact` or to start a new session and resume with `session_orient`. Below 80%, or when usage is not visible, do not mention it. A finished unit or phase is never a reason on its own. `/clear` is still suggested once every phase gate has passed, before a different job.
+
+## [0.6.36] - 2026-09-27
+
+Second field report: a Claude Code pit-boss with Codex seats ran three review rounds on one phase, with about eight calls per test-only unit. The report was deliberated with Codex (gpt-6-astra, xhigh). This release cuts calls and stops old findings from blocking, without adding any setting.
+
+### Added
+
+- A finding can name its units and retire with them. An old whole-phase review kept blocking the gate on a finding about one unit, because the review still carried other, unchanged units. A finding recorded with `units: [...]` now blocks only while its review still carries one of those units, so re-covering the fixed unit retires the finding. A shared-file finding names every affected unit and blocks until all of them are re-covered. Findings without `units` behave as before. Finding units must be registered.
+- The baseline can ride the delegation. `set_unit_status` with `data.guard: { files, allowed_files }` takes the repository baseline in the same locked write as the attempt and the window. A refused baseline therefore refuses the delegation instead of leaving an unguarded attempt. A correction inherits its set with `guard: {}`. An explicit `repo_guard snapshot` afterwards is answered from that baseline. Compare stays a separate call before the tests run.
+- `preflight_check` takes `correcting_attempt` (an attempt the ledger holds). Correction briefs are not scored for coverage: coverage reads `n/a`, and every other check still runs.
+- Restart orientation names the open attempt. When an attempt still holds the repository window, `session_orient` reports it as `open_attempt`, with stage, compare result and earlier open violations. It also names the next check and says not to re-delegate.
+
+### Changed
+
+- A confirmed LOW is advisory at the gate. Verification already ignored LOW findings, but the gate did not, so review rounds never converged on LOWs. The gate now passes over a confirmed LOW, lists it and records it on the phase as `advisory_findings`, unresolved. The protocol requires confirming the severity as well as the finding: a reachable authorization, secret or data-loss defect is never LOW.
+- Re-reviews are scoped to what changed. The shared, implementor and Codex protocols now say a re-review after fixes covers the units whose attempts changed since the last complete review: their files plus the callers, contracts and test oracles they touch. The re-review gets that review's findings to rule on and is recorded with `data.units`. A partial or timed-out review is not a baseline.
+- The snapshot says who gets charged. Changes outside the authorized files during the window are charged to the attempt whoever made them, including manual edits outside Foreman's PROGRESS fence.
+- The receipt-only delegation is the documented form. The implementor example no longer asks for a 1–3 line brief summary, because the preflight receipt carries the full checked brief.
+- Not changed: a severity floor on what reviewers report, a separate review-reopen counter and a resume tool were all rejected.
+- Known limitation: a seat receipt is still judged by ledger time, so any delegation during a 10-minute seat stales it. Pinning receipts to the reviewed content needs its own design.
+- Known limitation: long calls still have no cancellation and no overall deadline, and a Windows timeout kills only the wrapper.
+
+## [0.6.35] - 2026-09-25
+
+Field report from a full spec-to-gate run (hubble-api BDI-219: 4 phases, 11 units), deliberated with Codex (gpt-6-astra, xhigh) and traced before fixing. Two of the report's nine items were bugs, and Codex found two more gaps next to them.
+
+### Added
+
+- Advisor failures say why. A non-zero exit is classified as `timed_out`, `auth_failed`, `budget_exceeded` or `model_rejected`, using structured state and the stderr tail, never the echoed prompt. The class and a one-line fix appear in the output and on the receipt.
+- `FOREMAN_CLAUDE_ADVISOR_BUDGET_USD` overrides the Claude seat's $1 cap. The value must be finite, positive and at most 25; the default is unchanged.
+
+### Changed
+
+- Compaction prompts stop interrupting. Every unit pass and every council run told the pit-boss to stop and ask the user to compact. One run hit this seven times, once straight after a real `/compact`. Foreman cannot see the context size, so it was guessing on every event. Now a unit pass says nothing, a phase gate pass adds one optional line suggesting `/compact`, and completion suggests `/clear`. No hygiene field is emitted otherwise.
+- `write_ledger` advertises what it enforces. `phase` is required on every operation and is now required in the schema. `record_fact` has its description line. Array minimums render, for example `(min 2, max 5)` for native reviewers. record_review's stage rules sit beside the data shapes, inside the description clip.
+- `capability_check` now says its Codex result reflects local login state only. `codex login status` reported logged in while every request returned 401.
+- Less preflight noise, same checks. Fenced blocks are skipped when scoring directive coverage only; citations and the checkpoint's `Test:` lines still read them. A checkpoint on a runner Foreman does not parse (dotnet, pytest, make) now reads "not checked: <runner> test selection is not parsed" instead of "unknown" plus a per-file list. A bare prose path resolves when exactly one of the unit's listed files ends with it.
+- Not changed: three proposed fixes were rejected because they added settings or weakened a check: a severity floor at the gate, unit-scoped seat staleness and automatic advisor fallback.
+- Known limitation: long tool calls still ignore the host's cancellation signal, the chat transport has no overall deadline, a Windows timeout kills only the `cmd.exe` wrapper, and one compression of a 5,000-line log takes about 24 s.
+
+### Fixed
+
+- Preflight hashes every unit's contract block. Preflight read the block only in `has_api` phases, while delegation compared it whenever one existed. A non-API unit with a contract therefore looped on "changed since preflight (none -> …)", and the field workaround was deleting the contract. An invalid block now fails preflight, instead of passing preflight and being refused at delegation.
+- Deleting a contract block after preflight is refused. The delegation check ran only when the block still existed. Removing the block dropped the contract, so a non-API unit whose contract declared a smoke could pass without one.
+- Seat freshness is judged from when the seat started. Receipts were stamped when the seat finished, so a unit that changed and was re-verdicted while the seat was reading passed as reviewed. Receipts from `invoke_advisor` and `invoke_council` now carry `started_ts`; older receipts fall back to `ts`.
+- The spec generator stops writing contracts the ledger refuses. Files the worker commits as source are not deliverables. URLs in claims are literal; `${ENV:NAME}` expands in headers only.
+
+## [0.6.34] - 2026-09-25
+
+A research sweep, followed by a Codex adversarial review (gpt-6-astra) of the resulting change list. Every finding below was reproduced or traced before it was fixed.
+
+### Changed
+
+- The escalation rules now agree with each other. The host profiles let a fix worker move up a tier when `route_reason` "cites the rejection", while the implementor protocol forbids escalating on an unchanged brief. The profiles now require a refined brief or an advisor diagnosis, and say that a rejection alone is not evidence.
+- The Codex `worker` seat is pinned to `gpt-6-sol`. It answered a live probe on codex-cli 0.157.0 after being refused on 0.153.4. `gpt-6-terra` is still refused, so the light seat stays on 5.6. Existing `.codex/agents/worker.toml` files keep their pin until `codex_agents_init` rewrites that role.
+- `host_status` on Codex reports what is on disk. It used to print the shipped seat table as if it were the active pins. The table is now `seat_defaults`, shown beside `seat_pins_on_disk` (read from `.codex/agents/*.toml`) and `tool_timeout_sec` (read from the `[mcp_servers.foreman]` table). Codex documents a 60 s default, which cuts off `invoke_advisor` (900 s budget), councils and workers. An unset or shorter value therefore comes with advice to set 1200.
+- Review prompts carry evidence, not the author's verdict. The shared advisor-grounding section now keeps these out of an initial review prompt: the worker's completion report, its summary of what it fixed, commit messages, and "fixed / all tests pass" claims. Framing a change as a fix measurably lowers what a reviewer finds (arXiv 2603.18740). Lighttask still sends its grounding report and plan, and verifiers still receive reviewer findings.
+- Server instructions are now conditional (426 characters). Hosts now defer tool loading, so the initialize instructions may be the only Foreman text a session sees before acting. They say to use Foreman when the user asks for it or a ledger exists, that a missing ledger is not a reason to start one, and that worker and reviewer seats ignore Foreman state.
+- Known limitation: long tool calls ignore the host's cancellation signal, the chat transport has no overall deadline, and a Windows timeout kills only the `cmd.exe` wrapper, not the CLI beneath it. Scheduled for the next release.
+- Known limitation: a timed-out advisor report can lose its findings to lossy compression. Scheduled for the next release.
+
+### Fixed
+
+- A guard violation could be laundered by an ordinary re-delegation. Attempt 1 changes a file outside its brief, and compare records the violation. An ordinary `delegated` write then opens attempt 2, whose snapshot baselines the already-violated tree. Compare against that baseline is ok, and `set_verdict pass` succeeded with the stray change in place and no override recorded, because the verdict read only the newest guarded delegation. Now each compare records the paths a violation named (`violation_paths`) and re-checks every earlier open violation against that violation's OWN baseline. When those paths are back to their original bytes, the violation is marked `resolved` by that attempt. A pass is refused while any earlier violation is neither resolved nor waived. Authorizing the stray file on the next attempt does not clear the violation. A restored path is not charged to the current attempt as a new breach. `user_override` waives each open violation and records the waiver where the violation happened. A correction accepts a violation that has been resolved.
+- `invoke_council` threw `deps is not defined` while rendering its result. The host for the post-council compact yield is now passed into the renderer.
+
+## [0.6.33] - 2026-09-18
+
+### Fixed
+
+- Unquoted flowchart labels containing a flag no longer break diagrams. Mermaid 11 lexes `--` as an edge, so a label like `D -- no / --force --> O` is a lexical error. `preview_diagram` now quotes those labels on write, and the preview server quotes them again on `/api/source`, so a hand-edited `.mmd` cannot ship the same bomb. Already-quoted labels, unlabeled arrows, pipe labels, node text and comments are left alone.
+
+## [0.6.32] - 2026-09-17
+
+Cursor Agent CLI becomes the spawn and review path in cursor host mode. 0.6.31 wrote Task seats and left advisors on synthetic Task slugs (`gpt-5.6-sol-ultra` / `gemini-3.1-pro`), which `capability_check` reported as available without probing a binary. Task does not exist in Cursor Agent CLI (`agent` / `cursor-agent`), so that path could not run headless.
+
+### Added
+
+- `invoke_advisor` accepts `cli: "cursor"`. Foreman resolves `agent`, then `cursor-agent` (a Windows `.cmd` runs via `cmd.exe`, a `.ps1` via `powershell.exe`). It runs `agent -p --mode=ask --trust --output-format text` with the prompt in a tempfile, because of the Windows cmd argv cap. It never passes `--approve-mcps`, so the child cannot load Foreman MCP. Model is inherited, so there is no stale slug.
+- `capability_check` probes `agent status --format json` and reads `isAuthenticated`.
+
+### Changed
+
+- `capability_check` no longer pretends that Task is Codex or Gemini.
+- Cursor receipts record the provider as unknown, because Cursor is a router. One Cursor seat is `receipted`, not `receipted_external`; a second seat needs a different vendor CLI.
+- The Cursor profile tells the pit-boss to spawn workers with `agent -p --force --trust` (optionally `-w`). It falls back to Task + `cursor_agents_init` seats only when the Agent CLI is missing. The editor UI CLI is `cursor` (`--add-mcp` for registration) and is not the agent.
+- `cli: "cursor"` is advertised only under `--host=cursor`. Claude Code and Codex keep the `claude|codex|gemini` enum, descriptions and profile text.
+
+## [0.6.31] - 2026-09-17
+
+Seat tiers in Cursor host mode. The Cursor profile told every worker to be Task + generalPurpose + a hardcoded model slug (`claude-4.6-sonnet-medium-thinking`). Every seat was therefore the same model, `tier: "premium"` was a promise the operator kept by hand, and the slug had already rotated out of the host's Task enum. Claude Code and Codex already resolve the tier to a seat definition (`claude_agents_init`, `codex_agents_init`). Cursor has the same mechanism: a custom subagent file whose frontmatter carries its model.
+
+### Added
+
+- `cursor_agents_init` (registered only when `--host=cursor`) writes the three implementation seats to `.cursor/agents/`: `foreman-worker-light`, `foreman-worker` and `foreman-worker-heavy`. Each carries the shared-tree rule, a ban on Foreman write tools and the report-economy bound.
+  - The default model is `inherit` (the pit-boss's model). Cursor ids rotate, and a guessed slug would reproduce the stale hardcode this tool exists to remove. Override per role with `models` once an id is verified.
+  - It writes Cursor-native files, not `.claude/agents/`. Claude Code aliases (`sonnet`/`opus` plus a separate `effort` key) are not Cursor model syntax. A dual-host repo can keep both trees; `.cursor/` wins on a name collision.
+  - The seat model is a binding DEFAULT, not a lock. The Task tool's `model` argument still overrides the frontmatter, and the delegation's tier/`route_reason` remain the record of what actually ran.
+
+### Changed
+
+- The cursor worker instruction now names the seat table. When the definitions are absent, it falls back to `generalPurpose` with no model argument.
+- Fan-out text now names Cursor's isolated copies instead of an unspecified sandbox. Advisors are unchanged in this release.
+
+## [0.6.30] - 2026-09-15
+
+Report economy: the caller sets a length budget, and measurement showed a bare one is harmful. Foreman already capped every path that flows through it (2 MB worker response, 16 MB council response, 16 KB advisor stdout). Those are crash guards, three orders of magnitude from the length that makes a review unreadable, so nothing bounded a merely verbose seat.
+
+### Added
+
+- `invoke_advisor` takes `report_max_lines`. The council lens seats and the cross-examiner carry the same rule, and the generated Claude and Codex seat definitions bake in the default. The value resolves from the caller argument, then `FOREMAN_REPORT_MAX_LINES`, then 15, clamped to a ceiling of 200.
+- The seat is TOLD the number and never asked to choose one. "Be brief unless you judge more is needed" collapses to "be as long as you want", because a model writing more always reads to itself as thorough. The escapes are therefore a closed list the seat must name, not a judgement it may exercise: a security finding's blast radius and upgrade path, a migration or rollback ordering, or an explicit request for detail.
+
+### Changed
+
+- The shipped wording puts finding completeness ahead of the line budget. It was measured against one review prompt on gemini-3.1-pro-preview. The unbounded arm gave 7 findings in 486 words. A first instruction reading only "report in at most 15 lines" gave 4 findings in 99 words: it met the bound by DROPPING findings, a correctness regression wearing a conciseness win. The shipped wording orders the trade out loud: report every finding, the budget buys prose and never silence, cut the words around the findings and never the findings, and write OVERRUN: with the finding count and keep going when the findings alone overflow. Three runs of that version returned 9, 6 and 7 findings in 229, 153 and 139 words, all inside the bound.
+- `invoke_advisor` appends the budget before anything hashes or measures the prompt. `prompt_sha256` and `bytes_in` therefore attest to what actually left the machine, and record_review's `packet_hash` check moves with them.
+- The bound is advisory at the wire by design. Truncating a review at N lines would really drop findings, which is a correctness bug rather than a display one.
+- The rule was added to the ethos doc as a cross-pillar rule, and to the advisor protocol beside the existing input-economy instruction.
+
+## [0.6.29] - 2026-09-12
+
+Per-seat reasoning effort, and the seats stop differing by model quality. 0.6.28 pinned a model per implementation seat in .claude/agents frontmatter. It left out the reasoning-effort key because the key could not be verified, and a guessed key would have produced a definition claiming behaviour it did not have.
+
+### Added
+
+- Seat definitions set reasoning effort with the `effort` key, which takes low|medium|high|xhigh|max or an integer. Sources for the key: the installed CLI's own frontmatter parser and its validator table, the documented frontmatter schema, and agent files that set it in Anthropic's official plugin marketplace.
+
+### Changed
+
+- The three seats now differ by EFFORT instead of dropping to a weaker model: foreman-worker-light is sonnet/low, foreman-worker is sonnet/medium and foreman-worker-heavy is opus/high. Each axis can be overridden per role. A Foreman worker implements code against a binding brief, and a wrong mechanical edit costs a whole attempt plus its guard cycle, which is dearer than the tokens a lesser model saves.
+- The host parses that frontmatter with a STRICT schema, so an unknown key is an error, not an ignored line. The generator emits only name, description, model and effort, and a test pins the emitted key set against the accepted list.
+
+## [0.6.28] - 2026-09-12
+
+Seat tiers on Claude Code. Foreman has always RECORDED a delegation's capability tier and route_reason as audit evidence. On Claude Code, though, the host profile carried one hardcoded line (Use Agent tool with model sonnet), so every seat was the same model. Tier premium was a promise the operator kept by hand and restated each session. On Codex the tier was already CONFIG: codex_agents_init writes role TOMLs with a pinned model per seat. Claude Code has the same mechanism: an agent definition whose frontmatter carries its model.
+
+### Added
+
+- `claude_agents_init` writes the three implementation seats to .claude/agents/: foreman-worker-light (cheap/haiku), foreman-worker (standard/sonnet) and foreman-worker-heavy (premium/opus). Each can be overridden per role and each carries the shared-tree rule. The model is a binding DEFAULT, not a lock: the Agent tool's model argument still overrides the frontmatter, and the delegation's tier and route_reason remain the record of what actually ran.
+- A release invariant reads the changelog tool and requires its newest entry to equal package.json and to agree with the markdown.
+
+### Changed
+
+- The claude-code worker instruction now names the seat table. When the definitions are absent, it falls back to the old sonnet line.
+- The declared rank also says what the worker seat defaults to. A weight-3 orchestrator is told not to spawn frontier workers for ordinary implementation. The rule is keyed on rank, not model name, so Astra at xhigh gets the same reminder Fable does.
+
+### Fixed
+
+- The changelog TOOL serves a hardcoded array, not the root CHANGELOG.md, and two releases had been written only to the markdown. An operator asking what was new was told nothing since 0.6.25, while two releases of fixes went unread.
+
+## [0.6.27] - 2026-09-11
+
+A researcher protocol, at lighttask scale. Long-running experimental work did not fit the phase/unit/verdict spine. Examples include tuning a decomposition prompt until a model reads video frames correctly, or bringing a deterministic engine to a correctness and latency bar. A negative result is not a failed unit, an inconclusive run has no verdict, and an abandoned direction is not a rejected attempt. That work either bent the implementation ledger out of shape or lived in scrollback that a compaction destroyed.
+
+### Added
+
+- `researcher`: one skill, one activator and one tracker. It has no ledger, no delegation, no verdict and no new record types. The loop is question -> hypothesis -> bounded variant -> evidence -> decision -> checkpoint. It gates nothing; it records and disciplines, and says so.
+- The researcher's central rule: the evaluation set and the verdict method are declared BEFORE the run. Deciding what "better" means after seeing the output is how a favoured variant wins on a moved goalpost, the failure mode that makes weeks of iterative work unreliable. A thread whose author cannot state what better means has found its first result.
+- Three verdict methods, because there are two workloads:
+  - `deterministic`, for engines, parsers and calculators: pass/fail per case plus the measurement that matters. A correctness regression outranks any speed gain.
+  - `scored`, for prompts and model outputs: the rubric, its version and who scored it. A model scoring its own output is recorded as exactly that: evidence, not ground truth.
+  - `observed`, for early exploration. It is explicitly provisional, and a thread cannot close on it.
+- Index, not archive (the galaxy-map pattern). `Docs/research.md` is a thin index: objective, baseline, one row per run, decisions and one checkpoint. Each run gets its own file under `Docs/research/<thread>/`. Resume reads index -> checkpoint -> the one or two runs the checkpoint names, never the whole thread. Two rules come straight from the `spec-man` atlas: the map holds references, not payloads; and where the index and a run file disagree, the run file wins. Large artifacts are referenced by path and digest, never pasted.
+- The protocol enforces its own discipline:
+  - One change per variant.
+  - Compared variants use the same evaluation set; otherwise the result is two anecdotes, not a comparison.
+  - Negative results are kept.
+  - Recorded results are never rewritten. Corrections supersede with a reason, and the predecessor stays.
+  - A run that failed to execute is `invalid`, not a result.
+  - A surprising result is re-run before it is believed. Non-determinism in a deterministic engine stops the protocol until the cause is known.
+- Promotion leaves the protocol. When a result becomes shipped code, it goes to `lighttask` or the full pipeline with its origin variant recorded. The research verdict is not an implementation verdict, and a measurement is not a gate. The promotion text states what each destination actually enforces (see the adversarial-review fix below).
+- `rehydrateRank` restores a declared rank after a mid-session Foreman restart. See Fixed.
+
+### Changed
+
+- A rehydrated rank restores orientation, never authorization. It reports its rank and session but grants ZERO workflow permissions until a `declare_model` in this process confirms the current model. The operator may have changed model during the restart and Foreman cannot tell; granting relaxations on that guess is exactly the wrongly-allowed failure the rank policy exists to prevent. `model_rank_source` says so on every read path. Confirming takes one call and no longer costs a spurious session.
+- A HEAD move Foreman itself made is attributable. "Commit the ledger at every verdict" and "nothing moves HEAD between snapshot and compare" are both right, but they collided: committing your own ledger reported a violation on work nobody did wrong. 0.6.21 vetoed `pitboss_paths` because *content cannot attribute a write to an actor*. A commit is not content, though: it carries a manifest of the paths it touched, so attribution is by construction and the veto's reason does not apply. The guard already excused Foreman's own writes in the WORKING TREE, and the identical writes are now excusable once committed. Anything that is not a plain advance fails closed. `after` must DESCEND from `before`; a reset, amend, rebase or checkout has no ancestry path and still fails. Every path in the range must be Foreman-owned; one source file makes the whole move a violation, naming the file. The move is reported as `head_advanced`, never silently. Stated residual: a worker that commits only Foreman files now clears, because the evidence is identical to the pit-boss's own commit.
+- The brief is sent to Foreman once, not twice. It was pasted to `preflight_check` to be checked and again to the ledger to be kept, roughly 4k tokens each time, per unit. `preflight_check` now stores the text beside the hash it already computed. A delegation may carry `preflight.receipt` with NO `brief` field at all, and Foreman reads the text back. The hash is re-derived from the stored text and must equal the receipt, so a tampered sidecar cannot smuggle in a different brief. The record is Foreman-owned and already excluded from the repository guard. That is why this needs no new path parameter, and none of the traversal, symlink, encoding or guard-collision surface a path would have brought.
+- Not changed: no research ledger, autonomy machinery, execution-isolation model or migration tool was built, deliberately. An architecture council (Codex gpt-6-astra, Gemini 3.1 Pro) deliberated a much larger design, centred on what makes an experiment mechanically reversible. For this workload, the answer is that prompt tuning has nothing to reverse. The larger design is recorded in `Docs/design-researcher-role.md` and is not being built on spec.
+- Known limitation: journal writes are a whole-file read-modify-write under a process-local lock, so two Foreman processes over one journal can lose an update. This predates the release. The permission-confirmation rule above removes the privilege consequence, but the lost update itself remains until journal writes take an interprocess lock.
+
+### Fixed
+
+- Rank survives a mid-session Foreman restart. The declared orchestrator rank lived only in a process-local `let`, so restarting Foreman from `/mcp` dropped the operator to weight 0 with no workflow permissions. `declare_model` compared the journal's session id against `""`, which matches nothing, so it threw. The only recovery left was `init_session`, which appends an entire spurious session. The declaration was in the journal the whole time, but nothing read it back. `rehydrateRank` now does, and fails closed on every doubt:
+  - The session must still be open.
+  - The rank must recompute from the DECLARED model, so a forged weight in a hand-edited journal grants nothing.
+  - `env.host`, which the server writes beside os/node/foreman, must equal the current host. A journal written before 0.6.27 carries no host and never rehydrates. This preserves the original rule that a declaration made under another host describes another host.
+
+  `declare_model` also adopts the open same-host session when the process holds no session id.
+- An adversarial review (Codex gpt-6-astra, xhigh) produced the following fixes, each reproduced before fixing:
+  - A matching session id bypassed the host check entirely. A process on one host could therefore rewrite a session stamped with another host; two servers racing `init_session` can both hold `s1`.
+  - The persisted rank's derived permission booleans were adopted verbatim, which made a hand-edited journal an authorization grant.
+  - A structurally valid but shapeless journal (`{}`, `{"sessions":null}`) threw inside `createServer`. That stopped the entire MCP server from starting and took every unrelated tool with it.
+  - The researcher protocol claimed promoted work still needs worker delegation and an ownership guard. The `lighttask` destination provides neither, because it permits direct implementation, so the promotion text now states what each destination actually enforces.
+- The citation parser stops reading prose as citations. `-run TestFoo` written in a sentence was extracted as a selector, and the preflight refused it as a dead citation. A brief is prose, and the real checkpoint comes from the spec's `Test:` line, which is parsed separately. A bare operand now counts only inside a code span, where the author marked it as a command. A quoted operand counts anywhere, because quoting is itself the mark. Either way, the span is blanked before the identifier scan, so a prose mention does not come back as a dead test name instead.
+- A correct but abbreviated path (`cases/list.html:73` for `internal/web/cases/list.html`) resolved only against the repository root. It now also resolves against the unit's OWN declared directories. That search is bounded and meaningful, unlike the repo-wide suffix matching an earlier deliberation rejected on the grounds that uniqueness is not correctness. When exactly one candidate resolves, the report names the full path it bound to. Two or more candidates are ambiguous: the citation stays dead and the report names them.
+
+## [0.6.26] - 2026-09-11
+
+Seventh field report. An interrupted write left the ledger as 4.2 MB of NUL bytes and destroyed every record since the last commit. The same event left a 46 KB source file entirely NUL. That surfaced hours later, and only because a mutation anchor that had matched stopped matching. Every append-only sidecar came through untouched. The recovery then hit a second layer of problems: a guard that authorized nothing and hard-stopped on every edit, seat receipts that outlived the records citing them, an oracle fooled by a guard that ran zero tests, and three advisories that named the wrong cause.
+
+### Added
+
+- `repo_guard` detects a zeroed file as destroyed, not edited. Nothing detected the 46 KB of NUL: the file kept its size and mtime, and a grep on it reports a missing SYMBOL rather than a missing file. `repo_guard` now scans the authorized set for non-empty all-NUL files. The scan stops at the first non-zero byte, which for real source is byte 0. At `snapshot` it refuses with `status: damaged`, so no worker is spawned onto a destroyed tree. At `compare` it is a violation under its own name, which the ownership diff alone cannot produce because the path IS authorized.
+- Recovery is transcription, not reconstruction. `read_ledger { query: "reconstruct" }` reads the append-only sidecars, diffs them against the ledger and prints a worksheet. The worksheet shows which units and attempts the sidecars attest, which of those the ledger has lost, and which seat receipts are reclaimable. It deliberately writes nothing. A preflight record holds a brief's HASH, while `set_unit_status` needs the text, so re-recording an attempt still needs the operator. Guessing the rest would produce a ledger that looks complete and attests to nothing.
+
+### Changed
+
+- Middle rank takes bounded corrections. Middle rank was mechanical-only, so a behavioural correction forced a fresh worker that carried none of the previous attempt's context. That is strictly more risk than reusing the worker that had just done the work: the policy chose the riskier option in the name of caution. Every other reuse predicate still gates the write: the same declared session, the same recorded worker id, a cleared ownership guard, a phase that is neither hot-path nor security-boundary, correction files inside the attempt's frozen authorized set, and the failure cap. `focused_validation` and `delta_review` stay top-rank only.
+- When `normalize_review` returns zero findings from non-empty text, it now states the grammar it requires instead of four bare numbers. It needs an explicit CRITICAL/HIGH/MEDIUM/LOW or P0-P3 token, and blocker/major/nit are not severity tokens.
+- `record_fact` raises the per-fact cap from 2000 to 8000 characters and budgets the phase's fact store instead of each entry. An incident record, the fact most worth keeping, now fits, paid for by evicting the oldest facts.
+- Not changed: the ledger was not converted to append-only with compaction. That is a larger change than this report justifies, and the missing fsync accounts for the loss on its own.
+
+### Fixed
+
+- Durability, the root cause. The ledger, journal and progress writes already went to a tmp file and renamed over the target, but nothing flushed the data first. A rename is atomic with respect to file IDENTITY, not to the bytes behind it. The directory entry can reach the disk while the data blocks are still in the page cache. A crash in that window leaves the destination at the right size and filled with NUL, which is exactly what was observed. `atomicWriteFile` now fsyncs the tmp file before the rename and fsyncs the containing directory after it. The directory fsync is POSIX only and best-effort; NTFS orders the rename's metadata itself. The hash-chained sidecars (`.foreman-events.jsonl`, `.foreman-preflight.jsonl`, `.foreman-seats.jsonl`) now append through a durable helper that flushes before returning, so a torn final line is rare rather than merely survivable.
+- The guard never authorizes nothing. `repo_guard snapshot` takes two file lists: `files` scopes the line-ending probe, and `allowed_files` IS the allow-list that `compare` freezes. A caller who passed only `files` got `authorized_files: 0`. Every change the worker made was then "outside the brief", a HARD STOP clearable only by `user_override`. That is a guard failing OPEN into a refusal: it cannot catch an ownership breach when everything is a breach, and it trains the owner to waive. When `allowed_files` is omitted, it now falls back to a correction's inherited set and then to `files`. An explicit `[]` declares a worker that edits nothing, and an all-empty call is refused. The snapshot reports `authorized_from` on every call, so the allow-list's provenance is never implicit. The non-git `n/a` boundary still answers first.
+- Seat receipts are reclaimable when their record is gone. Receipts are append-only and survived the loss, but the review records citing them did not. Both seats stayed bound, and `record_review` refused with "one receipt covers one record". A 225k-token gate review with nine confirmed findings became permanently unrecordable. The consumption line already carried the phase and review timestamp, so the ledger now checks whether the consuming record is still there. If it is present, the double-spend refusal stands and names the record. If it is absent, the receipt rebinds and the reclaim is written into the receipts chain, so it is never mistaken for a second spend.
+- `verify_oracle` refuses to conclude from a run that executed nothing. A mutation that renamed a test came back `survived`, because `-run` then matched nothing and `go test` exited 0 having observed nothing at all. This was the `-run`-matches-nothing trap living inside the probe whose job is to measure the suite. Zero tests is now `invalid` on both sides: a baseline that runs no tests is red before any mutation is written, and a mutated run that executes nothing is invalid, not a survivor. This is asymmetric on purpose. A false survivor costs an investigation, while a false kill certifies a control the suite cannot see. Evidence that a test ran therefore always beats a zero-test marker, as with `./...` over a tree where one package has no test files. A survivor from an additive mutation, where the replacement still contains the original, is labelled as possibly a no-op rather than a gap.
+- Three advisories named the wrong cause:
+  - `checkpoint_reach: none` reported "the unit's directive has no Test: line" for every absent definition, even for a unit whose directive ended in exactly such a line. Its three causes are now distinguished: the spec is unreadable, the unit is not in the spec, or there is no Test line. The message names the spec path Foreman actually read.
+  - `preflight_check`'s dead-citation hint said "list it under creates", which reads like brief prose. `creates` is a PARAMETER of the call, and the hint now shows its shape.
+  - `set_unit_status`'s brief-hash mismatch printed two hashes and left the cause to be guessed. A mismatch has exactly one cause, and the refusal now states it: the brief text in the call is not the text `preflight_check` hashed.
+
+## [0.6.25] - 2026-09-11
+
+Sixth field report and a Codex deliberation (docs/codex-deliberation-2026-09-11-reach.md). A unit passed its gate with broken goldens under `internal/web/handlers/testdata/`, because its checkpoint was `go test ./internal/ops/ && go test ./internal/cfsource/graphql/`, and neither package can see those files. Foreman knows the unit's files and the checkpoint command, so the omission can be caught by a static check.
+
+### Added
+
+- Checkpoint reach. The delegation freezes the unit's checkpoint from the SERVER's spec: its `Files:` and every `Test:` line, digested. It refuses with `CHECKPOINT REACH` when the Go package selection omits the conventional owning package of an authorized file: a `.go` file's directory, or a `testdata/**` fixture's parent package.
+- `preflight_check` reports the same check over the spec's Files unioned with the call's `files`. A record whose ONLY failure is reach may be delegated with the owner's `user_override`. The override is recorded on the delegation as `reach_override`, with the files it covered.
+- `set_verdict pass` refuses with `CHECKPOINT CHANGED` when the spec's definition moved. It also refuses when the guard's frozen authorized set is wider than what the frozen checkpoint selects.
+- The reach check is bounded on purpose:
+  - Only `go [-C dir] test` selectors are understood (`./x`, `./x/`, `./x/...`, `./...`, `.`), with nested-module exclusion.
+  - Option values are never selectors, and `-run`/`-tags`/`-c` are reported as filters.
+  - A bare import path or any other runner makes the clause opaque. An opaque clause blocks every refusal, because the check can no longer claim the complete checkpoint excludes a file.
+  - Files with no owning package are reported, never refused.
+  - The refusal states what it is: a package-selection check. It does not infer cross-package readers or assertion coverage.
+
+### Changed
+
+- Not changed: the deliberation decided against several designs:
+  - An executed checkpoint receipt. It would survive editing the golden after the run, because the guard skips authorized paths by design.
+  - A mandatory oracle in any form. Foreman cannot connect a failing guard to a named control: a mutation of an audit label in the control's file kills just as well.
+  - Directory-valued controls.
+  - Dependency inference.
+  - Shell interpretation.
+
+### Fixed
+
+- A direct fix allocates an attempt without a delegation. As a result, the 0.6.24 verdict lookup by exact attempt found no "current delegation", and the contract-changed, forward-declaration and deliverable checks vanished on a direct-fix attempt. The newest delegation's frozen obligations now bind it, and `live_smoke` reads the same obligations.
+
+## [0.6.24] - 2026-09-10
 
 Fifth field report (8 units, 6 delegations, 5 guard compares on 0.6.21–0.6.23) and a Codex deliberation over the designs. The report's structural gap: a unit passed its gate while shipping a 760 KB unauthorized payload (the checkpoint asserted pins and never read the output; the independent re-verify ran the same blind command), and another admitted ZZ/QQ/AA as country codes with every control proven to fail when removed. Foreman verified that a checkpoint existed and passed; it had no notion of whether the checkpoint could observe the deliverable. Record: docs/codex-deliberation-2026-09-10-oracle.md.
 
-- **Fixed in shipped code.** The verdict read the CURRENT spec contract, so `smoke: null` written after delegation lifted the smoke gate; the verdict now checks the contract digest frozen on the attempt before any exemption is interpreted (`CONTRACT CHANGED`), and the freeze happens on every delegation the server knows the spec for. Unknown fields in a `foreman-contract` block were stripped silently and did not change the digest; every object in the block is strict now, so a field this server does not enforce refuses the block. The digest helper hashed path and size only past 4 MiB, so a same-size content swap kept its digest; every digest now covers complete bytes, symlinks are followed only inside the root, and an inventory past the file or byte bound is refused rather than hashed as if complete. `add_rejection.ts` was mandatory though it orders nothing; it defaults to server time. `verify_oracle` counted a mutation that broke the build as a kill; recognizable compile and import failures are `invalid` now.
-- **Deliverables.** The contract block gains `deliverables: [{ id, path, assertions }]`: files the smoke plan must produce and what Foreman checks on their bytes — `min_bytes`, `max_bytes`, `json_nonempty_path`, a bounded `json_array_length`, and `values_in { path, reference }` (every value selected by a dot path with `[]` record projection must appear in a repo file of allowed values, one per line). A deliverable with no observable property, a deliverable without a producer, one inside `input_files`, or one that is its own reference refuses the block at parse. `live_smoke` refuses to run while a declared deliverable already exists, so the bytes it observes are the ones the run produced; after the run it digests each deliverable, evaluates the assertions, and records the result and the reference digests on the receipt. The reference digests are frozen on the delegation: a worker cannot rewrite the allowed set it is measured against. `set_verdict pass` recomputes every deliverable and reference digest; the requirement applies wherever a plan or deliverable is declared, in any phase, not only under `has_api`. An empty list is a reviewed exemption frozen like `smoke: null`. Foreman still cannot judge "unauthorized" or "not a country": it evaluates the properties the spec declares, so the spec-generator now names them.
-- **Evidence identity for reviews.** A `record_review` that can carry the gate (independent, native, verification) must cite, in `smoke_receipts`, the run id of the newest passing live_smoke of every covered unit whose contract declares deliverables; the server resolves the ids, and a caller never supplies a digest. The gate refuses when a unit's newest receipt is cited by no seat covering it. What this proves: the review refers to the current artifact evidence. What it does not prove: that anyone read the bytes; the implementor text says the verifier does.
-- **Forward declarations.** `preflight_check` takes `creates: [{ file, tests }]` for files the unit orders into existence. Citations of those files and tests are `forward`, not dead; the promise is frozen onto the delegation, carried across corrections, and `set_verdict pass` refuses (`FORWARD CITATIONS UNMET`) until each file exists and each test is DECLARED in it (a comment, call or reference does not count). A `-run <regex>` operand in a brief is resolved with Go semantics against `func Test…` declarations, anchored forms stay anchored, and the matched names are reported; a selector nothing matches is forward when a promised test matches it.
-- **Not built, by the deliberation.** Claim-backed value sets, an assertion algebra, checkpoint or build producers, oracle-adequacy scores, mandatory second plans, negative-case quotas, a line-count bound for Middle-rank bounded corrections (a measured net change needs before-bytes the guard does not retain; a 0.6.25 design), larger journal limits.
+### Added
 
-## 0.6.23 - 2026-09-10
+- Contract blocks can declare `deliverables: [{ id, path, assertions }]`: files the smoke plan must produce and what Foreman checks on their bytes — `min_bytes`, `max_bytes`, `json_nonempty_path`, a bounded `json_array_length`, and `values_in { path, reference }` (every value selected by a dot path with `[]` record projection must appear in a repo file of allowed values, one per line). The block is refused at parse for a deliverable with no observable property, a deliverable without a producer, one inside `input_files`, or one that is its own reference. An empty list is a reviewed exemption frozen like `smoke: null`.
+- `live_smoke` checks deliverables: it refuses to run while a declared deliverable already exists, so the bytes it observes are the ones the run produced; after the run it digests each deliverable, evaluates the assertions, and records the result and the reference digests on the receipt. Reference digests are frozen on the delegation, so a worker cannot rewrite the allowed set it is measured against.
+- `record_review` takes `smoke_receipts` (evidence identity for reviews): a review that can carry the gate (independent, native, verification) must cite the run id of the newest passing live_smoke of every covered unit whose contract declares deliverables; the server resolves the ids and a caller never supplies a digest. This proves the review refers to the current artifact evidence; it does not prove anyone read the bytes — the implementor text says the verifier does.
+- Forward declarations: `preflight_check` takes `creates: [{ file, tests }]` for files the unit orders into existence. Citations of those files and tests are `forward`, not dead; the promise is frozen onto the delegation and carried across corrections.
+- A `-run <regex>` operand in a brief is resolved with Go semantics against `func Test…` declarations; anchored forms stay anchored and the matched names are reported. A selector nothing matches is forward when a promised test matches it.
+
+### Changed
+
+- `set_verdict pass` recomputes every deliverable and reference digest; the requirement applies wherever a plan or deliverable is declared, in any phase, not only under `has_api`. Foreman still cannot judge "unauthorized" or "not a country": it evaluates the properties the spec declares, so the spec-generator now names them.
+- The gate refuses when a unit's newest live_smoke receipt is cited by no seat covering it.
+- `set_verdict pass` refuses (`FORWARD CITATIONS UNMET`) until each forward-declared file exists and each promised test is DECLARED in it (a comment, call or reference does not count).
+- `add_rejection.ts` is no longer mandatory (it orders nothing); it defaults to server time.
+- Not changed: by the deliberation, the following were not built — claim-backed value sets, an assertion algebra, checkpoint or build producers, oracle-adequacy scores, mandatory second plans, negative-case quotas, a line-count bound for Middle-rank bounded corrections (a measured net change needs before-bytes the guard does not retain; a 0.6.25 design), and larger journal limits.
+
+### Fixed
+
+- The verdict read the CURRENT spec contract, so `smoke: null` written after delegation lifted the smoke gate. The verdict now checks the contract digest frozen on the attempt before any exemption is interpreted (`CONTRACT CHANGED`), and the freeze happens on every delegation the server knows the spec for.
+- Unknown fields in a `foreman-contract` block were stripped silently and did not change the digest; every object in the block is strict now, so a field this server does not enforce refuses the block.
+- The digest helper hashed path and size only past 4 MiB, so a same-size content swap kept its digest; every digest now covers complete bytes, and an inventory past the file or byte bound is refused rather than hashed as if complete.
+- `verify_oracle` counted a mutation that broke the build as a kill; recognizable compile and import failures are `invalid` now.
+
+### Security
+
+- Digests follow symlinks only inside the root.
+
+## [0.6.23] - 2026-09-10
 
 Field report on 0.6.22, same day: the operator put the API token in `~/.foreman-mcp/.env`, the store that exists so a variable can be defined without exporting it into every shell, and `contract_probe` answered `credential_missing`.
 
-- **Fixed.** `contract_probe` resolved `${ENV:NAME}` from `process.env` alone, and `live_smoke` checked its plan's env names against `process.env` alone and spawned the runner with the inherited environment, so the store reached neither. Both now resolve through one function with the precedence `loadForemanEnv` already applies: process env first, `~/.foreman-mcp/.env` second. Every store value is registered for redaction as it is for the worker path. The output names each variable's source (`FOREMAN_TOKEN (store)`), never its value; a malformed store is `credential_store_invalid` rather than a silent miss. `run_tests` gained an env overlay for the child, used by `live_smoke` only; the `run_tests` tool surface is unchanged.
-- **Not applied.** The worker path's endpoint guard (a repo `.foremanenv` cannot steer the store's key to a different API base) has no counterpart here on purpose: a probe's or smoke's destination comes from the spec's contract block, which is the reviewed authoring place, and every record names the target and the variable names used.
+### Added
 
-## 0.6.22 - 2026-09-10
+- `run_tests` gained an env overlay for the child, used by `live_smoke` only; the `run_tests` tool surface is unchanged.
+
+### Changed
+
+- Not changed: the worker path's endpoint guard (a repo `.foremanenv` cannot steer the store's key to a different API base) has no counterpart for probes and smokes, on purpose: their destination comes from the spec's contract block, which is the reviewed authoring place, and every record names the target and the variable names used.
+
+### Fixed
+
+- `contract_probe` and `live_smoke` now read credentials from `~/.foreman-mcp/.env`. `contract_probe` resolved `${ENV:NAME}` from `process.env` alone, and `live_smoke` checked its plan's env names against `process.env` alone and spawned the runner with the inherited environment, so the store reached neither. Both now resolve through one function with the precedence `loadForemanEnv` already applies: process env first, `~/.foreman-mcp/.env` second. A malformed store is `credential_store_invalid` rather than a silent miss.
+
+### Security
+
+- Every credential-store value is registered for redaction, as it is for the worker path. Output names each variable's source (`FOREMAN_TOKEN (store)`), never its value.
+
+## [0.6.22] - 2026-09-10
 
 A fourth field report ("the three that make reality a source of truth") and an architecture council (Codex gpt-6-astra and Gemini 3.1 Pro, three rounds, converged). The report's unit had 94.6% coverage, six killed mutations, a green suite and a clean guard, and could not complete one HTTPS request. Five 0.6.21 defects were confirmed and fixed; the council's design ships as a spec contract block, claim-bound probes, a live smoke receipt the verdict reads, and a repository window in the ledger.
 
-- **Fixed in shipped code.** `preflight_check` accepted any passing probe on the unit, so a probe of an unrelated endpoint satisfied the requirement; it now requires a passing claim-mode probe for every registered claim under the current contract digest. The probe hashed a 4 MB prefix of an over-cap body and could pass a body assertion against it; capture now streams under the cap and an incomplete capture fails every body assertion. The preflight lookup ignored the phase; it binds phase and unit. `.foreman-preflight.jsonl` was not in the guard's exclusion list, so the first preflight in a window was a violation; it is Foreman-owned now. A guard comparison attached to the newest delegation, so a compare that landed after a re-delegation reported against the wrong attempt; a comparison carries the baseline hash it was taken against and is refused when the unit's current baseline differs.
-- **Spec contract block.** A `foreman-contract` fenced JSON block under a unit's heading registers its external claims (id, text, a GET or HEAD request with `${ENV:NAME}` headers, assertions: status, min_bytes, contains, json_nonempty_path, json_array_length {exact|min|max}) and its smoke plan (id, runner, args, cwd, env names, harness_files, input_files, checks) or `smoke: null` as a reviewed opt-out. Foreman digests the block canonically; the delegation freezes the digest and refuses a preflight receipt taken under a different one. In a `has_api` phase a unit with no block cannot pass preflight: omission is not an opt-out. Nothing a tool call supplies can define a claim or a command.
-- **contract_probe by claim.** `{ phase, unit_id, claim_id }` loads the request and assertions from the spec and records the claim id and contract digest; a caller-supplied url or assertion in claim mode is refused. `url` mode still exists for exploration and is recorded `diagnostic`, which never satisfies a claim. `json_array_length` is the first relational assertion: a page that returns exactly the requested limit fails a `max: limit-1` bound, since a full page is possibly truncated, never proof of completeness.
-- **live_smoke.** `{ phase, unit_id, plan_id }` runs the registered plan through `run_tests` in the plan's cwd with the plan's timeout, after checking every named environment variable is set and every harness file exists, and records a receipt bound to the attempt, the contract digest, a digest of the harness files and a digest of the application inputs, all server-computed over paths and contents. A run whose inputs change while it executes is invalid. `set_verdict v:'pass'` in a `has_api` phase recomputes both digests and refuses (`SMOKE REQUIRED`) when there is no smoke for the current attempt, the newest one failed, or either digest moved; `user_override` waives it as `cap_override.waived: smoke`. A unit whose block says `smoke: null` needs none. Ledgers written without a spec path keep today's behaviour.
-- **Repository window.** The ledger holds one window per repository root. A guard snapshot acquires it for the unit's attempt (`editing`); an ok comparison moves it to `validation`; any verdict, `close_attempt` on the owning attempt, or a new attempt on the same unit releases it. A delegation or snapshot for another unit while it is held is refused (`WINDOW BUSY`). This replaces the prose rule that two actors do not share a tree with a server check; it does not attribute writes, it serializes them.
-- **Not built.** A general assertion algebra (jq, JSONPath, arithmetic over fields), time-based receipt expiry, per-phase contract blocks, and a scheduler. The council rejected all four: definitions live in the spec and digests, not clocks, decide staleness.
+### Added
 
-## 0.6.21 - 2026-09-10
+- Spec contract block: a `foreman-contract` fenced JSON block under a unit's heading registers its external claims (id, text, a GET or HEAD request with `${ENV:NAME}` headers, assertions: status, min_bytes, contains, json_nonempty_path, json_array_length {exact|min|max}) and its smoke plan (id, runner, args, cwd, env names, harness_files, input_files, checks), or `smoke: null` as a reviewed opt-out. Foreman digests the block canonically; the delegation freezes the digest and refuses a preflight receipt taken under a different one. Nothing a tool call supplies can define a claim or a command.
+- `contract_probe` claim mode: `{ phase, unit_id, claim_id }` loads the request and assertions from the spec and records the claim id and contract digest; a caller-supplied url or assertion in claim mode is refused.
+- `json_array_length`, the first relational assertion: a page that returns exactly the requested limit fails a `max: limit-1` bound, since a full page is possibly truncated, never proof of completeness.
+- `live_smoke { phase, unit_id, plan_id }` runs the registered plan through `run_tests` in the plan's cwd with the plan's timeout, after checking every named environment variable is set and every harness file exists, and records a receipt bound to the attempt, the contract digest, a digest of the harness files and a digest of the application inputs, all server-computed over paths and contents. A run whose inputs change while it executes is invalid.
+- Repository window: the ledger holds one window per repository root. A guard snapshot acquires it for the unit's attempt (`editing`); an ok comparison moves it to `validation`; any verdict, `close_attempt` on the owning attempt, or a new attempt on the same unit releases it. A delegation or snapshot for another unit while it is held is refused (`WINDOW BUSY`). This replaces the prose rule that two actors do not share a tree with a server check; it does not attribute writes, it serializes them.
+
+### Changed
+
+- In a `has_api` phase a unit with no contract block cannot pass preflight: omission is not an opt-out.
+- `contract_probe` `url` mode still exists for exploration but is recorded `diagnostic`, which never satisfies a claim.
+- `set_verdict v:'pass'` in a `has_api` phase recomputes the harness and input digests and refuses (`SMOKE REQUIRED`) when there is no smoke for the current attempt, the newest one failed, or either digest moved; `user_override` waives it as `cap_override.waived: smoke`. A unit whose block says `smoke: null` needs none. Ledgers written without a spec path keep today's behaviour.
+- Not changed: a general assertion algebra (jq, JSONPath, arithmetic over fields), time-based receipt expiry, per-phase contract blocks, and a scheduler were not built. The council rejected all four: definitions live in the spec and digests, not clocks, decide staleness.
+
+### Fixed
+
+- `preflight_check` accepted any passing probe on the unit, so a probe of an unrelated endpoint satisfied the requirement; it now requires a passing claim-mode probe for every registered claim under the current contract digest.
+- The probe hashed a 4 MB prefix of an over-cap body and could pass a body assertion against it; capture now streams under the cap and an incomplete capture fails every body assertion.
+- The preflight lookup ignored the phase; it binds phase and unit.
+- `.foreman-preflight.jsonl` was not in the guard's exclusion list, so the first preflight in a window was a violation; it is Foreman-owned now.
+- A guard comparison attached to the newest delegation, so a compare that landed after a re-delegation reported against the wrong attempt; a comparison carries the baseline hash it was taken against and is refused when the unit's current baseline differs.
+
+## [0.6.21] - 2026-09-10
 
 A third field report and a Codex deliberation over the designs (gpt-6-astra, adversarial). One design was vetoed and two shipped defects were found in 0.6.20 code.
 
-- **Fixed in shipped code.** The fence check never fired through the real tool path: recording the snapshot rewrites the ledger, and the ledger was one of the marked files, so `stateMoved` was always true; marks now cover the progress-state file only, with a test through `repo_guard`. The preflight lookup let an earlier pass survive a later failure and let a pass on one unit satisfy another; the newest record for a brief decides and a unit's records are its own. `verify_oracle` overwrote a file blindly on restore; it now refuses when the file holds neither the mutation nor the original, runs each guard configuration unmutated first (a red baseline invalidates every mutation under it, never a kill), classifies timeouts and aborted runs as invalid, warns when no guard argument names the mutated file's directory, and runs in the repository root (`run_tests` gained a working directory).
-- **Typed attempt outcomes.** `close_attempt { attempt, outcome: delivered | blocked | validation_only, note }` labels a non-failure ending once; a rejection or fail verdict marks the attempt `rejected` and that label is server-authored and cannot be relabelled. Lifetime counters live on the unit because the delegation history is trimmed. Attempt ids, the failure cap, `needs_attempt`, the guard and the verdict are untouched.
-- **Worker heartbeats.** Workers append `{ts, phase, unit, attempt, files, note}` to `.foreman-heartbeat.jsonl` beside the ledger, a Foreman-owned file the guard excludes and never a fence mark; `worker_status` reports the newest heartbeat for the unit's current attempt, files touched so far, and stale lines from earlier attempts. Advisory. The delegation result now names the attempt.
-- **Per-unit phase ownership.** `phase_ownership` sweeps every unit against its own Files column and assigns each outside reference to the unit whose Files hold it, or UNASSIGNED; the report carries a hash and says it is stale once a unit lands. Sites are classed `at_risk` (a dispatch site with a default arm that names none of the introduced members), `present` (a member is already named there: reassurance) or `reference`; at_risk rows come first, since for an introduced member presence is the handled case and absence at a dispatch site is the risk. The compile probe waits for an isolated execution primitive.
-- **Contract probe.** `contract_probe` sends a GET or HEAD from Foreman's own HTTP client, resolves header values from environment variable names it never prints, evaluates explicit assertions (2xx, exact status, min bytes, contains, non-empty JSON path so a 200 with zero rows fails), and records origin, path, status, bytes and body hash on the unit. In a phase whose scope declares `has_api`, `preflight_check` refuses a brief until the unit has a passing probe; the requirement comes from the phase scope, not a caller flag.
-- **Two actors, one tree.** `pitboss_paths` was vetoed: content cannot attribute a write to an actor, and an exemption would have widened what delta review leaves unchecked. Instead the protocol says the pit-boss does not write Docs/ or the harness while a worker window is open, records discoveries with `record_fact`, amends after the verdict, and closes a validation-only re-check as `validation_only`.
+### Added
 
-## 0.6.20 - 2026-09-10
+- `close_attempt { attempt, outcome: delivered | blocked | validation_only, note }` labels a non-failure ending once (typed attempt outcomes). Lifetime counters live on the unit because the delegation history is trimmed.
+- Worker heartbeats: workers append `{ts, phase, unit, attempt, files, note}` to `.foreman-heartbeat.jsonl` beside the ledger, a Foreman-owned file the guard excludes and never a fence mark. `worker_status` reports the newest heartbeat for the unit's current attempt, files touched so far, and stale lines from earlier attempts. Advisory.
+- `phase_ownership` sweeps every unit against its own Files column and assigns each outside reference to the unit whose Files hold it, or UNASSIGNED; the report carries a hash and says it is stale once a unit lands. Sites are classed `at_risk` (a dispatch site with a default arm that names none of the introduced members), `present` (a member is already named there: reassurance) or `reference`; at_risk rows come first, since for an introduced member presence is the handled case and absence at a dispatch site is the risk.
+- `contract_probe` sends a GET or HEAD from Foreman's own HTTP client, resolves header values from environment variable names it never prints, evaluates explicit assertions (2xx, exact status, min bytes, contains, non-empty JSON path so a 200 with zero rows fails), and records origin, path, status, bytes and body hash on the unit.
+- `run_tests` gained a working directory.
+
+### Changed
+
+- A rejection or fail verdict marks the attempt `rejected`; that label is server-authored and cannot be relabelled. Attempt ids, the failure cap, `needs_attempt`, the guard and the verdict are untouched.
+- The delegation result now names the attempt.
+- In a phase whose scope declares `has_api`, `preflight_check` refuses a brief until the unit has a passing probe; the requirement comes from the phase scope, not a caller flag.
+- Two actors, one tree: the protocol says the pit-boss does not write Docs/ or the harness while a worker window is open, records discoveries with `record_fact`, amends after the verdict, and closes a validation-only re-check as `validation_only`.
+- Not changed: `pitboss_paths` was vetoed — content cannot attribute a write to an actor, and an exemption would have widened what delta review leaves unchecked.
+- Known limitation: the `phase_ownership` compile probe waits for an isolated execution primitive.
+
+### Fixed
+
+- The fence check never fired through the real tool path: recording the snapshot rewrites the ledger, and the ledger was one of the marked files, so `stateMoved` was always true. Marks now cover the progress-state file only, with a test through `repo_guard`.
+- The preflight lookup let an earlier pass survive a later failure and let a pass on one unit satisfy another; the newest record for a brief decides and a unit's records are its own.
+- `verify_oracle` overwrote a file blindly on restore; it now refuses when the file holds neither the mutation nor the original, runs each guard configuration unmutated first (a red baseline invalidates every mutation under it, never a kill), classifies timeouts and aborted runs as invalid, warns when no guard argument names the mutated file's directory, and runs in the repository root.
+
+## [0.6.20] - 2026-09-10
 
 Two field reports in one day, eleven items, all built. The attestation-shaped ones became checks.
 
-- **Preflight is checked, not attested.** `preflight_check { phase, unit_id, brief, symbols, files, type_names?, introduces? }` compares the brief against the spec before the attempt is spent: every symbol in `symbols` must appear in the spec and every citation in the brief (path, file:line, named test) must resolve in the repository, or it refuses; directive sentences with no echo in the brief, contradiction markers, drifted citations with their real line, and files outside the declared set that reference the type the unit extends (dispatch sites with a `default:` arm first) are reported as advisories. It returns a `brief_hash` and writes a record beside the ledger; once a project has run it, `set_unit_status s:'delegated'` refuses a brief whose hash has no passing record (`PREFLIGHT RECEIPT`). `symbols_grepped` is an array now; the old count is still read.
-- **A mutation primitive.** `verify_oracle { phase, unit_id, mutations: [{ label, file, old, new, runner, args }] }` applies each mutation, runs the guard test through run_tests, restores the file and verifies the restore by hash. Killed, survived (the suite cannot observe that control) and invalid are reported and recorded on the unit; a failed restore aborts loudly.
-- **Probe check: discover before you escalate.** A gap about how something outside the repository behaves is answered by docs for the exact version plus a side-effect-free probe before it can be classified. The pit-boss answers a fixed block (docs, what would answer it, side effects, credentials, cost, decision); `PROBE NOW` when side-effect-free with a held credential, `ASK ONE LINE` when a side effect or missing credential needs the user, `OWNER DECISION` only for policy, ownership, cost, scope and security wording. Included by the implementor, design partner, spec generator and lighttask.
-- **Saved Workflow scripts on Claude Code.** `claude_workflows_init` installs `foreman-checkpoint-review`, `foreman-design-panel` and `foreman-triage` into the project's `.claude/workflows/`. A run is confirmed with the user unless the session opted in; a workflow review is same-model perspective; implementation never runs inside a workflow.
-- **`native` review opens to Claude Code.** A Workflow fan with distinct agents and a verifier is the shape `stage:'native'` models; the basis stamp labels it same-provider and the independence bound caps the streak, so it no longer reopens what 0.6.13 closed. Cursor and generic still refuse it.
-- **repo_guard no longer charges the worker for Foreman's own writes.** One module, `lib/foremanFiles.ts`, names every state file (ledger, progress, journal, events, seats), their `.corrupt.<ts>` backups and atomic-write `.tmp` files, and Docs/PROGRESS.md is fingerprinted with Foreman's fenced block stripped rather than excused. A fenced-block change that arrives with no Foreman progress write is still a violation.
-- **Review staleness keys per unit.** A seat review stays current for the units whose attempt did not change; the gate demands fresh coverage only for the units that moved, by a later seat or an eligible verification. Legacy records without a snapshot stay whole-phase keyed.
-- **Same-worker reuse works mid-unit.** The correction write binds the worker id onto the previous attempt when it carries none, same session, recorded as late-bound; every other correction predicate is unchanged.
-- **Nit path.** A post-gate test-assertion nit took eight writes; it takes four plus the gate: `set_unit_status` with an inline `rejection`, snapshot inheriting the frozen set, compare, `set_verdict` with `escape_class`.
-- **Soft limits.** Journal messages, review `checked` entries, `limitations` and native reviewer `checked` entries are truncated with a visible marker and a warning instead of refusing the whole write.
-- **Smaller.** `run_tests` accepts a pinned toolchain path inside the project root whose basename is an allowed runner. Model ids keep their rank when the host appends a context suffix such as `[1m]`. `T_BLIND` names a green suite that cannot observe the defect. `write_progress retire_unit` removes an orphan checklist entry with a reason. `write_ledger record_fact` keeps bounded per-phase facts gathered during preflight, listed by `read_ledger { query: "facts" }`.
+### Added
 
-## 0.6.19 - 2026-09-09
+- `preflight_check { phase, unit_id, brief, symbols, files, type_names?, introduces? }` checks a brief against the spec before the attempt is spent: every symbol in `symbols` must appear in the spec and every citation in the brief (path, file:line, named test) must resolve in the repository, or it refuses. Directive sentences with no echo in the brief, contradiction markers, drifted citations with their real line, and files outside the declared set that reference the type the unit extends (dispatch sites with a `default:` arm first) are reported as advisories. It returns a `brief_hash` and writes a record beside the ledger.
+- `verify_oracle { phase, unit_id, mutations: [{ label, file, old, new, runner, args }] }`, a mutation primitive: applies each mutation, runs the guard test through run_tests, restores the file and verifies the restore by hash. Killed, survived (the suite cannot observe that control) and invalid are reported and recorded on the unit; a failed restore aborts loudly.
+- Probe check ("discover before you escalate"): a gap about how something outside the repository behaves is answered by docs for the exact version plus a side-effect-free probe before it can be classified. The pit-boss answers a fixed block (docs, what would answer it, side effects, credentials, cost, decision): `PROBE NOW` when side-effect-free with a held credential, `ASK ONE LINE` when a side effect or missing credential needs the user, `OWNER DECISION` only for policy, ownership, cost, scope and security wording. Included by the implementor, design partner, spec generator and lighttask.
+- `claude_workflows_init` installs saved Workflow scripts `foreman-checkpoint-review`, `foreman-design-panel` and `foreman-triage` into the project's `.claude/workflows/` on Claude Code. A run is confirmed with the user unless the session opted in; a workflow review is same-model perspective; implementation never runs inside a workflow.
+- `run_tests` accepts a pinned toolchain path inside the project root whose basename is an allowed runner.
+- `T_BLIND` names a green suite that cannot observe the defect.
+- `write_progress retire_unit` removes an orphan checklist entry with a reason.
+- `write_ledger record_fact` keeps bounded per-phase facts gathered during preflight, listed by `read_ledger { query: "facts" }`.
 
-- Review outcomes. The seat rule at the phase gate is unchanged; what carried each counted pass is now recorded. Every counted pass is stamped with a basis class (receipted external, declared external, same-provider, a delta variant, or override), its seats, the per-unit attempt snapshot, every waiver accepted, the declared rank and a token split, with scalar totals per basis that survive the bounded history. `read_ledger { query: "review_outcomes" }` recomputes the table on every read.
-- Escapes. A rejection, a non-pass verdict, or a new attempt on a unit its gate still covers records an escape against that gate; coverage keys on the attempt snapshot, so a pass-to-pass re-verdict cannot exit it. The class is a closed enum the ledger demands before the unit's next pass verdict and before the phase's next counted pass; `record_escape` classifies, or records a defect found out of band; `add_rejection { escape_class }` classifies in the same write. Phases gated before this release attribute to `legacy`.
-- Seat receipts. `invoke_advisor` appends a hash-chained receipt for every run (vendor from the CLI, served model, exit code, failure reason, prompt hash, bytes, tokens) and returns `seat_receipt` and `packet_sha256`. `record_review` binds one receipt to one independent record after checking the file: packet hash equal, run succeeded, unspent, and after the newest verdict and attempt. A foreign-vendor receipt on a host with a known vendor is `receipted_external`; a same-vendor receipt is `same_provider`.
-- Independence bound. Three consecutive counted passes carried by same-provider review, an override, or (on Codex) an unreceipted independent record are the limit; the next is refused until a receipted cross-vendor seat resets the streak or the owner overrides on the record. Records from earlier releases are neutral.
+### Changed
+
+- Once a project has run `preflight_check`, `set_unit_status s:'delegated'` refuses a brief whose hash has no passing record (`PREFLIGHT RECEIPT`) — preflight is checked, not attested. `symbols_grepped` is an array now; the old count is still read.
+- `native` review opens to Claude Code: a Workflow fan with distinct agents and a verifier is the shape `stage:'native'` models; the basis stamp labels it same-provider and the independence bound caps the streak, so it no longer reopens what 0.6.13 closed. Cursor and generic still refuse it.
+- Review staleness keys per unit: a seat review stays current for the units whose attempt did not change; the gate demands fresh coverage only for the units that moved, by a later seat or an eligible verification. Legacy records without a snapshot stay whole-phase keyed.
+- Nit path: a post-gate test-assertion nit took eight writes; it takes four plus the gate — `set_unit_status` with an inline `rejection`, snapshot inheriting the frozen set, compare, `set_verdict` with `escape_class`.
+- Soft limits: journal messages, review `checked` entries, `limitations` and native reviewer `checked` entries are truncated with a visible marker and a warning instead of refusing the whole write.
+
+### Fixed
+
+- `repo_guard` no longer charges the worker for Foreman's own writes. One module, `lib/foremanFiles.ts`, names every state file (ledger, progress, journal, events, seats), their `.corrupt.<ts>` backups and atomic-write `.tmp` files, and Docs/PROGRESS.md is fingerprinted with Foreman's fenced block stripped rather than excused. A fenced-block change that arrives with no Foreman progress write is still a violation.
+- Same-worker reuse works mid-unit: the correction write binds the worker id onto the previous attempt when it carries none, same session, recorded as late-bound; every other correction predicate is unchanged.
+- Model ids keep their rank when the host appends a context suffix such as `[1m]`.
+
+## [0.6.19] - 2026-09-09
+
+### Added
+
+- Review outcomes: every counted pass is stamped with a basis class (receipted external, declared external, same-provider, a delta variant, or override), its seats, the per-unit attempt snapshot, every waiver accepted, the declared rank and a token split, with scalar totals per basis that survive the bounded history. `read_ledger { query: "review_outcomes" }` recomputes the table on every read. The seat rule at the phase gate is unchanged; what carried each counted pass is now recorded.
+- Escapes: a rejection, a non-pass verdict, or a new attempt on a unit its gate still covers records an escape against that gate; coverage keys on the attempt snapshot, so a pass-to-pass re-verdict cannot exit it. The class is a closed enum the ledger demands before the unit's next pass verdict and before the phase's next counted pass. `record_escape` classifies, or records a defect found out of band; `add_rejection { escape_class }` classifies in the same write. Phases gated before this release attribute to `legacy`.
+- Seat receipts: `invoke_advisor` appends a hash-chained receipt for every run (vendor from the CLI, served model, exit code, failure reason, prompt hash, bytes, tokens) and returns `seat_receipt` and `packet_sha256`. `record_review` binds one receipt to one independent record after checking the file: packet hash equal, run succeeded, unspent, and after the newest verdict and attempt. A foreign-vendor receipt on a host with a known vendor is `receipted_external`; a same-vendor receipt is `same_provider`.
+- `invoke_council` writes one receipt per seat with the vendor from a prefix allowlist over the configured model id, else `unknown`, which the basis classes as `receipted` and never as external.
+- `review_outcomes` ends with the owner-review triggers (T1 a basis losing seat status on defect escapes, T2 unreceipted external gates on Codex, T3 the reviewer-rank precondition, T4 independence overrides), and `scripts/review-outcomes.mjs` renders the same table across N ledgers.
+
+### Changed
+
+- Independence bound: three consecutive counted passes carried by same-provider review, an override, or (on Codex) an unreceipted independent record are the limit; the next is refused until a receipted cross-vendor seat resets the streak or the owner overrides on the record. Records from earlier releases are neutral.
 - Worker-delta records gain structural bounds: the verifier must be a fresh id against every baseline native agent and every worker in the phase, `checked` must list every file in `evidence.files`, and a baseline carries at most two verification records (a server scalar, not a count over trimmable history). The Top-only admission condition is unchanged; legacy records keep the 0.6.18 predicates.
-- `invoke_council` writes one receipt per seat with the vendor from a prefix allowlist over the configured model id, else `unknown`, which the basis classes as `receipted` and never as external. `review_outcomes` ends with the owner-review triggers (T1 a basis losing seat status on defect escapes, T2 unreceipted external gates on Codex, T3 the reviewer-rank precondition, T4 independence overrides), and `scripts/review-outcomes.mjs` renders the same table across N ledgers.
-- The review predicates moved out of `ledger.ts` into `reviewPredicates.ts` unchanged; the outcomes logic lives in `reviewBasis.ts` and `seatReceipts.ts`. A 19-agent deliberation rejected a rank-weighted review scheme because Foreman has no source for the model a native reviewer ran on; rank never enters review sufficiency.
+- The review predicates moved out of `ledger.ts` into `reviewPredicates.ts` unchanged; the outcomes logic lives in `reviewBasis.ts` and `seatReceipts.ts`.
+- Not changed: a 19-agent deliberation rejected a rank-weighted review scheme because Foreman has no source for the model a native reviewer ran on; rank never enters review sufficiency.
 
-## 0.6.18 - 2026-09-09
+## [0.6.18] - 2026-09-09
 
-- Declared workflow rank. The pit-boss reports its model and reasoning effort at `init_session` (or later via `write_journal declare_model`), and Foreman resolves a rank from an explicit allowlist of host-emitted ids and display names; unknown ids stay on the normal protocol. Middle rank permits same-worker mechanical corrections with a compact follow-up; Top rank additionally permits bounded fixes, focused intermediate validation, and a `worker_delta` verification with a verifier distinct from every correcting worker. Every correction is a new recorded attempt bound to the same worker and journal session, stays inside the previous frozen authorized file set, and requires a cleared ownership guard; hot-path and security-boundary phases are excluded. Seat reviews now snapshot per-unit attempt counts, so a review is current only when no unit has a newer attempt. Direct Fix is legacy-only: the pit-boss no longer writes code, fixes, or tests. Rank is a trusted self-declaration by design; it never changes agent_class, seat capability, or cost tier, and never waives workers, guards, or checkpoint gates.
+### Added
+
+- Declared workflow rank: the pit-boss reports its model and reasoning effort at `init_session` (or later via `write_journal declare_model`), and Foreman resolves a rank from an explicit allowlist of host-emitted ids and display names; unknown ids stay on the normal protocol. Middle rank permits same-worker mechanical corrections with a compact follow-up; Top rank additionally permits bounded fixes, focused intermediate validation, and a `worker_delta` verification with a verifier distinct from every correcting worker. Every correction is a new recorded attempt bound to the same worker and journal session, stays inside the previous frozen authorized file set, and requires a cleared ownership guard; hot-path and security-boundary phases are excluded. Rank is a trusted self-declaration by design; it never changes agent_class, seat capability, or cost tier, and never waives workers, guards, or checkpoint gates.
+
+### Changed
+
+- Seat reviews now snapshot per-unit attempt counts, so a review is current only when no unit has a newer attempt.
+- Direct Fix is legacy-only: the pit-boss no longer writes code, fixes, or tests.
 - Reconciles 0.6.13 and 0.6.16: a same-model fan was recorded but never counted as a seat; a complete native review with distinct reviewers, distinct lenses, and a separate verifier now satisfies the Codex gate, labelled as same-provider review. Legacy `fan` records are not promoted.
 
-## 0.6.17 - 2026-09-09
+## [0.6.17] - 2026-09-09
+
+### Changed
 
 - All host profiles now show the same ledger-derived state in `read_progress` and `session_orient`, including passed/remaining units and phase gates. Checklist totals are labeled separately and no longer claim project completion or choose a competing next unit. Declared units count toward remaining work, and progress reads leave corrupt files untouched.
 
-## 0.6.16 - 2026-09-09
+## [0.6.16] - 2026-09-09
+
+### Changed
 
 - Codex mode now defaults to native workers and a review team of distinct reviewers plus a verifier. Complete `stage: "native"` evidence can satisfy its phase gate without external CLIs or a review override; stale, incomplete, and confirmed findings remain blocking.
 - Major checkpoints add whichever Claude/Gemini advisors are available through the existing tools. Missing optional providers do not block native review, and native evidence is labelled as same-provider review.
 - Host procedures, diagnostics, role instructions, and MCP validation now describe the native path; legacy fan records and other hosts retain their gate policy.
 
-## 0.6.15 - 2026-09-09
+## [0.6.15] - 2026-09-09
 
 Codex host only. `claude-code`, `cursor` and `generic` are untouched, and a test asserts they never see the new seats.
 
-- **The pit-boss picks an implementation seat per unit** instead of using one seat for everything. `codex_agents_init` now writes `worker_light`, `worker` and `worker_heavy` alongside the existing roles.
-- **Each seat is pinned to a model verified by live probe** on codex-cli 0.153.4: `gpt-5.6-terra`, `gpt-5.6-sol`, `gpt-6-astra`. The version is load-bearing rather than cosmetic — `gpt-6-terra` and `gpt-6-sol` are both refused on a ChatGPT account, so a model family does not travel across a version bump and a newer-looking id is not automatically available. `CODEX_SEAT_MODELS` is the single source of those defaults and the `models` input still overrides any of them per role, because ids rotate.
-- **The seat maps onto Foreman's existing cost tiers**, which are already recorded on every delegation with a `route_reason`. Light is for a fully specified edit: a literal substitution, rename, constant, test name, import path, or a mechanical repeat of a stated pattern. Standard is the default, for ordinary implementation where the brief states the behaviour and the seat chooses the code, and it is where anything unclassifiable belongs. Heavy is for concurrency, migrations, error-handling semantics, public contracts or schemas, security and authorization paths, and any unit a lower seat already failed.
-- **Escalation stays bound to the rule that already existed**: a fix worker moves up a tier only when `route_reason` cites the rejection, a refined brief, or an advisor diagnosis. Starting at premium to save a round is called out as the thing not to do.
+### Added
+
+- The pit-boss picks an implementation seat per unit instead of using one seat for everything: `codex_agents_init` now writes `worker_light`, `worker` and `worker_heavy` alongside the existing roles.
+- Each seat is pinned to a model verified by live probe on codex-cli 0.153.4: `gpt-5.6-terra`, `gpt-5.6-sol`, `gpt-6-astra`. The version is load-bearing rather than cosmetic — `gpt-6-terra` and `gpt-6-sol` are both refused on a ChatGPT account, so a model family does not travel across a version bump and a newer-looking id is not automatically available. `CODEX_SEAT_MODELS` is the single source of those defaults, and the `models` input still overrides any of them per role, because ids rotate.
+
+### Changed
+
+- The seat maps onto Foreman's existing cost tiers, which are already recorded on every delegation with a `route_reason`. Light is for a fully specified edit: a literal substitution, rename, constant, test name, import path, or a mechanical repeat of a stated pattern. Standard is the default, for ordinary implementation where the brief states the behaviour and the seat chooses the code, and it is where anything unclassifiable belongs. Heavy is for concurrency, migrations, error-handling semantics, public contracts or schemas, security and authorization paths, and any unit a lower seat already failed.
+- Escalation stays bound to the rule that already existed: a fix worker moves up a tier only when `route_reason` cites the rejection, a refined brief, or an advisor diagnosis. Starting at premium to save a round is called out as the thing not to do.
 - The light seat is told to stop and ask for a stronger seat rather than guess when a brief turns out to need judgement; the heavy seat is told the brief's file list still binds, so extra reasoning goes into failure modes rather than scope.
-- **The unverified `gpt-5.6-luna` reference is gone** from both the invoke and fan-out text. It had been carried since 0.5.7 with a hedge attached and never confirmed.
-- **Reasoning effort is not pinnable per role in this build.** Rather than invent a config field, the text says to pass effort at spawn time when Codex exposes it — high for light and standard, xhigh for heavy — and never to assert an effort the host did not apply.
 - `host_status` reports the Codex seat table rather than a single model slug scraped from prose, which no longer carries one.
 - Bumped package to `0.6.15`.
+- Known limitation: reasoning effort is not pinnable per role in this build. Rather than invent a config field, the text says to pass effort at spawn time when Codex exposes it — high for light and standard, xhigh for heavy — and never to assert an effort the host did not apply.
 
-## 0.6.14 - 2026-09-09
+### Removed
+
+- The unverified `gpt-5.6-luna` reference is gone from both the invoke and fan-out text. It had been carried since 0.5.7 with a hedge attached and never confirmed.
+
+## [0.6.14] - 2026-09-09
 
 Foreman compresses `run_tests` and `invoke_advisor` output before the pit-boss reads it, and the pit-boss reads the failing `file:line` and the exit code out of exactly that text to reach a verdict. The only guard on the compressed digest was that a retrieval marker survived and the output was non-empty, so a digest could drop every location in a failure report and still be served.
 
-- **A protected-literal check now compares the original against the text actually served.** A critical literal lost entirely, or invented from nothing, discards the digest and serves the original unchanged; the reason goes to stderr. Nothing is ever rewritten.
-- **Which classes gate was decided by measurement, not taste.** Compressing this repository's own 5,000-line test fixture keeps 4 of 4 paths and drops 103 of 103 incidental `45ms`-style timings. Dropping bulk repetition is the compressor's whole purpose, so gating on every class would reject honest work and gating on none would leave the original hole. Locations, paths and the exit code gate; everything else is counted for diagnosis. A repeated literal deduplicated to a lower non-zero count is allowed, because the value is still recoverable.
-- **The check runs after the meta head is re-prepended**, not on the raw digest. Foreman puts the exit code back itself, so checking earlier failed every compression for losing a literal Foreman was about to restore.
-- A file extension must start with a letter, so an address such as `127.0.0.1:5432` is not read as a source location and its absence does not block a digest.
+### Added
+
+- A protected-literal check compares the original against the text actually served. A critical literal lost entirely, or invented from nothing, discards the digest and serves the original unchanged; the reason goes to stderr. Nothing is ever rewritten.
+
+### Changed
+
+- Which literal classes gate was decided by measurement, not taste: compressing this repository's own 5,000-line test fixture keeps 4 of 4 paths and drops 103 of 103 incidental `45ms`-style timings. Dropping bulk repetition is the compressor's whole purpose, so gating on every class would reject honest work and gating on none would leave the original hole. Locations, paths and the exit code gate; everything else is counted for diagnosis. A repeated literal deduplicated to a lower non-zero count is allowed, because the value is still recoverable.
+- The check runs after the meta head is re-prepended, not on the raw digest. Foreman puts the exit code back itself, so checking earlier failed every compression for losing a literal Foreman was about to restore.
 - Bumped package to `0.6.14`.
 
-## 0.6.13 - 2026-09-09
+### Fixed
 
-Codex host only. When a phase checkpoint needs an advisor review and neither the Claude nor the Gemini CLI is reachable, the last rung used to be two adversarial self-review passes in the pit-boss's own seat. On Codex that is one context talking to itself. It now runs a **review fan** on Codex's own subagents instead.
+- A file extension must start with a letter, so an address such as `127.0.0.1:5432` is not read as a source location and its absence does not block a digest.
 
-- **`reviewer` and `verifier` join `codex_agents_init`.** Both are read-only, both are forbidden from writing files, spawning further agents, or producing a ledger verdict. The reviewer answers one risk lens and nothing else; the verifier is told in its own instructions that the findings it receives came from the same model it is running on, so they are claims to test rather than evidence.
-- **The fan is three steps.** Spawn one `reviewer` per lens, picking three to five from the versioned catalog that match the change; they run in parallel under `agents.max_threads`, each seeing only its lens question and the evidence it needs, and never each other's output. Then spawn one `verifier`, hand it every finding, and require it to open each cited `file:line`, classify `confirmed` / `rejected` / `unverified`, re-rate severity by blast radius, merge duplicates across lenses, and return one report. Then record it. `max_depth=1` still holds throughout.
-- **The orchestrator's context stays clean.** The reviewers do the reading, which is the expensive part, and only the verifier's report comes back to the main thread. A finding the verifier drops is gone, which is why its instructions say so explicitly.
-- **A fan is perspective, not independence, and the ledger says so.** `record_review` accepts a new `stage: 'fan'`. It is stored with its findings, its examined list, and a `limitations` note naming which advisor CLIs were unavailable — and, like `cross_exam`, it never counts as a seat for the phase gate. The `REVIEW REQUIRED` message names it and points at the owner's decision. Separate contexts and one lens each remove shared reasoning; they do not decorrelate one model's blind spots, and pretending otherwise would buy a green gate with nothing behind it. A confirmed finding recorded by a fan still blocks the gate exactly like any other.
-- The practical change for a Codex run with no advisor CLI: the same owner arbitration the protocol already required at that rung, now with a verified, lens-covered report attached instead of a self-review.
+## [0.6.13] - 2026-09-09
+
+Codex host only. When a phase checkpoint needs an advisor review and neither the Claude nor the Gemini CLI is reachable, the last rung used to be two adversarial self-review passes in the pit-boss's own seat. On Codex that is one context talking to itself. It now runs a review fan on Codex's own subagents instead.
+
+### Added
+
+- `reviewer` and `verifier` join `codex_agents_init`. Both are read-only and forbidden from writing files, spawning further agents, or producing a ledger verdict. The reviewer answers one risk lens and nothing else; the verifier is told in its own instructions that the findings it receives came from the same model it is running on, so they are claims to test rather than evidence.
+- The review fan, in three steps: spawn one `reviewer` per lens, picking three to five from the versioned catalog that match the change — they run in parallel under `agents.max_threads`, each seeing only its lens question and the evidence it needs, never each other's output. Then spawn one `verifier`, hand it every finding, and require it to open each cited `file:line`, classify `confirmed` / `rejected` / `unverified`, re-rate severity by blast radius, merge duplicates across lenses, and return one report. Then record it. `max_depth=1` still holds throughout. The reviewers do the reading (the expensive part), and only the verifier's report comes back to the main thread, keeping the orchestrator's context clean; a finding the verifier drops is gone, which is why its instructions say so explicitly.
+- `record_review` accepts `stage: 'fan'`, stored with its findings, its examined list, and a `limitations` note naming which advisor CLIs were unavailable.
+
+### Changed
+
+- A fan is perspective, not independence: like `cross_exam`, a `fan` record never counts as a seat for the phase gate, and the `REVIEW REQUIRED` message names it and points at the owner's decision. Separate contexts and one lens each remove shared reasoning; they do not decorrelate one model's blind spots, and pretending otherwise would buy a green gate with nothing behind it. A confirmed finding recorded by a fan still blocks the gate exactly like any other.
+- For a Codex run with no advisor CLI: the same owner arbitration the protocol already required at that rung, now with a verified, lens-covered report attached instead of a self-review.
 - Bumped package to `0.6.13`.
 
-## 0.6.12 - 2026-09-09
+## [0.6.12] - 2026-09-09
 
 `repo_guard` was unusable on any repository larger than this one, reported from the field the day after it shipped.
 
-- **The index fingerprints are read for the changed paths, not the whole index.** They came from an unscoped `git ls-files -s`, which emits a row per *tracked file*, so its output scales with repository size rather than with the change being compared. It measured 13 KB against the 16 KB capture limit in this repo, which is why every test here passed, and it refused every snapshot on a larger repository with `output exceeded the capture limit`. The call is now scoped to the paths `git status` actually reported, batched by argument length so a long command line cannot fail on Windows.
-- **The changed-path limit is a default, not a wall.** `max_entries` on `snapshot` defaults to 500 and is raisable to 5000; `compare` reuses whatever the baseline was taken under, so both sides are measured the same way. A tree that legitimately carries more changes than the default can still be guarded by asking for a bigger comparison, and the truncation message now says so instead of only reporting that it gave up.
-- **Git output budgets are sized from that limit.** `runExternalCli` takes an optional `maxStdout` with a 2 MB ceiling. The default stays 16 KB, which is the right budget for advisor and test output because that is prose a model reads; a machine-readable inventory of changed paths is a different thing, and truncating one silently is a correctness bug rather than a display one.
-- Regression test: a repository whose full index exceeds the capture limit now snapshots correctly for a one-file change. That is the case the original test suite could not see, because both the temporary repositories it built and this repository fit under the limit.
+### Added
+
+- `max_entries` on `snapshot` defaults to 500 and is raisable to 5000; `compare` reuses whatever the baseline was taken under, so both sides are measured the same way. A tree that legitimately carries more changes than the default can still be guarded by asking for a bigger comparison, and the truncation message now says so instead of only reporting that it gave up.
+- `runExternalCli` takes an optional `maxStdout` with a 2 MB ceiling, and git output budgets are sized from the changed-path limit. The default stays 16 KB, the right budget for advisor and test output because that is prose a model reads; a machine-readable inventory of changed paths is a different thing, and truncating one silently is a correctness bug rather than a display one.
+
+### Changed
+
 - Bumped package to `0.6.12`.
 
-## 0.6.11 - 2026-09-08
+### Fixed
 
-An adversarial review of 0.6.10 broke the repository guard in nine ways, each reproduced against a real repository before it was accepted. The headline defect: the comparison diffed **path sets**, so a file that was already dirty before the worker ran was still dirty afterwards, and a worker overwriting the user's uncommitted work in a file outside the brief returned `ok`. That is the exact loss the guard exists to prevent, so this release reworks the model rather than patching the symptoms.
+- Index fingerprints are read for the changed paths, not the whole index. They came from an unscoped `git ls-files -s`, which emits a row per tracked file, so its output scaled with repository size rather than with the change being compared. It measured 13 KB against the 16 KB capture limit in this repo, which is why every test here passed, and it refused every snapshot on a larger repository with `output exceeded the capture limit`. The call is now scoped to the paths `git status` reported, batched by argument length so a long command line cannot fail on Windows.
+- Regression test: a repository whose full index exceeds the capture limit now snapshots correctly for a one-file change — the case the original test suite could not see, because both the temporary repositories it built and this repository fit under the limit.
 
-- **The comparison sees content, not just paths.** Every changed path carries a fingerprint for both the work tree (sha256 of the bytes) and the index (the staged blob id). An already-dirty file whose content or staged blob changed outside the authorized set is now a violation, as is a change to its status.
-- **An unreadable tree is a refusal, never a clean one.** Every git probe is checked for exit status, timeout, and output truncation. Before, a failing `status` contributed an empty dirty list, so a corrupt index produced a clean-looking snapshot and an unauthorized edit compared green. A missing HEAD, a missing stash ref, and an unset config remain states, not failures. A failed comparison records nothing, so the verdict stays blocked.
-- **The baseline and the authorized set are frozen.** A second `snapshot` for the same attempt is refused, because re-taking it replaced a recorded violation and then passed. `compare` no longer accepts `allowed_files`, because widening authorization after the worker ran cleared the worker's own mutation. Both were reproducible ways to retry until the guard turned green.
-- **Paths round-trip correctly.** Status is read NUL-delimited with `-uall` and `core.quotepath=false`. Untracked directories expand to individual files instead of collapsing to `src/`, which had hidden new files inside them and falsely flagged authorized ones. Unicode and spaced names survive, and a file literally named `x -> a.ts` is no longer parsed as a rename and authorized as `a.ts`.
-- **The snapshot records the repository root.** `project_dir` is caller-supplied, and a clean clone with the same HEAD could clear the real tree; a comparison run against a different checkout is now a violation.
-- **Foreman's own state files are excluded.** The pit-boss writes progress, journal, and ledger during a unit, so counting them as worker mutations reported a violation on every real run.
-- **A recorded violation outlives its attempt.** Matching only the current attempt let a violation be abandoned by allocating another one, since a direct fix bumps `attempt_seq` without adding a delegation. A violation now also reopens a standing pass to `pending`, the way a rejection does: a pass must not outlive its guard.
-- **Truncation blocks only on real overflow**, and the entry cap is 200. Fifty unchanged dirty files previously blocked a repository that had done nothing wrong. An authorized repair that restores committed content is allowed, instead of being reported as destroyed work.
-- Tool responses are scrubbed through the redaction path. `tests/repoGuard.test.ts` carries a case for every defect above and drives real git repositories throughout.
+## [0.6.11] - 2026-09-08
+
+An adversarial review of 0.6.10 broke the repository guard in nine ways, each reproduced against a real repository before it was accepted. The headline defect: the comparison diffed path sets, so a file that was already dirty before the worker ran was still dirty afterwards, and a worker overwriting the user's uncommitted work in a file outside the brief returned `ok`. That is the exact loss the guard exists to prevent, so this release reworks the model rather than patching the symptoms.
+
+### Changed
+
+- A second `snapshot` for the same attempt is refused (the baseline is frozen), because re-taking it replaced a recorded violation and then passed.
+- A recorded violation outlives its attempt. Matching only the current attempt let a violation be abandoned by allocating another one, since a direct fix bumps `attempt_seq` without adding a delegation. A violation now also reopens a standing pass to `pending`, the way a rejection does: a pass must not outlive its guard.
+- The entry cap is 200.
 - Bumped package to `0.6.11`.
 
-## 0.6.10 - 2026-09-08
+### Removed
+
+- `compare` no longer accepts `allowed_files` (the authorized set is frozen), because widening authorization after the worker ran cleared the worker's own mutation. Together with re-snapshotting, both were reproducible ways to retry until the guard turned green.
+
+### Fixed
+
+- The comparison sees content, not just paths. Every changed path carries a fingerprint for both the work tree (sha256 of the bytes) and the index (the staged blob id). An already-dirty file whose content or staged blob changed outside the authorized set is now a violation, as is a change to its status.
+- An unreadable tree is a refusal, never a clean one. Every git probe is checked for exit status, timeout, and output truncation. Before, a failing `status` contributed an empty dirty list, so a corrupt index produced a clean-looking snapshot and an unauthorized edit compared green. A missing HEAD, a missing stash ref, and an unset config remain states, not failures. A failed comparison records nothing, so the verdict stays blocked.
+- Paths round-trip correctly. Status is read NUL-delimited with `-uall` and `core.quotepath=false`. Untracked directories expand to individual files instead of collapsing to `src/`, which had hidden new files inside them and falsely flagged authorized ones. Unicode and spaced names survive, and a file literally named `x -> a.ts` is no longer parsed as a rename and authorized as `a.ts`.
+- The snapshot records the repository root. `project_dir` is caller-supplied, and a clean clone with the same HEAD could clear the real tree; a comparison run against a different checkout is now a violation.
+- Foreman's own state files are excluded. The pit-boss writes progress, journal, and ledger during a unit, so counting them as worker mutations reported a violation on every real run.
+- Truncation blocks only on real overflow: fifty unchanged dirty files previously blocked a repository that had done nothing wrong. An authorized repair that restores committed content is allowed, instead of being reported as destroyed work.
+- `tests/repoGuard.test.ts` carries a case for every defect above and drives real git repositories throughout.
+
+### Security
+
+- Tool responses are scrubbed through the redaction path.
+
+## [0.6.10] - 2026-09-08
 
 An advisor review named Foreman's ceremony as its biggest weakness, and singled out bookkeeping that the protocol asks a model to perform by hand. The repository guard was the clearest case: two paragraphs of prose telling the pit-boss to run six git commands before an editing worker, hold the result in conversation context, and compare by eye afterwards. A compaction between those two points destroyed the baseline silently, and nothing was recorded, so a skipped check and a passed check looked identical in the ledger.
 
-- **`repo_guard` (27th tool) runs the shared-tree ownership check.** `snapshot` captures branch, HEAD, stash ref and count, staged and dirty paths, `core.autocrlf`, and `git ls-files --eol` for the unit's files, and records them on the unit's newest delegation. `compare` re-reads the same state after the worker returns and names every mutation outside `allowed_files`: a moved HEAD, a file staged or unstaged, a changed stash, a changed `core.autocrlf`, a file changed outside the brief, or a pre-existing uncommitted change that disappeared. The order is `set_unit_status s:'delegated'` → snapshot → spawn → compare.
-- **A pass verdict needs a cleared guard.** `set_verdict v:'pass'` is refused for an attempt whose delegation carries a snapshot with no comparison, or with a comparison that found violations (`REPOSITORY GUARD`). Foreman writes both the snapshot and the result, so the check is a fact about the tree rather than the pit-boss's account of one. `user_override` waives it and is recorded on the delegation as `guard_override`.
-- **Scoped so nothing existing breaks.** Enforcement applies only to a delegation that actually carries a snapshot. Outside a git work tree, or with git unavailable, the tool reports `n/a` and gates nothing, the same fail-open rule the `.foremanenv` refusal probe already follows. Ledgers written before this version, hosts that never call the tool, and a re-delegation whose new attempt has no snapshot are all unaffected.
-- **[CWE-88]** file paths reach a git command line, so every path is validated and the list is always placed after a `--` separator. A path that is absolute, escapes with `..`, or begins with `-` is refused before anything is spawned.
-- Two bugs found by running the guard against real repositories rather than reasoning about it: the git helper trimmed whole command output, which ate the leading status column of `git status --porcelain` and returned every path missing its first character; and a test that flipped `core.autocrlf` was a no-op against a machine whose global value was already set. Both are covered by regressions in `tests/repoGuard.test.ts`, which drives real git repositories throughout.
+### Added
+
+- `repo_guard` (27th tool) runs the shared-tree ownership check. `snapshot` captures branch, HEAD, stash ref and count, staged and dirty paths, `core.autocrlf`, and `git ls-files --eol` for the unit's files, and records them on the unit's newest delegation. `compare` re-reads the same state after the worker returns and names every mutation outside `allowed_files`: a moved HEAD, a file staged or unstaged, a changed stash, a changed `core.autocrlf`, a file changed outside the brief, or a pre-existing uncommitted change that disappeared. The order is `set_unit_status s:'delegated'` → snapshot → spawn → compare.
+
+### Changed
+
+- A pass verdict needs a cleared guard: `set_verdict v:'pass'` is refused for an attempt whose delegation carries a snapshot with no comparison, or with a comparison that found violations (`REPOSITORY GUARD`). Foreman writes both the snapshot and the result, so the check is a fact about the tree rather than the pit-boss's account of one. `user_override` waives it and is recorded on the delegation as `guard_override`.
+- Scoped so nothing existing breaks: enforcement applies only to a delegation that carries a snapshot. Outside a git work tree, or with git unavailable, the tool reports `n/a` and gates nothing, the same fail-open rule the `.foremanenv` refusal probe already follows. Ledgers written before this version, hosts that never call the tool, and a re-delegation whose new attempt has no snapshot are unaffected.
 - The implementor's shared-tree preflight and repository-state guard steps are now two tool calls instead of two paragraphs. Tool count 27.
 - Bumped package to `0.6.10`.
 
-## 0.6.9 - 2026-09-08
+### Fixed
 
-Field-feedback round 6: the paid review loop at the phase gate. A pit-boss on another project ran six review rounds (two seats each, well over a million advisor tokens) on one phase because every LOW fix re-verdicted a unit, which staled the review, which demanded a fresh seat. Codex (`gpt-6-astra`) replayed the ledger against the diagnosis and found four enforcement holes; all four are closed here, and two of the proposed fixes (a non-gating `accepted` classification, a diff-only "delta" seat) were rejected as loopholes and did not ship.
+- Two bugs found by running the guard against real repositories rather than reasoning about it: the git helper trimmed whole command output, which ate the leading status column of `git status --porcelain` and returned every path missing its first character; and a test that flipped `core.autocrlf` was a no-op against a machine whose global value was already set. Both are covered by regressions in `tests/repoGuard.test.ts`, which drives real git repositories throughout.
+
+### Security
+
+- [CWE-88] File paths reach a git command line, so every path is validated and the list is always placed after a `--` separator. A path that is absolute, escapes with `..`, or begins with `-` is refused before anything is spawned.
+
+## [0.6.9] - 2026-09-08
+
+Field-feedback round 6: the paid review loop at the phase gate. A pit-boss on another project ran six review rounds (two seats each, well over a million advisor tokens) on one phase because every LOW fix re-verdicted a unit, which staled the review, which demanded a fresh seat. Codex (`gpt-6-astra`) replayed the ledger against the diagnosis and found four enforcement holes; all four are closed here.
+
+### Added
+
+- New regression file `tests/fieldFeedback2026-09e.test.ts` mirrors each replayed sequence.
+
+### Changed
 
 - **`REVIEW REQUIRED` says whether the verification path is open.** The gate error now ends with `VERIFICATION ELIGIBLE` and the exact `record_review { stage: "verification", ... }` shape to write, baseline timestamp and direct-fix attempts filled in, or `VERIFICATION NOT ELIGIBLE` with the one blocker. The check runs the same predicates the gate applies to a submitted record, and also confirms that recording the verification would not evict its own baseline.
+- Implementor checkpoint text names the hint and the re-run rule.
+- Bumped package to `0.6.9`.
+- Not changed: a non-gating `accepted` classification was proposed and rejected as a loophole; it did not ship.
+- Not changed: a diff-only "delta" seat was proposed and rejected as a loophole; it did not ship.
+
+### Fixed
+
 - **A verification baseline must be a complete seat.** A `completion: failed` or `partial` review, or a silent one (zero findings, no `checked[]`), can no longer anchor a `stage: verification` record. Before, the failed record went stale after the direct-fix re-verdict, the INCOMPLETE check stopped seeing it, and the gate passed with no completed independent review.
 - **Every attempt since the baseline must be a direct fix.** A worker delegation, or an `invoke_worker` attempt in the sidecar, recorded between the baseline review and the final literal fix is refused. Before, only the unit's current attempt was inspected, so a behaviour-changing worker attempt sandwiched between two reviews received no seat.
 - **Retention never evicts a record the gate is blocking on.** The 20-record cap stays, but a current review with a confirmed finding, an unsuperseded failed or silent seat, a current verification record, and the baseline it names are never dropped; oldest evictable records go first. Before, twenty clean reviews appended after a confirmed HIGH pushed it out of history and the gate passed with no waiver.
 - **A failed or silent seat is superseded by re-running it.** A later `completion: complete` record from the same advisor at the same stage clears the INCOMPLETE REVIEW block; a different advisor, a cross_exam, or another incomplete record does not, and a confirmed finding on the superseded record still blocks. Before, the only ways past a timed-out seat were a re-verdict (which staled every review) or an owner override.
-- Implementor checkpoint text names the hint and the re-run rule. New regression file `tests/fieldFeedback2026-09e.test.ts` mirrors each replayed sequence.
-- Bumped package to `0.6.9`.
 
-## 0.6.8 - 2026-09-05
+## [0.6.8] - 2026-09-05
 
-- **The Codex seat runs `gpt-6-astra` at `xhigh`.** Verified through the CLI first: codex-cli 0.152.0 answers "requires a newer version of Codex" for this id and refuses every other `*-astra` spelling outright on a ChatGPT account; 0.153.4 runs it and echoes `model: gpt-6-astra` and `reasoning effort: xhigh` in its header. `invoke_advisor` now reads that header and reports `model_served` and `reasoning_effort`; a model other than the pinned one is a failed seat (`model_substituted`), the same rule as the Gemini seat. Needs codex-cli 0.153.4 or newer.
+### Added
+
+- `invoke_advisor` now reads the Codex CLI header and reports `model_served` and `reasoning_effort`.
+
+### Changed
+
+- **The Codex seat runs `gpt-6-astra` at `xhigh`.** Verified through the CLI first: codex-cli 0.152.0 answers "requires a newer version of Codex" for this id and refuses every other `*-astra` spelling outright on a ChatGPT account; 0.153.4 runs it and echoes `model: gpt-6-astra` and `reasoning effort: xhigh` in its header. A served model other than the pinned one is a failed seat (`model_substituted`), the same rule as the Gemini seat. Needs codex-cli 0.153.4 or newer.
 - Bumped package to `0.6.8`.
 
-## 0.6.7 - 2026-09-04
+## [0.6.7] - 2026-09-04
 
-- **The Gemini seat is pinned to `gemini-3.1-pro-preview`, and the served model is checked.** 0.6.6 pinned `gemini-3.8-flash` on the strength of a probe that only proved the id was accepted. The run stats told the truth: on that account the CLI served `gemini-3.5-flash` for the main request, silently, with exit 0 and a plausible answer, and did the same for `3.7-flash`. `gemini-3.1-pro-preview` is served faithfully and the API defaults Pro to thinking level `high`. `invoke_advisor` and `capability_check` now run gemini with `--output-format json`, read `model_served` and the thinking tokens from the stats, and treat a served model other than the pinned one as a failed seat (`model_substituted`), text kept for the record. Non-JSON output from an older CLI is handled as before with `model_served: unknown`.
+### Added
+
+- `invoke_advisor` and `capability_check` now run gemini with `--output-format json`, read `model_served` and the thinking tokens from the stats, and treat a served model other than the pinned one as a failed seat (`model_substituted`), text kept for the record. Non-JSON output from an older CLI is handled as before with `model_served: unknown`.
+
+### Changed
+
+- **The Gemini seat is pinned to `gemini-3.1-pro-preview`, and the served model is checked.** 0.6.6 pinned `gemini-3.8-flash` on the strength of a probe that only proved the id was accepted. The run stats told the truth: on that account the CLI served `gemini-3.5-flash` for the main request, silently, with exit 0 and a plausible answer, and did the same for `3.7-flash`. `gemini-3.1-pro-preview` is served faithfully and the API defaults Pro to thinking level `high`.
 - Bumped package to `0.6.7`.
 
-## 0.6.6 - 2026-09-04
+## [0.6.6] - 2026-09-04
+
+### Changed
 
 - **The Gemini advisor seat runs `gemini-3.8-flash`.** `invoke_advisor` and `capability_check` pass the model id directly instead of `arch-review`, an alias that existed only in one machine's `~/.gemini/settings.json` (mapped to `gemini-3.1-pro-preview`) and could not resolve anywhere else. Verified through the CLI before the change: the id answers, and an unknown id fails with `ModelNotFoundError`, so the answer is not a silent fallback.
-- Gitleaks allowlist: the two aider fixture tokens are back. They live on in history after the file's removal in 0.6.3, and gitleaks scans every commit.
 - Bumped package to `0.6.6`.
 
-## 0.6.5 - 2026-09-04
+### Security
+
+- Gitleaks allowlist: the two aider fixture tokens are back. They live on in history after the file's removal in 0.6.3, and gitleaks scans every commit.
+
+## [0.6.5] - 2026-09-04
 
 Field-feedback round 5: six items from a fifth Fable 5.1 pit-boss run, validated by an adversarial Codex pass that overturned two of the proposed fixes.
 
-- **A silent advisor seat is a failed seat.** `invoke_advisor` reports exit 0 with empty stdout, or with stdout equal to the prompt, as `completion: failed` with the reason and the stderr tail, keeping the child's exit code. The checkpoint protocol records it with the reason in `limitations`, retries once, and treats a second failure as an unavailable seat. No retry inside the tool, so the wasted call stays visible.
-- **Drift blocks only on a contradiction.** `session_orient` used to compare the progress file's first-open pointer to the ledger target as strings, so a pending entry for a later unit stopped the next session on a false alarm that no write could clear. `state_drift` now fires only when the progress file marks a unit complete that the ledger has not passed, or has units while the ledger has no phases. Stale, ahead, and orphan entries go to a new non-blocking `progress_advisories` field. The pit-boss's natural-order proposal was rejected: it still false-stopped on stale progress and compared unrelated id schemes.
+### Added
+
 - **One owner decision past the cap.** `authorize_attempts { attempts, reason, user_override: true }` records a grant of up to ten further attempts on a capped unit; each later delegation or direct fix is charged to it, `session_orient` shows `attempt_grants`, the unit view shows the grant, and a pass closes it. Refused below the cap, while a grant is open, and together with `user_override` on one write (`AMBIGUOUS OVERRIDE`). Per-write `user_override` remains the fallback.
-- **`cross_exam` never satisfies the gate.** Review currency counted every current record, so a pit-boss cross-examination written after a re-verdict passed `REVIEW REQUIRED`. Currency now needs an independent review, or an eligible verification record; council payloads carry `stage: "independent"`.
 - **`stage: "verification"` for direct-fix follow-ups.** A pit-boss record with structured evidence (baseline review, units and attempts, files, tests, probe) stands in for a fresh seat only when the baseline is a retained independent review, the phase is not `hot_path` or `security_boundary`, no confirmed finding above LOW was recorded since the baseline, every re-verdicted unit passed `via: "pitboss-direct"` with a direct-fix record at its current attempt, the evidence names that attempt, and the sidecar shows no `invoke_worker` delegation for it. `REVIEW REQUIRED` names the failed predicate.
+- `session_orient` gains a non-blocking `progress_advisories` field for stale, ahead, and orphan progress entries.
+
+### Changed
+
+- **A silent advisor seat is a failed seat.** `invoke_advisor` reports exit 0 with empty stdout, or with stdout equal to the prompt, as `completion: failed` with the reason and the stderr tail, keeping the child's exit code. The checkpoint protocol records it with the reason in `limitations`, retries once, and treats a second failure as an unavailable seat. No retry inside the tool, so the wasted call stays visible.
 - **`checked[]` entries up to 400 characters.**
 - **Legacy checkbox lines are counted, not edited.** `complete_unit` reports `legacy_checkbox_candidates` for hand-written `- [ ] <unit id>` lines outside the fence and leaves them untouched: a tick could contradict the fenced line, nothing would untick it on a reopen, and the fence contract preserves outside content verbatim.
 - Bumped package to `0.6.5`.
+- Not changed: the pit-boss's natural-order drift proposal was rejected: it still false-stopped on stale progress and compared unrelated id schemes.
 
-## 0.6.4 - 2026-09-04
+### Fixed
+
+- **Drift blocks only on a contradiction.** `session_orient` used to compare the progress file's first-open pointer to the ledger target as strings, so a pending entry for a later unit stopped the next session on a false alarm that no write could clear. `state_drift` now fires only when the progress file marks a unit complete that the ledger has not passed, or has units while the ledger has no phases; stale, ahead, and orphan entries go to `progress_advisories`.
+- **`cross_exam` never satisfies the gate.** Review currency counted every current record, so a pit-boss cross-examination written after a re-verdict passed `REVIEW REQUIRED`. Currency now needs an independent review, or an eligible verification record; council payloads carry `stage: "independent"`.
+
+## [0.6.4] - 2026-09-04
 
 Field-feedback round 4: five items from a fourth Fable 5.1 pit-boss run, triaged against the code and validated by an adversarial Codex pass. Codex overturned two of the proposed fixes and found the wider hole behind the first item.
 
-- **The delegation cap guards the pass, not only the delegation record.** A pass verdict needs an attempt recorded after the latest rejection or fail verdict (`ATTEMPT REQUIRED`), and past the cap it needs `user_override`, recorded on the unit as `cap_override`. Fixing off the record after a `DELEGATION CAP` refusal no longer passes. The cap counts failed attempts since the unit last passed, so a unit reopened at three separate checkpoints is not treated as one non-converging series; the reporter's proposal to count only rejections on the same brief was rejected as caller-controlled text. A `fail` verdict counts as a failed attempt. A Direct Fix is recorded as an attempt through `set_unit_status { s: "ip", direct_fix }`, which the protocol already said it was. The counts live in server-written per-unit scalars (`attempt_seq`, `epoch_failed`, `last_failed_attempt`, `needs_attempt`) because `rej[]` and `delegations[]` drop their oldest entries at 20; the rejection stamp after the 21st delegation was wrong for the same reason and is fixed. Existing ledgers derive the scalars on the first write that touches a unit. `session_orient` reports `attempt_blocks`; the unit view of `read_ledger` shows the counters.
+### Added
+
+- `session_orient` reports `attempt_blocks`; the unit view of `read_ledger` shows the attempt counters (`attempt_seq`, `epoch_failed`, `last_failed_attempt`, `needs_attempt`).
+
+### Changed
+
 - **`record_review` requires a classification on every finding.** The gate blocks only on `confirmed`, so a real finding recorded without one slipped past it. Reviews recorded earlier with unclassified findings read as `INCOMPLETE REVIEW` at the gate.
 - **`bundle_status` answers `restart_recommended` with `true`, `false`, or `n/a`.** The server snapshots `dist/`, `package.json`, and the stack profile override at process start; the tool compares disk against it and names what changed. A rebuilt or reinstalled package under the same version is `true`; `unknown` is gone.
 - The limits the reporter hit are in the top-level tool descriptions: journal `msg` at 400 characters, review `checked` at 50 entries of 200 characters.
 - Advisor Grounding Protocol: adversarial asks state the authorized verification goal and the bounded target; context-free "break / bypass" imperatives are avoided because some advisor CLIs refuse them; a refusal is recorded as `completion: "failed"`, retried once with bounded wording, and never treated as a clean review.
-- One-call review recording was declined: classifications cannot be keyed before the model sees the parser's finding boundaries and `unparsed_lines`, and the saving is three calls of thirteen at a checkpoint, not half.
 - Bumped package to `0.6.4`.
+- Not changed: the reporter's proposal to count only rejections on the same brief toward the cap was rejected as caller-controlled text.
+- Not changed: one-call review recording was declined: classifications cannot be keyed before the model sees the parser's finding boundaries and `unparsed_lines`, and the saving is three calls of thirteen at a checkpoint, not half.
 
-## 0.6.3 - 2026-09-04
+### Fixed
+
+- **The delegation cap guards the pass, not only the delegation record.** A pass verdict needs an attempt recorded after the latest rejection or fail verdict (`ATTEMPT REQUIRED`), and past the cap it needs `user_override`, recorded on the unit as `cap_override`. Fixing off the record after a `DELEGATION CAP` refusal no longer passes. The cap counts failed attempts since the unit last passed, so a unit reopened at three separate checkpoints is not treated as one non-converging series. A `fail` verdict counts as a failed attempt. A Direct Fix is recorded as an attempt through `set_unit_status { s: "ip", direct_fix }`, which the protocol already said it was. The counts live in server-written per-unit scalars (`attempt_seq`, `epoch_failed`, `last_failed_attempt`, `needs_attempt`) because `rej[]` and `delegations[]` drop their oldest entries at 20. Existing ledgers derive the scalars on the first write that touches a unit.
+- The rejection stamp after the 21st delegation was wrong because `delegations[]` drops its oldest entries at 20; fixed by the same per-unit scalars.
+
+## [0.6.3] - 2026-09-04
 
 Surface reduction, validated by an adversarial Codex pass before any cut (it rejected six of eight proposed trims; only the two below survived, plus the owner's rulings).
 
-- **`aider_worker` removed.** The tool, its detached-worktree library, the Python harness, and their tests are gone; the failure taxonomy shrinks from 21 to 17 active stages. Sidecars written before 0.6.3 still read: the four aider-era stages are kept in a read-only legacy set so their historical refunded classification does not change. `.foremanenv` no longer accepts `aider-cli` as a worker kind, nor the `FOREMAN_NUM_CTX_*`, `FOREMAN_MAX_REFLECTIONS_*`, and `FOREMAN_REASONING_TAG_*` keys. Default tool count is 26 (27 under Codex).
+### Added
+
+- **Council regression.** A loopback test proves a configured `invoke_council` seat authenticates, streams, parses, and prints a `record_review` payload, so shared worker code can change without silently breaking the council.
+
+### Changed
+
 - **The tarball ships only what the runtime reads.** `package.json` now carries a `files` whitelist: `dist/`, `src/skills/`, `HOST-CONTRACT.md`, the package README and LICENSE, and the bundled dependencies. `bench/`, `scripts/`, `tests/`, TypeScript sources, the `src/docs` and `src/preview` duplicates, the vendor tree, declarations, and source maps no longer ship. The build cleans `dist/` first so a removed module cannot keep shipping as stale output. A test pins the packed manifest.
 - **Publish smoke gate extended.** Beyond `tools/list`, the installed package must activate a protocol from `src/skills`, serve the ethos document from `dist/docs`, contain exactly the runtime file set, and resolve its skills dir under `--diag`.
-- **Journal codes trimmed to 15.** Twelve codes no protocol text or code path ever emitted, plus `CAP_WAIVER` (aider-only), are gone. Journals written earlier still parse.
-- **Council regression.** A loopback test proves a configured `invoke_council` seat authenticates, streams, parses, and prints a `record_review` payload, so shared worker code can change without silently breaking the council.
+- Default tool count is 26 (27 under Codex).
 - Bumped package to `0.6.3`.
 
-## 0.6.2 - 2026-09-04
+### Removed
+
+- **`aider_worker` removed.** The tool, its detached-worktree library, the Python harness, and their tests are gone; the failure taxonomy shrinks from 21 to 17 active stages. Sidecars written before 0.6.3 still read: the four aider-era stages are kept in a read-only legacy set so their historical refunded classification does not change. `.foremanenv` no longer accepts `aider-cli` as a worker kind, nor the `FOREMAN_NUM_CTX_*`, `FOREMAN_MAX_REFLECTIONS_*`, and `FOREMAN_REASONING_TAG_*` keys.
+- **Journal codes trimmed to 15.** Twelve codes no protocol text or code path ever emitted, plus `CAP_WAIVER` (aider-only), are gone. Journals written earlier still parse.
+
+## [0.6.2] - 2026-09-04
 
 Documentation rewrite, two gate rules that closed holes the docs review exposed, and field-feedback round 3 (six items from a third Fable 5.1 pit-boss run, triaged by a fork subagent and validated by an adversarial Codex pass).
 
+### Added
+
+- `bundle_status` reports `running_version` and `runtime_disk_version`, `restart_recommended: true` when they differ (compiled code cannot be reloaded; protocol Markdown is re-read on every activation), and which skills a project or user override shadows.
+- `run_tests`: `fail_on_stdout` for list-style checkers that exit 0 with work to do.
+- Implementor gains a spec-amendment rule for `SPEC_GAP`: one atomic change across every affected document, one Decisions row, reopen a passed unit only when the amendment changes what it must do, material changes go to the owner or `spec_man`.
+
+### Changed
+
 - README rewritten plain: what the server does in one paragraph, tarball-first install, `claude mcp add`, a copy-paste first prompt, and collapsible sections for what happens, what the ledger refuses versus what the procedure asks, the files it creates, cost, and egress. Docs site rebuilt to 16 pages in the same voice (name the actor; separate enforced from instructed; copy-paste prompts; exceptions in the same sentence as the rule); eleven abstract pages folded away; every stale fact found in the review corrected (tool counts, `gradle` in the allowlist, Codex editing concurrency, the forbidden full-ledger read at session start, the missing `preflight` in the enforcement example, Langfuse egress).
 - Phase gate: a review counts only when recorded at or after the phase's latest unit verdict (a review that predates a re-verdict covered old code); the gate refuses while any such review carries a finding classified `confirmed` (`CONFIRMED FINDINGS`, override recorded as `confirmed_override`) or is `completion: partial` or `failed`, or has zero findings with no `checked` list and no `completion: complete` (`INCOMPLETE REVIEW`, override recorded as `incomplete_override`). A collapsed reviewer parse can no longer satisfy the gate as an empty review.
-- Tool descriptions: hosts clip them at about 2,000 characters, which is exactly where the 0.6.0 generated shapes landed on `write_ledger`. The per-operation `data` shapes for the three write tools now live in the input schema's `data` property description, which hosts show in full; every description is held under the clip by a test. The `pitboss_implementor` description said G1–G5; it is G1–G6.
+- Tool descriptions: hosts clip them at about 2,000 characters, which is exactly where the 0.6.0 generated shapes landed on `write_ledger`. The per-operation `data` shapes for the three write tools now live in the input schema's `data` property description, which hosts show in full; every description is held under the clip by a test.
 - `normalize_review` parses bounded item blocks: bold-wrapped numbered items, `Severity:` fields mid-line or on the next line, `— HIGH:` after a location, exact `[P0]`–`[P3]` levels, markdown tables, and consecutive headings without blank lines. A block still needs an explicit severity token to become a finding. The checkpoint prompt now asks advisors to start every finding with a bracketed severity.
-- `bundle_status` reports `running_version` and `runtime_disk_version`, `restart_recommended: true` when they differ (compiled code cannot be reloaded; protocol Markdown is re-read on every activation), and which skills a project or user override shadows.
 - Worktrees: the Claude Code fan-out rule and the host contract gain a line-endings clause (check `core.autocrlf` and `git ls-files --eol`, serialize when the repo cannot normalize, create worktrees with `core.autocrlf=false`, `git apply --check` before applying); `aider_worker` creates its detached worktree with `-c core.autocrlf=false`.
-- `run_tests`: `gofmt` and `golangci-lint` in the default allowlist, plus `fail_on_stdout` for list-style checkers that exit 0 with work to do.
+- `run_tests`: `gofmt` and `golangci-lint` in the default allowlist.
 - Journal `msg` limit raised to 400 characters.
-- Implementor gains a spec-amendment rule for `SPEC_GAP`: one atomic change across every affected document, one Decisions row, reopen a passed unit only when the amendment changes what it must do, material changes go to the owner or `spec_man`.
 - Bumped package to `0.6.2`.
 
-## 0.6.1 - 2026-09-03
+### Fixed
+
+- The `pitboss_implementor` description said G1–G5; it is G1–G6.
+
+## [0.6.1] - 2026-09-03
 
 Field-feedback round 2 (2026-09-03): six items from a second pit-boss run on a large project.
 
+### Added
+
+- Two journal event codes, both anomalies: `SPEC_GAP` (a spec gap resolved by pit-boss decision, recorded, run continued — `SPEC_AMB` keeps meaning "stopped, asking") and `GATE_OVERRIDE` (user forced past a phase checkpoint; the same journal session continues, `gate` names the phase). Enum is 28 codes.
+- `run_tests` gains opt-in output shaping: `strip_patterns` (≤10 regex sources, applied per line to both streams before the cap, `stripped_lines` reported) and `tail_lines`. Default output is byte-identical to 0.6.0.
+
+### Changed
+
 - Schema errors from `write_ledger`, `write_journal`, and `write_progress` are no longer raw Zod issue dumps. Each rejected call now returns one line per field (`data.via: Invalid option: expected one of "worker"|"pitboss-direct"|"n/a"`) followed by the expected data shape for that operation, rendered from the same schema constants the descriptions use.
 - The Brief Preflight (Step 4.5) is now attested on the delegated write: `set_unit_status s:'delegated'` requires `data.preflight: { symbols_grepped: ≥1, self_consistent: true, telemetry?: 'checked'|'n/a' }` (checked after the brief rule, so existing messages are unchanged) and the attestation is stored on the delegation entry. The preflight is as mechanical as the pass rule instead of a mental checklist.
-- Two journal event codes, both anomalies: `SPEC_GAP` (a spec gap resolved by pit-boss decision, recorded, run continued — `SPEC_AMB` keeps meaning "stopped, asking") and `GATE_OVERRIDE` (user forced past a phase checkpoint; the same journal session continues, `gate` names the phase). Enum is 28 codes.
 - `invoke_advisor` no longer ships a 16k stderr transcript with a successful review. Truncation is tracked per stream; on success stderr is dropped unless stdout itself was cut, and then only a 40-line tail is kept. Failures keep stderr whole.
-- `run_tests` gains opt-in output shaping: `strip_patterns` (≤10 regex sources, applied per line to both streams before the cap, `stripped_lines` reported) and `tail_lines`. Default output is byte-identical to 0.6.0.
 - Bumped package to `0.6.1`.
 
-## 0.6.0 - 2026-09-03
+## [0.6.0] - 2026-09-03
 
 Field-feedback round (2026-09-02): eight friction items from a pit-boss run, triaged against the source and deliberated with an adversarial Codex pass; three deeper root causes surfaced in that deliberation are fixed here too.
 
-- `normalize_review` no longer collapses a multi-finding review into one row. A finding now starts only at a recognized header — an explicit severity token in any common decoration (`HIGH:`, `[HIGH]`, `**HIGH**`, `**[HIGH]**`, `[**HIGH**]`, trailing `(HIGH)`), a `Severity:` field, or a `Finding N` heading — after Markdown list and heading prefixes are stripped. Unmarked prose (preambles, "what I checked" lists, "no findings") is counted in a new `unparsed_lines` field and never becomes a finding. Output adds a `findings_json:` line that is `record_review`-ready, escapes `|` inside the TOON table, and caps descriptions at the `record_review` limit.
-- `write_journal` and `write_ledger` descriptions now carry the exact per-operation `data` shapes — every key, enum value, and limit — generated from the validation schemas (`lib/schemaDoc.ts`) and pinned by a listTools contract test, so an agent no longer discovers `target_version ≤ 20`, the 26-code event enum, or the eight `end_session.summary` fields one failed call at a time. The `set_verdict` line finally names `via` and `inconclusive`. The journal's anomaly-only contract is stated in the description (`TOOL_ERR` covers broken host tooling; there is deliberately no informational code).
-- Rejecting a unit whose verdict is `pass` now reopens it to `pending` (returned as a `warning`). Previously `add_rejection` never touched the verdict, so a unit rejected at a checkpoint stayed gate-passable and invisible to `session_orient`'s `active_rejections`.
-- The phase gate now refuses `g:'pass'` when the phase has no `record_review` entries; `user_override:true` passes without a review and is recorded on the phase as `review_override`. The check is sequenced last so every existing block message is unchanged.
-- `session_orient` orders phase and unit ids naturally (`p2` before `p10`, `U0.9` before `U0.18`) — plain lexicographic sort resumed the wrong phase on projects with ten or more phases. `last_completed_unit` is now the completion frontier: the newest first-pass timestamp (`first_pass_ts`, stamped once by `set_verdict` and never overwritten), so re-verdicting an earlier unit after a checkpoint fix no longer moves it backwards. New additive fields `latest_pass_verdict_unit` / `latest_pass_verdict_ts` carry the temporal fact. The progress checklist uses the same ordering.
+### Added
+
 - `record_review` gains optional `completion` (`complete|partial|failed`), `checked` (what the seat examined), `limitations`, and `stage` (`independent|cross_exam`); `read_ledger reviews` renders them on zero-finding rows. The implementor checkpoint now requires each advisor to list what it examined per category, treats zero findings with no examined list as `partial` (never clean, no line-count floor), and records a targeted re-prompt as a separately-staged cross-examination that never counts as a second independent seat.
 - Implementor Step 4.5 gains two brief-lint steps: brief self-consistency (a test expectation must not contradict the brief's own implementation instruction) and a custom-field telemetry reserved-name check against the active stack profile, with an explicit ambiguity rule when the profile resolved by fallback. The spec generator gains the matching G10 grounding check.
 - Direct Fix: the pit-boss may apply a rejected unit's fix itself without a worker, but only for an exact literal substitution the rejection already spelled out (rename, typo, import path, test name, spec-literal constant) on a host-native-delegated unit, touching only the unit's files, adding no function/branch/test, and never on auth, secrets, telemetry names, contracts, schemas, concurrency, or error semantics. Recorded as `set_verdict via:'pitboss-direct'`; still an outer-loop attempt; units delegated through `invoke_worker`/`aider_worker` are ineligible because their sidecar chain would contradict the ledger.
-- `PROGRESS.md` no longer ends up with two checklists: the spec generator emits an empty machine-owned fenced "Ledger Status" block (which `write_progress` fills from the ledger) and keeps the hand-written plan as a fence-free "Unit Plan" table. The `write_progress` description states the fence contract and the ledger-seeding dependency.
 - The spec generator records `state_tracking_policy` (from a read-only `git check-ignore` over the Foreman state files) in the handoff and treats a commit instruction that contradicts the ignore rules as a grounding failure to escalate — it never creates or edits `.gitignore`.
+- `session_orient` gains additive fields `latest_pass_verdict_unit` / `latest_pass_verdict_ts` carrying the temporal fact; `set_verdict` stamps `first_pass_ts` once and never overwrites it.
+
+### Changed
+
+- `write_journal` and `write_ledger` descriptions now carry the exact per-operation `data` shapes — every key, enum value, and limit — generated from the validation schemas (`lib/schemaDoc.ts`) and pinned by a listTools contract test, so an agent no longer discovers `target_version ≤ 20`, the 26-code event enum, or the eight `end_session.summary` fields one failed call at a time. The `set_verdict` line finally names `via` and `inconclusive`. The journal's anomaly-only contract is stated in the description (`TOOL_ERR` covers broken host tooling; there is deliberately no informational code).
+- The phase gate now refuses `g:'pass'` when the phase has no `record_review` entries; `user_override:true` passes without a review and is recorded on the phase as `review_override`. The check is sequenced last so every existing block message is unchanged.
+- `normalize_review` output adds a `findings_json:` line that is `record_review`-ready, escapes `|` inside the TOON table, and caps descriptions at the `record_review` limit; unmarked prose is counted in a new `unparsed_lines` field.
+- The `write_progress` description states the fence contract and the ledger-seeding dependency.
 - Bumped package to `0.6.0`.
 
-## 0.5.14 - 2026-08-08
+### Fixed
+
+- `normalize_review` no longer collapses a multi-finding review into one row. A finding now starts only at a recognized header — an explicit severity token in any common decoration (`HIGH:`, `[HIGH]`, `**HIGH**`, `**[HIGH]**`, `[**HIGH**]`, trailing `(HIGH)`), a `Severity:` field, or a `Finding N` heading — after Markdown list and heading prefixes are stripped. Unmarked prose (preambles, "what I checked" lists, "no findings") is counted in `unparsed_lines` and never becomes a finding.
+- Rejecting a unit whose verdict is `pass` now reopens it to `pending` (returned as a `warning`). Previously `add_rejection` never touched the verdict, so a unit rejected at a checkpoint stayed gate-passable and invisible to `session_orient`'s `active_rejections`.
+- `session_orient` orders phase and unit ids naturally (`p2` before `p10`, `U0.9` before `U0.18`) — plain lexicographic sort resumed the wrong phase on projects with ten or more phases. `last_completed_unit` is now the completion frontier: the newest first-pass timestamp (`first_pass_ts`), so re-verdicting an earlier unit after a checkpoint fix no longer moves it backwards. The progress checklist uses the same ordering.
+- `PROGRESS.md` no longer ends up with two checklists: the spec generator emits an empty machine-owned fenced "Ledger Status" block (which `write_progress` fills from the ledger) and keeps the hand-written plan as a fence-free "Unit Plan" table.
+
+## [0.5.14] - 2026-08-08
+
+### Added
 
 - Diagram preview viewer gained interaction controls: cursor-centered wheel zoom, drag panning, toolbar (zoom in/out, 100%, fit) with `+`/`-`/`0`/`f` keyboard shortcuts, and client-side export as PNG (2x, white background, canvas-limit capped), SVG, or the raw `.mmd` source. All rendering and export stay client-side under the existing strict CSP (PNG rasterizes through a `data:` URL; a tainted-canvas edge case falls back to SVG export). First render auto-fits oversized diagrams; live-reload preserves the current zoom/pan.
-
 - Declared units are now a ledger fact: new `write_ledger` operation `declare_phase_units` records each phase's expected unit-id set (additive union-merge, cap 200, ids validated against TOON-structural characters). The phase gate blocks `g:'pass'` while any declared id is unregistered, and `session_orient` resumes at the first declared-but-unseeded unit (`action: implement_unit`, new `missing_declared_units` field) instead of misreporting `retry_phase_gate` on a partially-seeded phase — closes the field-reported hole where a quarter-implemented phase passed its gate mechanically.
 - Declared sets are frozen behind a passed gate (reopen the gate first — no override), participate in the D2b gate-staleness hash when present (legacy hashes unaffected), and support auditable correction: `retire` removes declared-only ids with a mandatory reason tombstoned in `declared_log`. The progress checklist renders declared-but-unregistered units as unchecked `declared, unregistered` rows instead of erasing them.
-- `session_orient` state-drift detection is now bidirectional: progress marking the ledger's resume unit itself complete is flagged as `progress:complete(<unit>);ledger:<target>`. Partial progress files (earlier phases only) remain non-drift, so later-phase resumes are not blocked.
 - `read_ledger` paged queries emit a query-specific recovery `hint` when cells were truncated (verdict notes → per-unit read; rejections/reviews → phase-scoped `full`); untruncated output is byte-identical.
+
+### Changed
+
+- `session_orient` state-drift detection is now bidirectional: progress marking the ledger's resume unit itself complete is flagged as `progress:complete(<unit>);ledger:<target>`. Partial progress files (earlier phases only) remain non-drift, so later-phase resumes are not blocked.
 - Session-start protocol: implementor sessions probe advisors once and record `<version>/<auth_status>` in the `init_session` env (`null` now explicitly means "not probed"); checkpoints reuse the probe instead of re-running it.
 - The claude-code worker fan-out rule replaces its vague isolation exception with a concrete procedure: parallel editing workers require `isolation: "worktree"`, disjoint editable sets, full `git diff` in each completion report, and serial per-unit application; the full worktree fan-out contract remains v0.6 HOST-CONTRACT scope.
 - Bumped package to `0.5.14`.
 
-## 0.5.13 - 2026-08-05
+## [0.5.13] - 2026-08-05
+
+### Added
+
+- Shell-free Gradle wrapper support in `run_tests`, including Windows execution through `GradleWrapperMain`.
+- A repeated-checkpoint termination protocol: targeted mutation or fault injection after a second green-but-unobservable block, defect-source classification, and mandatory owner arbitration after a third block.
+
+### Changed
 
 - Hardened shared-tree delegation after a production migration exposed a destructive `git stash` hazard: editing workers receive an explicit Git-mutation denylist, run sequentially unless isolated, and require a before/after branch, HEAD, stash, index, and dirty-path guard before tests or verdict. Foreman never performs automatic repository recovery.
-- Made ledger reads safe on mature projects with phase/verdict filters, cursor pagination, bounded cells, notes omitted by default, and recovery guidance instead of oversized `full` output.
-- Made `session_orient` the ledger-authoritative resume path, with explicit action and resume target, phase-gate retry detection, timestamp-based last-completed selection, and ledger/progress drift reporting. `read_progress` is now explicitly descriptive only.
-- Added shell-free Gradle wrapper support to `run_tests`, including Windows execution through `GradleWrapperMain`, and allowed canonical string journal phase ids such as `V20-P0` while retaining legacy numeric input.
-- Added a repeated-checkpoint termination protocol: targeted mutation or fault injection after a second green-but-unobservable block, defect-source classification, and mandatory owner arbitration after a third block.
+- Ledger reads are safe on mature projects: phase/verdict filters, cursor pagination, bounded cells, notes omitted by default, and recovery guidance instead of oversized `full` output.
+- `session_orient` is the ledger-authoritative resume path, with explicit action and resume target, phase-gate retry detection, timestamp-based last-completed selection, and ledger/progress drift reporting. `read_progress` is now explicitly descriptive only.
+- Journal phase ids accept canonical strings such as `V20-P0` while retaining legacy numeric input.
 - Bumped package to `0.5.13`.
 
-## 0.5.12 - 2026-08-03
+## [0.5.12] - 2026-08-03
 
-- Added `invoke_council` (EXPERIMENTAL): an adaptive review council that runs N remote read-only review seats across M risk lenses over one evidence packet, in parallel, and returns structured findings for the host to moderate and the user to arbitrate. Read-only by design — seats never edit the tree, apply fixes, or write the ledger, and findings come back ledger-shaped for `write_ledger record_review`.
+### Added
+
+- `invoke_council` (EXPERIMENTAL): an adaptive review council that runs N remote read-only review seats across M risk lenses over one evidence packet, in parallel, and returns structured findings for the host to moderate and the user to arbitrate. Read-only by design — seats never edit the tree, apply fixes, or write the ledger, and findings come back ledger-shaped for `write_ledger record_review`.
 - The council is entirely optional and its absence is a supported state, not an error: with no seats configured the tool returns `status: unavailable`, names the next rung of the deliberation ladder, and every other tool, skill, and ledger flow behaves exactly as before.
-- Added a versioned 7-lens catalog (contract, architecture, state, security, data, tests, operability). Each seat receives the evidence packet plus ONE compact lens card; the catalog, other lenses, and provider details never enter a reviewer's context.
+- A versioned 7-lens catalog (contract, architecture, state, security, data, tests, operability). Each seat receives the evidence packet plus ONE compact lens card; the catalog, other lenses, and provider details never enter a reviewer's context.
 - Seats are configurable from the repo `.foremanenv` or from a new operator-owned store at `~/.foreman-mcp/.env`, with the home store overriding per seat so a model can be swapped without editing a shared repo file. Each seat reports which file configured it.
-- `~/.foreman-mcp/.env` also serves as a credential store: an API key may live there instead of the process environment. For the API key the process environment wins; for council seats the home store wins.
-- [CWE-522] The council resolves its API key from the same store that supplied its endpoint. A repo `.foremanenv` pointing at a local serving box while the home store seats the council on a hosted provider is the expected setup, and resolving those independently would misdeliver a credential in one direction or the other.
-- [CWE-532] Every value in the home credential store that clears the redaction harvest guards is now registered for redaction. Previously only the single resolved `FOREMAN_API_KEY` was registered, so a second credential in that file was invisible to both `scrub()` and the outbound secret gate.
+- Optional Langfuse tracing for council runs, vendored zero-dependency from crucible. Off unless `FOREMAN_LANGFUSE_*` is configured; content capture is separately gated and off by default; a tracing failure degrades to silence and never alters a review.
+
+### Changed
+
 - Extracted the remote chat transport into `lib/chatTransport.ts`, shared byte-for-byte between `invoke_worker` and `invoke_council`: two-phase connect/activity timeouts, byte-capped streaming reads, and the closed status-to-failure-stage mapping now have one implementation. `invoke_worker` behavior is unchanged.
 - Council requests stream (`stream: true`) so the connect budget measures the endpoint rather than a multi-minute reasoning generation, and the activity budget detects a genuine mid-generation stall. OpenRouter-native provider routing is sent only when the endpoint is actually OpenRouter.
 - Deliberation protocol extended to a recorded 5-rung ladder (council → single seat → both CLI advisors → one advisor → two adversarial passes). `status: unavailable` and `status: fail` both drop a rung; neither is ever a passed review. Two seats on one model is disclosed as perspective, not independence.
-- Added optional Langfuse tracing for council runs, vendored zero-dependency from crucible. Off unless `FOREMAN_LANGFUSE_*` is configured; content capture is separately gated and off by default; a tracing failure degrades to silence and never alters a review.
 - Bumped package to `0.5.12`.
 
-## 0.5.11 - 2026-07-28
+### Security
+
+- `~/.foreman-mcp/.env` also serves as a credential store: an API key may live there instead of the process environment. For the API key the process environment wins; for council seats the home store wins.
+- [CWE-522] The council resolves its API key from the same store that supplied its endpoint. A repo `.foremanenv` pointing at a local serving box while the home store seats the council on a hosted provider is the expected setup, and resolving those independently would misdeliver a credential in one direction or the other.
+- [CWE-532] Every value in the home credential store that clears the redaction harvest guards is now registered for redaction. Previously only the single resolved `FOREMAN_API_KEY` was registered, so a second credential in that file was invisible to both `scrub()` and the outbound secret gate.
+
+## [0.5.11] - 2026-07-28
+
+### Added
+
+- Validated scalar output schemas plus `structuredContent`, while retaining the existing text content for clients.
+- Wire-level regression coverage for modern negotiation, legacy fallback and scalar-output projection, invalid arguments, unknown tools, and split-package diagnostics.
+
+### Changed
 
 - Migrated from the monolithic MCP TypeScript SDK v1 package to the stable split v2 packages (`@modelcontextprotocol/server` for runtime and `@modelcontextprotocol/client` for tests).
 - Upgraded to Zod 4 Standard Schema objects for every tool registration and enabled stdio negotiation for both legacy MCP clients and the 2026-07-28 protocol era.
-- Made every tool input contract strict (`additionalProperties: false`), promoted display titles to v2 top-level metadata, and added validated scalar output schemas plus `structuredContent` while retaining the existing text content for clients.
-- Added wire-level regression coverage for modern negotiation, legacy fallback and scalar-output projection, invalid arguments, unknown tools, and split-package diagnostics.
-- Fixed `--diag` to report the installed `@modelcontextprotocol/server` version instead of probing the removed v1 package.
-- Kept release tarballs offline-installable by bundling the v2 server package and its runtime dependencies.
-- Excluded the workspace-local `.tmp/` npm cache from release tarballs after package-content inspection caught it in the candidate archive.
+- Every tool input contract is strict (`additionalProperties: false`); display titles promoted to v2 top-level metadata.
+- Release tarballs stay offline-installable by bundling the v2 server package and its runtime dependencies.
 - Documented the evidence-backed lean-runtime boundary: Foreman composes installed host tools; `aider_worker` uses isolated Git worktrees without executing `git stash`; host-native isolation remains host-enforced and makes no user-edit recovery guarantee.
 - Bumped package to `0.5.11`.
 
-## 0.5.10 - 2026-07-13
+### Fixed
+
+- `--diag` reports the installed `@modelcontextprotocol/server` version instead of probing the removed v1 package.
+- Excluded the workspace-local `.tmp/` npm cache from release tarballs after package-content inspection caught it in the candidate archive.
+
+## [0.5.10] - 2026-07-13
+
+### Changed
 
 - Codex advisor reviews now run `gpt-5.6-sol` at `xhigh` reasoning effort (was `ultra`); regression coverage updated.
 - `invoke_advisor` timeout budget raised for newer Sol-class thinking time: default 5 → 15 minutes, cap 10 → 30 minutes. A timed-out advisor was previously killed mid-reasoning and recorded as unavailable.
-- Gitleaks allowlist: exact-token entries for the aider transport and foremanEnv test fixtures, plus a path allowlist for dojo ledger-snapshot sha256 content hashes (all false positives; CI secret scan green again).
-- The aiderWorker "python missing" capability-probe test now skips on hosts where python cannot be hidden from PATH (e.g. GitHub Ubuntu runners, where /usr/bin hosts both python3 and git).
 - Bumped package to `0.5.10`.
 
-## 0.5.9 - 2026-07-12
+### Fixed
 
-- Fixed `run_tests` on Windows when `where npm` resolves first to Node's extensionless bash shim (`C:\Program Files\nodejs\npm`), which `spawn()` cannot execute and previously failed with `ENOENT`. Foreman now invokes the adjacent `npm-cli.js` with its current Node executable, without `cmd.exe` or shell interpolation.
+- The aiderWorker "python missing" capability-probe test now skips on hosts where python cannot be hidden from PATH (e.g. GitHub Ubuntu runners, where /usr/bin hosts both python3 and git).
+
+### Security
+
+- Gitleaks allowlist: exact-token entries for the aider transport and foremanEnv test fixtures, plus a path allowlist for dojo ledger-snapshot sha256 content hashes (all false positives; CI secret scan green again).
+
+## [0.5.9] - 2026-07-12
+
+### Changed
+
 - Windows runner resolution now prefers native `.exe`/`.com` candidates over extensionless shims. `.cmd`/`.bat` shims remain refused when no shell-free invocation exists.
 - Bumped package to `0.5.9`.
 
-## 0.5.8 - 2026-07-12
+### Fixed
 
-- Codex multi-agent orchestration (`--host=codex`): new `worker_fanout` host placeholder on all profiles; implementor Step 2 renders parallel spawn/wait/summarize with per-unit ledger `delegated` before spawn and `max_depth=1`.
-- New `codex_agents_init` MCP tool (registered only when `host===codex`): writes `.codex/agents/explorer.toml` + `worker.toml` (overrides built-in roles to pin sandbox_mode); creates `.codex/config.toml` `[agents]` only when absent — never clobbers existing config; model pins are optional caller overrides.
-- Release tarballs now bundle all runtime dependencies (`@modelcontextprotocol/sdk`, `zod`, and `context-crush`) so local `.tgz` installation does not require npm registry access.
+- `run_tests` now works on Windows when `where npm` resolves first to Node's extensionless bash shim (`C:\Program Files\nodejs\npm`), which `spawn()` cannot execute and which previously failed with `ENOENT`. Foreman now invokes the adjacent `npm-cli.js` with its current Node executable, without `cmd.exe` or shell interpolation.
+
+## [0.5.8] - 2026-07-12
+
+### Added
+
+- Codex multi-agent orchestration (`--host=codex`): new `worker_fanout` host placeholder on all profiles; implementor Step 2 renders parallel spawn/wait/summarize, with a per-unit ledger `delegated` entry before spawn and `max_depth=1`.
+- New `codex_agents_init` MCP tool (registered only when `host===codex`): writes `.codex/agents/explorer.toml` + `worker.toml` (overriding the built-in roles to pin sandbox_mode) and creates `.codex/config.toml` `[agents]` only when absent, never clobbering existing config. Model pins are optional caller overrides.
+
+### Changed
+
+- Release tarballs now bundle all runtime dependencies (`@modelcontextprotocol/sdk`, `zod`, and `context-crush`), so local `.tgz` installation does not require npm registry access.
 - Bumped package to `0.5.8`.
 
-## 0.5.7 - 2026-07-10
+## [0.5.7] - 2026-07-10
 
-- Replaced the broken Claude-Code alias in `--host=codex` with a native Codex profile: bounded workers use Codex `spawn_agent`, with `gpt-5.6-luna` recorded as a preference only when the host confirms that model selection.
-- Added Claude as a first-class `capability_check` / `invoke_advisor` CLI. Codex-mode adversarial review now runs headless `claude-fable-5` at `max` effort with tools disabled and a one-dollar call budget, with Gemini as the second independent advisor.
-- Removed provider names from the bundled implementor's pitboss, worker, and checkpoint rules. Advisor detection and invocation now render from the active host profile.
-- Added an authoritative host-runtime preamble for project/user skill overrides so stale provider instructions cannot shadow current host routing. Claude CLI versions remain telemetry only and never gate compatibility.
+### Added
+
+- Claude is now a first-class `capability_check` / `invoke_advisor` CLI. Codex-mode adversarial review runs headless `claude-fable-5` at `max` effort with tools disabled and a one-dollar call budget, with Gemini as the second independent advisor.
+- An authoritative host-runtime preamble for project/user skill overrides, so stale provider instructions cannot shadow current host routing. Claude CLI versions remain telemetry only and never gate compatibility.
+
+### Changed
+
+- Provider names are removed from the bundled implementor's pitboss, worker, and checkpoint rules. Advisor detection and invocation now render from the active host profile.
 - Clarified that Crucible is an optional future custom/local-model worker runner, not part of the normal Codex or Claude flow and not an owner of the frontier pitboss conversation.
 - Bumped package to `0.5.7`.
 
-## 0.5.6 - 2026-07-09
+### Fixed
 
-- Updated Codex review routing to `gpt-5.6-sol` with `ultra` reasoning effort.
-- Updated the Cursor Advisor A profile to the matching `gpt-5.6-sol-ultra` model slug and added direct regression coverage for the Codex invocation arguments.
+- `--host=codex` now uses a native Codex profile instead of the broken Claude-Code alias: bounded workers use Codex `spawn_agent`, with `gpt-5.6-luna` recorded as a preference only when the host confirms that model selection.
+
+## [0.5.6] - 2026-07-09
+
+### Changed
+
+- Codex review routing now uses `gpt-5.6-sol` with `ultra` reasoning effort.
+- The Cursor Advisor A profile now uses the matching `gpt-5.6-sol-ultra` model slug, with direct regression coverage added for the Codex invocation arguments.
 - Bumped package to `0.5.6`.
 
-## 0.5.5 - 2026-07-08
+## [0.5.5] - 2026-07-08
 
-- EXPERIMENTAL `aider_worker` (26th tool): a sibling of `invoke_worker` (forked, not an extension) that drives the aider Python CLI as a benchmarked local subagent. Preserves the #1 invariant — never mutate the tree, never apply from the worker tool — via an isolated-worktree→`git diff` apply model: the tool runs aider in an ephemeral worktree off the base commit (`use_git=False`, `auto_commits=False`), returns the diff verbatim between `-----BEGIN/END FOREMAN PATCH-----` sentinels plus `base_file_hashes`, and the host applies after the CAS staleness check (`ED_STALE`). Dirty base tree → `WORKER_DIRTY_TREE_REFUSAL` (refunded).
-- aider transport is an external Python harness (`scripts/aider_harness.py`) spawned through the existing `lib/externalCli.ts` seam — no new Node runtime deps. A `capability_check`-style probe fails open with a recorded waiver when python/aider are absent (route falls back to `remote-chat`). Filtered child env keeps the API key off the child's environment (key travels via stdin only); harness stdout is isolated to a single metadata-only JSON object.
+### Added
+
+- EXPERIMENTAL `aider_worker` (26th tool): a sibling of `invoke_worker` (forked, not an extension) that drives the aider Python CLI as a benchmarked local subagent. It preserves the #1 invariant (never mutate the tree, never apply from the worker tool) via an isolated-worktree→`git diff` apply model: the tool runs aider in an ephemeral worktree off the base commit (`use_git=False`, `auto_commits=False`), returns the diff verbatim between `-----BEGIN/END FOREMAN PATCH-----` sentinels plus `base_file_hashes`, and the host applies after the CAS staleness check (`ED_STALE`). A dirty base tree returns `WORKER_DIRTY_TREE_REFUSAL` (refunded).
+- aider transport is an external Python harness (`scripts/aider_harness.py`) spawned through the existing `lib/externalCli.ts` seam, with no new Node runtime deps. A `capability_check`-style probe fails open with a recorded waiver when python/aider are absent (route falls back to `remote-chat`). Harness stdout is isolated to a single metadata-only JSON object.
 - New orthogonal `worker_kind` axis in `.foremanenv` (`remote-chat | aider-cli`), defaulting to `remote-chat` so existing v0.5.0 configs keep loading; `aider-cli` tiers require `FOREMAN_NUM_CTX_<T>`.
-- Closed failure taxonomy extended 17 → 21 (`WORKER_BINARY_NOT_FOUND`, `WORKER_AIDER_EXIT`, `WORKER_AIDER_LLM_ERROR`, `WORKER_DIRTY_TREE_REFUSAL`), byte-shared between the `invoke_worker` PLAYBOOK and the events sidecar; all four new CLI stages are refunded (do not count against the per-model discipline scorecard).
-- Server-side discipline-adherence gate in `lib/ledger.ts`: reconciles each pass-unit's ledger verdict against its latest hash-chained sidecar terminal outcome. Strict/fail-closed — only a terminal `validation_completed{outcome:'pass'}` is clean; every other terminal (including a refunded-infra failure on the latest delegation) blocks the phase gate unless a `user_override` is recorded in `discipline_overrides`. Native/Agent-delegated units with no sidecar delegation skip the gate.
+- The closed failure taxonomy grows from 17 to 21 codes (`WORKER_BINARY_NOT_FOUND`, `WORKER_AIDER_EXIT`, `WORKER_AIDER_LLM_ERROR`, `WORKER_DIRTY_TREE_REFUSAL`), byte-shared between the `invoke_worker` PLAYBOOK and the events sidecar. All four new CLI stages are refunded (they do not count against the per-model discipline scorecard).
+- Server-side discipline-adherence gate in `lib/ledger.ts`: reconciles each pass-unit's ledger verdict against its latest hash-chained sidecar terminal outcome. Strict and fail-closed: only a terminal `validation_completed{outcome:'pass'}` is clean; every other terminal (including a refunded-infra failure on the latest delegation) blocks the phase gate unless a `user_override` is recorded in `discipline_overrides`. Native/Agent-delegated units with no sidecar delegation skip the gate.
+
+### Changed
+
 - Deferred to the GPU serving host (advisory, never CI): the headroom-proxy wiring (P6) and the multi-model local bake-off (P8), which need the vLLM + aider serving environment.
 - Bumped package to `0.5.5`.
 
-## 0.5.2 - 2026-07-07
+### Security
 
-- Patch release so the published package and release tarball carry the two post-tag security fixes that v0.5.0's re-tagged run could not publish (409 — cannot publish over an existing version): the gitleaks test-fixture allowlist (`.gitleaks.toml`) and the linear slash-trim in the worker-patch protected-path check (CodeQL `js/polynomial-redos`, `workerResponse.ts`).
-- Supersedes the unpublished `v0.5.1` tag (retired before its publish run); no functional changes beyond the fixes above. Bumped package to `0.5.2`.
+- The aider harness runs with a filtered child env that keeps the API key off the child's environment; the key travels via stdin only.
 
-## 0.5.0 - 2026-07-06
+## [0.5.2] - 2026-07-07
 
-- S8 CCR hardening: failure-output exemption (≤8192-char failing output passes through verbatim), dead-marker/empty-output fail-open guards, miss-recovery (expired `<<ccr:HASH>>` retrieval names the originating tool), Foreman-side TTL default raised to 1800 s, vendored-fork SYNC.md with pinned upstream SHAs.
-- Release engineering: push/PR CI (`ci.yml`), security workflow trio (npm audit / CodeQL / gitleaks) + dependabot, SECURITY.md with private-vulnerability-reporting route, publish smoke gate spawns the installed bin shim, SHA-pinned actions everywhere.
+Patch release so the published package and release tarball carry the two post-tag security fixes that v0.5.0's re-tagged run could not publish (409 — cannot publish over an existing version).
+
+### Changed
+
+- Supersedes the unpublished `v0.5.1` tag (retired before its publish run); no functional changes beyond the fixes below.
+- Bumped package to `0.5.2`.
+
+### Security
+
+- Gitleaks test-fixture allowlist (`.gitleaks.toml`).
+- Linear slash-trim in the worker-patch protected-path check, fixing CodeQL `js/polynomial-redos` in `workerResponse.ts`.
+
+## [0.5.0] - 2026-07-06
+
+### Added
+
+- Release engineering: push/PR CI (`ci.yml`), and the publish smoke gate spawns the installed bin shim.
 - Engineering ethos upstreamed: new `ethos` tool (24th) serving the bundled ethos doc with stack-profile sections; ethos content ported into the four protocol skills; project-level stack-profile override (`foreman-stack-profile.md`).
-- Host contract: `generic` host id, single capability-set module with `unsupported_capabilities:` echo in `host_status`/`session_orient`, HOST-CONTRACT.md six-capability contract, `capability_check` closed status taxonomy (`ok|not_found|not_trusted|auth_expired|probe_timeout|error`) with versioned sentinel table, MCP `readOnlyHint`/`destructiveHint`/`title` annotations on all tools.
-- Ledger enforcement pack: delegation cap (3 distinct rejected attempts, `user_override` escape), `inconclusive` verdict, attestation floor (5 words/32 chars), gate-staleness hash (`STALE` column + `stale_gates:` echo), atomic tmp-file writes with unique suffixes, D13 seat-minimum gate check, capability-class skill fragments (`FOREMAN_AGENT_CLASS`).
-- S7 EXPERIMENTAL `invoke_worker` (25th tool): brief → OpenAI-compatible endpoint → shape-checked patch; `.foremanenv` config with `${ENV:NAME}` indirection + refuse-if-git-tracked; secret redaction on all durable writes (`[REDACTED:env:NAME]` markers); hash-chained append-only events sidecar (`Docs/.foreman-events.jsonl`); ledger post-write hook closes delegation chains; 17-stage failure taxonomy + recovery playbook in HOST-CONTRACT.md.
-- S6 metrics: `read_ledger {query:"delegation_metrics"}` (survival-chain rates with explicit denominators, refund split, per-tier scorecard, drift warnings) and `ccr_stats` token-savings evidence folded into the ledger with a `ccr_savings:` footer; paired compression evidence run executed (advisory, never CI).
+- Host contract: `generic` host id, a single capability-set module with an `unsupported_capabilities:` echo in `host_status`/`session_orient`, the HOST-CONTRACT.md six-capability contract, a `capability_check` closed status taxonomy (`ok|not_found|not_trusted|auth_expired|probe_timeout|error`) with a versioned sentinel table, and MCP `readOnlyHint`/`destructiveHint`/`title` annotations on all tools.
+- Ledger enforcement pack: delegation cap (3 distinct rejected attempts, `user_override` escape), `inconclusive` verdict, attestation floor (5 words/32 chars), gate-staleness hash (`STALE` column + `stale_gates:` echo), atomic tmp-file writes with unique suffixes, D13 seat-minimum gate check, and capability-class skill fragments (`FOREMAN_AGENT_CLASS`).
+- S7 EXPERIMENTAL `invoke_worker` (25th tool): brief → OpenAI-compatible endpoint → shape-checked patch; `.foremanenv` config with `${ENV:NAME}` indirection; hash-chained append-only events sidecar (`Docs/.foreman-events.jsonl`); a ledger post-write hook closes delegation chains; 17-stage failure taxonomy + recovery playbook in HOST-CONTRACT.md.
+- S6 metrics: `read_ledger {query:"delegation_metrics"}` (survival-chain rates with explicit denominators, refund split, per-tier scorecard, drift warnings) and `ccr_stats` token-savings evidence folded into the ledger with a `ccr_savings:` footer; a paired compression evidence run was executed (advisory, never CI).
 - `llms.txt` onboarding packet at repo root; README v0.5.0 funnel (host matrix, when-to-skip, migration note).
-- Deliberated out of this release and banked for v0.6: the `invoke_worker` repair round (one release of one-shot failure-stage telemetry derives the repair trigger rules first), host-autonomy integration, and the full paired benchmark matrix (the promotion gate for worker/compression defaults).
+
+### Changed
+
+- S8 CCR hardening: failure-output exemption (failing output of ≤8192 chars passes through verbatim), dead-marker/empty-output fail-open guards, miss-recovery (expired `<<ccr:HASH>>` retrieval names the originating tool), Foreman-side TTL default raised to 1800 s, and a vendored-fork SYNC.md with pinned upstream SHAs.
+- Not changed: deliberated out of this release and banked for v0.6 — the `invoke_worker` repair round (one release of one-shot failure-stage telemetry derives the repair trigger rules first), host-autonomy integration, and the full paired benchmark matrix (the promotion gate for worker/compression defaults).
 - Bumped package to `0.5.0`.
 
-## 0.4.0 - 2026-07-01
+### Security
+
+- Security workflow trio (npm audit / CodeQL / gitleaks) + dependabot, SECURITY.md with a private-vulnerability-reporting route, and SHA-pinned actions everywhere.
+- `invoke_worker` `.foremanenv` config is refused if git-tracked, and secrets are redacted on all durable writes (`[REDACTED:env:NAME]` markers).
+
+## [0.4.0] - 2026-07-01
+
+### Added
 
 - Cost-tier telemetry and durable review records: delegations record `tier` + `route_reason` (appended to per-unit `delegations[]` history); `record_review` persists advisor findings to the ledger, retrievable via `read_ledger({ query: "reviews" })`.
+
+### Changed
+
 - Relicensed from AGPL-3.0 to Apache-2.0 (2026-06-29).
 
-## 0.3.0 - 2026-06-14
+## [0.3.0] - 2026-06-14
 
-- New `preview_diagram` tool — live in-project Mermaid diagram workshop (23rd tool).
+### Added
 
-## 0.2.2 - 2026-06-13
+- New `preview_diagram` tool: a live in-project Mermaid diagram workshop (23rd tool).
 
-- Successful `invoke_advisor` output (prose) is no longer eligible for lossy log compression — previously a review quoting >=3 error lines was misrouted to the log compressor and silently lost its recommendations. Success now passes through; only **failed** advisor diagnostics are compressed (and recoverable via `retrieve_original`).
-- Trimmed the redundant advisor `STDERR` on clean success (CLI banner + echoed prompt + a verbatim duplicate of `STDOUT` + token count); the token count is preserved as a `tokens_used` meta line. `STDERR` is retained on failure or truncation.
-- Fixed a meta-head line duplication in compressed `run_tests` output (the re-prepended `exit_code`/`passed`/`timed_out`/`truncated` block could repeat a line the compressor retained).
+## [0.2.2] - 2026-06-13
+
+### Changed
+
+- Redundant advisor `STDERR` is trimmed on clean success (CLI banner + echoed prompt + a verbatim duplicate of `STDOUT` + token count); the token count is preserved as a `tokens_used` meta line. `STDERR` is retained on failure or truncation.
 - `retrieve_original` and `invoke_advisor` tool descriptions now cue agents to retrieve the original when a compressed summary is insufficient.
 - Bumped package, server, and tests to `0.2.2`.
 
-## 0.2.1 - 2026-06-12
+### Fixed
 
-- Compressed `run_tests` / `invoke_advisor` output now retains the tool's leading meta block (`exit_code`, `passed`, `timed_out`, `truncated` / `cli`) — re-prepended onto the compressed digest. Previously the log compressor's error-extraction dropped these lines (pilot finding #1).
-- Never applied to `smart_crusher` (JSON) output; skipped when the digest already contains the block.
+- Successful `invoke_advisor` output (prose) is no longer eligible for lossy log compression. Previously a review quoting >=3 error lines was misrouted to the log compressor and silently lost its recommendations. Success now passes through; only **failed** advisor diagnostics are compressed (and recoverable via `retrieve_original`).
+- Meta-head line duplication in compressed `run_tests` output: the re-prepended `exit_code`/`passed`/`timed_out`/`truncated` block could repeat a line the compressor retained.
+
+## [0.2.1] - 2026-06-12
+
+### Changed
+
 - Bumped package, server, and tests to `0.2.1`.
 
-## 0.2.0 - 2026-06-12
+### Fixed
+
+- Compressed `run_tests` / `invoke_advisor` output now retains the tool's leading meta block (`exit_code`, `passed`, `timed_out`, `truncated` / `cli`), re-prepended onto the compressed digest. Previously the log compressor's error-extraction dropped these lines (pilot finding #1). Never applied to `smart_crusher` (JSON) output; skipped when the digest already contains the block.
+
+## [0.2.0] - 2026-06-12
+
+### Added
 
 - Integrated `context-crush`: `run_tests` and `invoke_advisor` outputs ≥2048 bytes that detect as log/diff/json are compressed with reversible CCR storage; compressed output carries a `<<ccr:HASH>>` marker.
 - New `retrieve_original` tool (22nd tool) exchanges a marker hash for the exact original output; unknown/expired hashes return a deterministic `ccr_missing_or_expired` error.
 - Compression is **default ON** for the 0.2.0 pilot. Kill switch: `FOREMAN_COMPRESSION=0`. Per-tool allowlist: `FOREMAN_COMPRESSION_TOOLS` (default `run_tests,invoke_advisor`). CCR TTL: `CONTEXT_CRUSH_CCR_TTL_SECONDS` (default 300s).
 - Prose/text outputs pass through unchanged; originals are always stored before lossy output escapes (fail-open invariant).
-- `context-crush` is a bundled dependency (`bundleDependencies`) so packed tarballs are self-contained.
+
+### Changed
+
+- `context-crush` is a bundled dependency (`bundleDependencies`), so packed tarballs are self-contained.
 - Bumped package, server, and tests to `0.2.0`.
 
-## 0.1.3 - 2026-06-09
+## [0.1.3] - 2026-06-09
 
-- Documented the enforced `ip -> delegated -> pass` ledger sequence in the implementor protocol and the `write_ledger` tool description — previously the `delegated` step existed only in the enforcement code, so every first pass verdict hit `VERDICT BLOCKED` and the model learned the sequence from the error message.
+### Added
+
+- `read_ledger` single-unit and verdicts views now include `via` and `note`.
+
+### Changed
+
+- The enforced `ip -> delegated -> pass` ledger sequence is now documented in the implementor protocol and the `write_ledger` tool description. Previously the `delegated` step existed only in the enforcement code, so every first pass verdict hit `VERDICT BLOCKED` and the model learned the sequence from the error message.
 - `update_phase_gate` with `g:'pass'` is now blocked unless every unit in the phase carries a pass verdict; empty phases cannot pass a gate.
 - Pass verdicts on phases scoped `has_tests:false` or `has_build:false` now mechanically require a non-empty attestation `note` (previously prose-only).
 - `set_phase_scope`'s test-file mismatch warning now surfaces in the tool result instead of stderr only.
-- Read paths (`read_ledger`, `session_orient`, `write_progress`) report `ledger_corrupt` instead of silently treating a corrupt ledger as a fresh project, and never rename the corrupt file; writes recovering from corruption warn with the `.corrupt.<ts>` backup path.
-- `read_ledger` single-unit and verdicts views now include `via` and `note`.
 - Bumped package, server, and tests to `0.1.3`.
 
-## 0.1.2 - 2026-06-08
+### Fixed
 
-- Added `verify_citations`: a deterministic tool that re-reads `[OBSERVED]`/`[IMPLEMENTED]` `file:line` evidence and reports CONFIRMED/DRIFTED/MISSING/UNANCHORED.
-- Added a shared `citation-verification` protocol section (included by `spec_man` and `doc_man`); spec/doc completion now requires every claim-bearing citation to be CONFIRMED or explicitly downgraded.
-- Fixed `capability_check` reporting an authenticated codex as `auth_status: expired` — codex health now uses `codex login status` instead of a full `codex exec` with a stale model under a 15s timeout.
+- Read paths (`read_ledger`, `session_orient`, `write_progress`) report `ledger_corrupt` instead of silently treating a corrupt ledger as a fresh project, and never rename the corrupt file; writes recovering from corruption warn with the `.corrupt.<ts>` backup path.
+
+## [0.1.2] - 2026-06-08
+
+### Added
+
+- `verify_citations`: a deterministic tool that re-reads `[OBSERVED]`/`[IMPLEMENTED]` `file:line` evidence and reports CONFIRMED/DRIFTED/MISSING/UNANCHORED.
+- A shared `citation-verification` protocol section (included by `spec_man` and `doc_man`); spec/doc completion now requires every claim-bearing citation to be CONFIRMED or explicitly downgraded.
+
+### Changed
+
 - Codex advisor now runs `gpt-5.5` at `high` reasoning effort; Cursor advisor slug is `gpt-5.5-high`.
 - Bumped package, server, and tests to `0.1.2`.
 
-## 0.1.1 - 2026-06-08
+### Fixed
 
-- Updated MCP activation metadata so tool choice advertises the Foreman routing policy before a model opens the full skill body.
+- `capability_check` no longer reports an authenticated codex as `auth_status: expired`: codex health now uses `codex login status` instead of a full `codex exec` with a stale model under a 15s timeout.
+
+## [0.1.1] - 2026-06-08
+
+### Added
+
+- Regression coverage for activation-tool descriptions.
+
+### Changed
+
+- MCP activation metadata now advertises the Foreman routing policy at tool choice, before a model opens the full skill body.
 - `spec_man` metadata now calls out stale-plan detection, existing repo/spec re-evaluation, Atlas/Graphify code-surfacing, Plan Delta Ladder fields, and the rule that `D1` is not auto-promoted to `D0`.
 - `lighttask` metadata now positions it as the small surgical default and says when to escalate into `spec_man`.
 - `pitboss_implementor` metadata now calls out worker fan-out, retries, blocked work, recovery, multi-session resume, and optional LangGraph-style runtime-control triggers.
-- Added regression coverage for activation-tool descriptions.
 - Bumped package, server, tests, install docs, and release tarball to `0.1.1`.
 
-## 0.1.0 - 2026-06-06
+## [0.1.0] - 2026-06-06
 
-- First minor release for the lighttask/spec/doc protocol family.
+First minor release for the lighttask/spec/doc protocol family.
+
+### Added
+
+- Optional Graphify-backed Project Atlas guidance for `spec_man` grounding and `lighttask` stale-context re-evaluation.
+- Plan Delta Ladder guidance for keeping raw findings, grouped deltas, candidate plans, and accepted current plans separate.
+- Dojo validation for Graphify/Atlas and cross-language legacy re-evaluation.
+
+### Changed
+
 - Promoted `lighttask`, `spec_man`, and `doc_man` tool heads.
-- Added optional Graphify-backed Project Atlas guidance for `spec_man` grounding and `lighttask` stale-context re-evaluation.
-- Added Plan Delta Ladder guidance for keeping raw findings, grouped deltas, candidate plans, and accepted current plans separate.
-- Added dojo validation for Graphify/Atlas and cross-language legacy re-evaluation.
 
-## 0.0.10 - 2026-06-06
+## [0.0.10] - 2026-06-06
 
-- Added `lighttask`, `spec_man`, and `doc_man` skill activation tools.
-- Introduced surgical-task gates for workspace classification, git context, spec freshness, grounding, bypass waivers, and adversarial review.
-- Added grounded spec and documentation protocols.
-- Added deterministic capability-check tests.
+### Added
 
-## Earlier Releases
+- `lighttask`, `spec_man`, and `doc_man` skill activation tools.
+- Surgical-task gates for workspace classification, git context, spec freshness, grounding, bypass waivers, and adversarial review.
+- Grounded spec and documentation protocols.
+- Deterministic capability-check tests.
+
+## Earlier releases
 
 Use the `changelog` MCP tool for the full historical table from `0.0.1` through `0.0.9`.
+
+[Unreleased]: https://github.com/malindarathnayake/Foreman/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/malindarathnayake/Foreman/compare/v0.7.2...v0.8.0
+[0.7.2]: https://github.com/malindarathnayake/Foreman/compare/v0.7.1...v0.7.2
+[0.7.1]: https://github.com/malindarathnayake/Foreman/compare/v0.7.0...v0.7.1
+[0.7.0]: https://github.com/malindarathnayake/Foreman/compare/v0.6.39...v0.7.0
+[0.6.39]: https://github.com/malindarathnayake/Foreman/compare/v0.6.29...v0.6.39
+[0.6.29]: https://github.com/malindarathnayake/Foreman/compare/v0.6.27...v0.6.29
+[0.6.27]: https://github.com/malindarathnayake/Foreman/compare/v0.6.18...v0.6.27
+[0.6.18]: https://github.com/malindarathnayake/Foreman/compare/v0.6.12...v0.6.18
+[0.6.12]: https://github.com/malindarathnayake/Foreman/compare/v0.6.9...v0.6.12
+[0.6.9]: https://github.com/malindarathnayake/Foreman/compare/v0.5.14...v0.6.9
+[0.5.14]: https://github.com/malindarathnayake/Foreman/compare/v0.5.11...v0.5.14
+[0.5.11]: https://github.com/malindarathnayake/Foreman/compare/v0.5.10...v0.5.11
+[0.5.10]: https://github.com/malindarathnayake/Foreman/compare/v0.5.9...v0.5.10
+[0.5.9]: https://github.com/malindarathnayake/Foreman/compare/v0.5.2...v0.5.9
+[0.5.2]: https://github.com/malindarathnayake/Foreman/compare/v0.5.0...v0.5.2
+[0.5.0]: https://github.com/malindarathnayake/Foreman/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/malindarathnayake/Foreman/compare/v0.3.0...v0.4.0
+[0.3.0]: https://github.com/malindarathnayake/Foreman/compare/v0.2.2...v0.3.0
+[0.2.2]: https://github.com/malindarathnayake/Foreman/compare/v0.1.3...v0.2.2
+[0.1.3]: https://github.com/malindarathnayake/Foreman/compare/v0.1.2...v0.1.3
+[0.1.2]: https://github.com/malindarathnayake/Foreman/compare/v0.1.1...v0.1.2
+[0.1.1]: https://github.com/malindarathnayake/Foreman/compare/v0.0.10...v0.1.1
+[0.0.10]: https://github.com/malindarathnayake/Foreman/compare/v0.0.9...v0.0.10
+[0.0.9]: https://github.com/malindarathnayake/Foreman/compare/v0.0.8...v0.0.9
+[0.0.8]: https://github.com/malindarathnayake/Foreman/releases/tag/v0.0.8

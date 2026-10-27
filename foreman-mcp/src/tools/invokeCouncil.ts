@@ -18,8 +18,9 @@
 //     unsupported approvals, and that judgement belongs to the moderator.
 
 import fs from "fs/promises"
-import { pinUnits } from "../lib/reviewPins.js"
-import { readLedger } from "../lib/ledger.js"
+import { pinUnitsWithReason, pinStatusLine, type PinSet } from "../lib/reviewPins.js"
+import { readLedgerWithStatus } from "../lib/ledger.js"
+import { foremanFileScope, PROGRESS_STATE_FILE } from "../lib/foremanFiles.js"
 import path from "path"
 import { createHash, randomBytes, randomUUID } from "crypto"
 import { appendReceipt, providerFromModelId } from "../lib/seatReceipts.js"
@@ -37,6 +38,7 @@ import {
   isReasoningParamRejection,
   readTransportBudgets,
   type CallControls,
+  type PostChatOptions,
   envInt,
   tryJson,
   parseSseChat,
@@ -75,6 +77,23 @@ const DEFAULT_COUNCIL_RESPONSE_MAX_BYTES = 16777216
 /** Ledger record_review accepts at most 100 findings; stay well inside it per seat. */
 const MAX_FINDINGS_PER_SEAT = 50
 
+/**
+ * An exact OpenRouter model id (`vendor/model`). Variant suffixes (`:online`, `:nitro`, `:floor`,
+ * `:free`, any `:`) are refused because they change routing or tooling behind the same base id,
+ * and router slugs such as `openrouter/auto` are refused because a router picks the model.
+ */
+export const PinnedModelIdSchema = z
+  .string()
+  .max(200)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9._-]*\/[A-Za-z0-9][A-Za-z0-9._-]*$/, "must be an exact model id (vendor/model, no :variant)")
+  .refine((v) => !/^openrouter\//i.test(v), "router slugs (openrouter/...) are not exact models")
+
+export const SeatModelsSchema = z.strictObject({
+  a: PinnedModelIdSchema.optional(),
+  b: PinnedModelIdSchema.optional(),
+  c: PinnedModelIdSchema.optional(),
+})
+
 export const InvokeCouncilInputSchema = z.object({
   phase: z.string().max(10000),
   objective: z.string().min(10).max(2000),
@@ -85,6 +104,10 @@ export const InvokeCouncilInputSchema = z.object({
   cross_examine: z.boolean().optional(),
   /** 0.6.39: the units this council reviews; their authorized files are pinned on each seat receipt. */
   units: z.array(z.string().min(1).max(200)).min(1).max(50).optional(),
+  /** Per-call exact model per seat. Overrides the configured model for THIS call only. */
+  seat_models: SeatModelsSchema.optional(),
+  /** Fail closed unless the endpoint is OpenRouter; every request then demands ZDR routing. */
+  require_zdr: z.boolean().optional(),
 })
 
 export interface InvokeCouncilDeps {
@@ -102,6 +125,8 @@ export interface InvokeCouncilDeps {
   credentialsPath?: string
   /** Host slash-command names for the post-council compact yield. */
   host?: HostId
+  /** Test seam: replaces the global fetch on every council request. */
+  fetchImpl?: typeof fetch
 }
 
 // ─── Seat reply schema (mirrors SEAT_RESPONSE_SCHEMA) ────────────────────────────
@@ -138,6 +163,58 @@ interface SeatResult {
   cost?: number
   elapsedMs: number
   paramDowngraded?: boolean
+  /** Model the endpoint reported serving; "conflicting" when frames disagreed. */
+  servedModel?: string
+  /** Upstream provider the endpoint reported (OpenRouter `provider`). Evidence only. */
+  servedProvider?: string
+}
+
+/**
+ * Per-call routing for every request this council makes. `pinned` maps a seat to the exact
+ * model it must be served by; `zdr` adds provider.zdr and refuses redirects.
+ */
+interface CouncilRouting {
+  openRouter: boolean
+  zdr: boolean
+  pinned: Partial<Record<CouncilSeatId, string>>
+  transport: PostChatOptions
+}
+
+/** OpenRouter `provider` block, or nothing for a non-OpenRouter endpoint. Never a model list. */
+function providerBlock(routing: CouncilRouting): Record<string, unknown> {
+  if (routing.zdr) return { provider: { require_parameters: true, zdr: true } }
+  return routing.openRouter ? { provider: { require_parameters: true } } : {}
+}
+
+/**
+ * Endpoint-supplied strings are untrusted: strip control characters (so a value cannot start a
+ * new output line) and cap the length before they reach output, failure detail, or receipts.
+ */
+function sanitizeServed(value: string): string {
+  return value.replace(/[\u0000-\u001f\u007f]/g, "").slice(0, 200)
+}
+
+/** Served-model evidence from a 2xx body: SSE frames when present, else the plain JSON reply. */
+function servedEvidence(sse: ReturnType<typeof parseSseChat>, bodyText: string): { model?: string; provider?: string } {
+  if (sse.sawFrames) {
+    return {
+      ...(sse.modelConflict ? { model: "conflicting" } : sse.model !== undefined ? { model: sse.model } : {}),
+      ...(sse.servedProvider !== undefined ? { provider: sse.servedProvider } : {}),
+    }
+  }
+  const json = tryJson(bodyText)
+  return {
+    ...(typeof json?.model === "string" && json.model !== "" ? { model: json.model } : {}),
+    ...(typeof json?.provider === "string" && json.provider !== "" ? { provider: json.provider } : {}),
+  }
+}
+
+/** Null when the served model matches the pin (or the seat is unpinned); else the failure detail. */
+function substitutionDetail(pinned: string | undefined, served: string | undefined): string | null {
+  if (pinned === undefined) return null
+  // Compared RAW: a served value carrying control characters never equals a pin.
+  if (served === pinned) return null
+  return `model_substituted: requested ${pinned} served ${served === undefined ? "missing" : sanitizeServed(served)}`
 }
 
 /**
@@ -219,7 +296,7 @@ function buildSeatBody(
   systemPrompt: string,
   userPacket: string,
   includeReasoning: boolean,
-  openRouter: boolean
+  routing: CouncilRouting
 ): string {
   const body: Record<string, unknown> = {
     model: seatCfg.model,
@@ -238,8 +315,9 @@ function buildSeatBody(
     },
     // Restrict routing to providers that actually support the parameters requested above.
     // Without it a route lacking structured-output support can be selected silently and the
-    // reply degrades to prose. OpenRouter only — see isOpenRouterEndpoint.
-    ...(openRouter ? { provider: { require_parameters: true } } : {}),
+    // reply degrades to prose. OpenRouter only — see isOpenRouterEndpoint. require_zdr adds
+    // provider.zdr; no fallback-model list is ever sent, so routing cannot swap the model.
+    ...providerBlock(routing),
   }
   // REASONING BUDGET — bounded only where the API semantics REQUIRE it.
   //
@@ -282,7 +360,7 @@ async function runSeat(
   url: string,
   headers: Record<string, string>,
   budgets: ReturnType<typeof readTransportBudgets>,
-  openRouter: boolean,
+  routing: CouncilRouting,
   controls?: CallControls
 ): Promise<SeatResult> {
   const t0 = Date.now()
@@ -299,7 +377,14 @@ async function runSeat(
     ...(paramDowngraded ? { paramDowngraded } : {}),
   })
 
-  let net = await postChat(url, headers, buildSeatBody(seatCfg, systemPrompt, userPacket, hasReasoning, openRouter), budgets, controls)
+  let net = await postChat(
+    url,
+    headers,
+    buildSeatBody(seatCfg, systemPrompt, userPacket, hasReasoning, routing),
+    budgets,
+    controls,
+    routing.transport
+  )
   let paramDowngraded = false
 
   // One-shot param downgrade, mirroring invoke_worker: a seat whose endpoint rejects the reasoning
@@ -316,9 +401,10 @@ async function runSeat(
       net = await postChat(
         url,
         headers,
-        buildSeatBody(seatCfg, systemPrompt, userPacket, false, openRouter),
+        buildSeatBody(seatCfg, systemPrompt, userPacket, false, routing),
         budgets,
-        controls
+        controls,
+        routing.transport
       )
     }
   }
@@ -344,7 +430,10 @@ async function runSeat(
     usage = json?.usage
   }
 
+  const served = servedEvidence(sse, net.bodyText)
   const tokens = {
+    ...(served.model !== undefined ? { servedModel: sanitizeServed(served.model) } : {}),
+    ...(served.provider !== undefined ? { servedProvider: sanitizeServed(served.provider) } : {}),
     tokensIn: typeof usage?.prompt_tokens === "number" ? usage.prompt_tokens : undefined,
     tokensOut: typeof usage?.completion_tokens === "number" ? usage.completion_tokens : undefined,
     reasoningTokens:
@@ -352,6 +441,13 @@ async function runSeat(
         ? usage.completion_tokens_details.reasoning_tokens
         : undefined,
     cost: typeof usage?.cost === "number" ? usage.cost : undefined,
+  }
+
+  // A pinned seat must be served by exactly the pinned model. A substituted, missing, or
+  // conflicting served model fails the call — it is never silently accepted.
+  const substituted = substitutionDetail(routing.pinned[seatCfg.seat], served.model)
+  if (substituted !== null) {
+    return { ...fail("MODEL_SCHEMA_FAIL", substituted, paramDowngraded), ...tokens }
   }
 
   if (typeof content !== "string" || content.trim() === "") {
@@ -453,7 +549,7 @@ async function runCrossExam(
   url: string,
   headers: Record<string, string>,
   budgets: ReturnType<typeof readTransportBudgets>,
-  openRouter: boolean,
+  routing: CouncilRouting,
   controls?: CallControls
 ): Promise<{ refutations: Refutation[]; failure?: string }> {
   // Anti-pattern guard from _common-protocol.md: a seat never sees another seat's RAW output.
@@ -486,16 +582,18 @@ async function runCrossExam(
       type: "json_schema",
       json_schema: { name: "foreman_cross_exam", strict: true, schema: REFUTATION_SCHEMA },
     },
-    ...(openRouter ? { provider: { require_parameters: true } } : {}),
+    ...providerBlock(routing),
   })
 
-  const net = await postChat(url, headers, body, budgets, controls)
+  const net = await postChat(url, headers, body, budgets, controls, routing.transport)
   if (net.kind === "neterror") return { refutations: [], failure: `${seatCfg.label}: ${net.stage}` }
   if (net.status < 200 || net.status >= 300) {
     return { refutations: [], failure: `${seatCfg.label}: ${classifyHttpError(net.status, net.bodyText).stage}` }
   }
 
   const sse = parseSseChat(net.bodyText)
+  const substituted = substitutionDetail(routing.pinned[seatCfg.seat], servedEvidence(sse, net.bodyText).model)
+  if (substituted !== null) return { refutations: [], failure: `${seatCfg.label}: ${substituted}` }
   const content = sse.sawFrames ? sse.content : tryJson(net.bodyText)?.choices?.[0]?.message?.content
   if (typeof content !== "string") return { refutations: [], failure: `${seatCfg.label}: no content` }
 
@@ -518,9 +616,17 @@ export async function handleInvokeCouncil(rawInput: unknown, deps: InvokeCouncil
   }
   const input = parsedInput.data
   // 0.6.39: pins are hashed before the start stamp (lib/reviewPins.ts).
-  const pinned = input.units && deps.ledgerPath
-    ? await pinUnits(await readLedger(deps.ledgerPath, { readOnly: true }), input.phase, input.units, deps.projectRoot ?? process.cwd())
-    : null
+  let pinStatus: string | undefined
+  let pinned: PinSet | null = null
+  if (input.units && deps.ledgerPath) {
+    const read = await readLedgerWithStatus(deps.ledgerPath, { readOnly: true })
+    const r = read.corrupt ? { reason: "the ledger could not be read (corrupt)" } : await pinUnitsWithReason(read.ledger, input.phase, input.units, deps.projectRoot ?? process.cwd(), foremanFileScope({
+      ledgerPath: deps.ledgerPath, progressPath: path.join(path.dirname(deps.ledgerPath), PROGRESS_STATE_FILE),
+      journalPath: deps.journalPath, docsDir: path.dirname(deps.ledgerPath),
+    }))
+    pinned = "pinned" in r ? r.pinned : null
+    pinStatus = pinStatusLine(r)
+  }
   // 0.6.35: every seat's receipt carries the run start, so freshness is judged from when the
   // seats read the packet, not from when they finished.
   const startedTs = new Date().toISOString()
@@ -543,12 +649,68 @@ export async function handleInvokeCouncil(rawInput: unknown, deps: InvokeCouncil
 
   const configured = config.seats.map((s) => s.seat)
   const requestedSeats: CouncilSeatId[] = input.seats && input.seats.length > 0 ? input.seats : configured
-  const seats = config.seats.filter((s) => requestedSeats.includes(s.seat))
-  if (seats.length === 0) {
+  const selectedSeats = config.seats.filter((s) => requestedSeats.includes(s.seat))
+  if (selectedSeats.length === 0) {
     return (
       `status: config_error\n\nrequested seats [${requestedSeats.join(", ")}] are not configured.\n\n` +
       `Configured seats: ${configured.map((s) => s.toUpperCase()).join(", ")}\n`
     )
+  }
+
+  // ── Per-call pins: a pin must name a configured, requested seat. Refused before any request. ──
+  const pinnedModels: Partial<Record<CouncilSeatId, string>> = {}
+  for (const [seatId, model] of Object.entries(input.seat_models ?? {}) as Array<[CouncilSeatId, string | undefined]>) {
+    if (model === undefined) continue
+    if (!configured.includes(seatId)) {
+      return (
+        `status: refused\n\nseat_models pins seat ${seatId.toUpperCase()}, which is not configured.\n\n` +
+        `Configured seats: ${configured.map((s) => s.toUpperCase()).join(", ")}. Nothing left this machine.\n`
+      )
+    }
+    if (!selectedSeats.some((s) => s.seat === seatId)) {
+      return (
+        `status: refused\n\nseat_models pins seat ${seatId.toUpperCase()}, which is not among the requested seats ` +
+        `[${requestedSeats.map((s) => s.toUpperCase()).join(", ")}]. Nothing left this machine.\n`
+      )
+    }
+    pinnedModels[seatId] = model
+  }
+  // A pinned seat runs as the pinned model for this call only: reasoning settings are kept, and
+  // the label becomes the pinned id so no output or ledger payload names the configured model.
+  const seats: CouncilSeatConfig[] = selectedSeats.map((s) => {
+    const pin = pinnedModels[s.seat]
+    return pin === undefined ? s : { ...s, model: pin, label: pin }
+  })
+  // Two seats requesting one model would merge under a shared label and report as two
+  // perspectives. Refused when a pin causes it; unpinned configurations are left as they are.
+  for (let i = 0; i < seats.length; i++) {
+    for (let j = i + 1; j < seats.length; j++) {
+      const [x, y] = [seats[i], seats[j]]
+      if (x.model !== y.model) continue
+      if (pinnedModels[x.seat] === undefined && pinnedModels[y.seat] === undefined) continue
+      return (
+        `status: refused\n\nseat_models would make seats ${x.seat.toUpperCase()} and ${y.seat.toUpperCase()} ` +
+        `both request ${x.model}. Pin distinct models or narrow 'seats'. Nothing left this machine.\n`
+      )
+    }
+  }
+
+  // ── require_zdr: fail closed unless the endpoint is exactly https://openrouter.ai. ──
+  const requireZdr = input.require_zdr === true
+  if (requireZdr) {
+    let zdrCapable = false
+    try {
+      const u = new URL(config.apiBase)
+      zdrCapable = u.protocol === "https:" && u.hostname === "openrouter.ai"
+    } catch {
+      zdrCapable = false
+    }
+    if (!zdrCapable) {
+      return (
+        "status: refused\n\nrequire_zdr is set but the configured FOREMAN_API_BASE is not https://openrouter.ai, " +
+        "so Zero Data Retention routing cannot be enforced. Nothing left this machine.\n"
+      )
+    }
   }
 
   const lenses: LensId[] = input.lenses && input.lenses.length > 0 ? input.lenses : DEFAULT_LENSES
@@ -621,10 +783,22 @@ export async function handleInvokeCouncil(rawInput: unknown, deps: InvokeCouncil
     responseMaxBytes: envInt("FOREMAN_COUNCIL_RESPONSE_MAX_BYTES", DEFAULT_COUNCIL_RESPONSE_MAX_BYTES),
   }
   const openRouter = isOpenRouterEndpoint(config.apiBase)
+  const routing: CouncilRouting = {
+    openRouter,
+    zdr: requireZdr,
+    pinned: pinnedModels,
+    transport: {
+      ...(requireZdr ? { redirect: "error" as const } : {}),
+      ...(deps.fetchImpl !== undefined ? { fetchImpl: deps.fetchImpl } : {}),
+    },
+  }
   const packetHash = sha256hex(userPacket)
   const runId = randomUUID()
 
-  const tracer = councilTracer()
+  // [CWE-359] require_zdr keeps the packet on the ZDR route only: the Langfuse tracer posts the
+  // objective (and, with content capture, the packet) to a separately configured host, so it is
+  // never created for a ZDR call.
+  const tracer = requireZdr ? null : councilTracer()
   tracer?.beginCouncil({
     runId,
     objective: bounded(input.objective, 200),
@@ -644,7 +818,7 @@ export async function handleInvokeCouncil(rawInput: unknown, deps: InvokeCouncil
   for (const lens of lenses) for (const seatCfg of seats) pairs.push({ seatCfg, lens })
 
   const results = await Promise.all(
-    pairs.map(({ seatCfg, lens }) => runSeat(seatCfg, lens, userPacket, url, headers, budgets, openRouter, deps.controls))
+    pairs.map(({ seatCfg, lens }) => runSeat(seatCfg, lens, userPacket, url, headers, budgets, routing, deps.controls))
   )
 
   for (const r of results) {
@@ -689,7 +863,7 @@ export async function handleInvokeCouncil(rawInput: unknown, deps: InvokeCouncil
           const empty: { refutations: Refutation[]; failure?: string } = { refutations: [] }
           return Promise.resolve(empty)
         }
-        return runCrossExam(seatCfg, foreign, input.evidence, url, headers, budgets, openRouter, deps.controls)
+        return runCrossExam(seatCfg, foreign, input.evidence, url, headers, budgets, routing, deps.controls)
       })
     )
     for (const round of rounds) {
@@ -709,11 +883,21 @@ export async function handleInvokeCouncil(rawInput: unknown, deps: InvokeCouncil
       const failed = mine.filter((x) => x.status !== "ok")
       const bytesOut = mine.reduce((a, x) => a + (x.reply ? Buffer.byteLength(JSON.stringify(x.reply)) : 0), 0)
       const tokens = mine.reduce((a, x) => a + (x.tokensIn ?? 0) + (x.tokensOut ?? 0), 0)
+      // model_served is the single served model observed across this seat's lens calls.
+      const observed = new Set(mine.map((x) => x.servedModel).filter((m): m is string => m !== undefined))
+      const modelServed =
+        observed.size > 1 || observed.has("conflicting")
+          ? "conflicting"
+          : observed.size === 1
+            ? [...observed][0]
+            : pinnedModels[seatCfg.seat] !== undefined
+              ? "missing"
+              : seatCfg.model
       try {
         const receipt = await appendReceipt(deps.receiptsPath, {
           started_ts: startedTs,
           ...(pinned ? { pin_phase: pinned.phase, pin_units: pinned.units, pin_attempts: pinned.attempts, pins: pinned.pins } : {}),
-          cli: "council", provider: providerFromModelId(seatCfg.model), model_requested: seatCfg.model, model_served: seatCfg.model,
+          cli: "council", provider: providerFromModelId(seatCfg.model), model_requested: seatCfg.model, model_served: modelServed,
           ...(seatCfg.reasoningEffort !== undefined ? { reasoning_effort: seatCfg.reasoningEffort } : {}),
           exit_code: failed.length === 0 ? 0 : 1, failure_reason: failed.length === 0 ? null : "nonzero_exit",
           prompt_sha256: packetHash, bytes_in: packetBytes, bytes_out: bytesOut, ...(tokens > 0 ? { tokens_used: tokens } : {}),
@@ -725,7 +909,7 @@ export async function handleInvokeCouncil(rawInput: unknown, deps: InvokeCouncil
     }
   }
 
-  return noticePrefix + renderCouncil({
+  return noticePrefix + (pinStatus ? `${pinStatus}\n` : "") + renderCouncil({
     receipts,
     runId,
     phase: input.phase,
@@ -739,6 +923,8 @@ export async function handleInvokeCouncil(rawInput: unknown, deps: InvokeCouncil
     crossExamRan,
     crossExamFailures,
     requestedCrossExam: input.cross_examine === true,
+    requireZdr,
+    pinnedSeats: new Set(Object.keys(pinnedModels) as CouncilSeatId[]),
   })
 }
 
@@ -757,6 +943,8 @@ interface RenderInput {
   crossExamRan: boolean
   crossExamFailures: string[]
   requestedCrossExam: boolean
+  requireZdr: boolean
+  pinnedSeats: Set<CouncilSeatId>
 }
 
 function renderCouncil(r: RenderInput): string {
@@ -773,7 +961,18 @@ function renderCouncil(r: RenderInput): string {
   lines.push(`lenses: ${r.lenses.join(", ")}`)
   // Seat provenance is printed so a surprising model is always traceable to the file that set it.
   lines.push(
-    `seats: ${r.seats.map((s) => `${s.seat.toUpperCase()}=${s.label} (${s.source})`).join(", ")}`
+    `seats: ${r.seats
+      .map((s) =>
+        r.pinnedSeats.has(s.seat)
+          ? `${s.seat.toUpperCase()}=${s.label} (pinned by call; configured ${s.source})`
+          : `${s.seat.toUpperCase()}=${s.label} (${s.source})`
+      )
+      .join(", ")}`
+  )
+  lines.push(
+    r.requireZdr
+      ? "routing: zdr=required (provider.zdr=true, require_parameters=true, redirect=error)"
+      : "routing: default"
   )
   lines.push(`packet_hash: ${r.packetHash}`)
   lines.push(`packet_bytes: ${r.packetBytes}`)
@@ -799,6 +998,25 @@ function renderCouncil(r: RenderInput): string {
       (distinctVendors.size < r.seats.length
         ? "seats sharing a vendor are PERSPECTIVE, not independent votes; disclose this in synthesis"
         : "distinct vendors; still disclose shared training/tooling correlation in synthesis")
+  )
+
+  // Per-call routing evidence: what was requested versus what the endpoint says it served.
+  lines.push("")
+  lines.push("## Seat routing")
+  lines.push(
+    toTable(
+      ["seat", "lens", "pinned", "model_requested", "model_served", "served_provider", "zdr", "status"],
+      r.results.map((x) => [
+        x.label,
+        x.lens,
+        r.pinnedSeats.has(x.seat) ? "yes" : "no",
+        x.model,
+        x.servedModel ?? "missing",
+        x.servedProvider ?? "n/a",
+        r.requireZdr ? "enforced" : "not requested",
+        x.status,
+      ])
+    )
   )
 
   if (r.claims.length > 0) {

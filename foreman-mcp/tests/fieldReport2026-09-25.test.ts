@@ -169,3 +169,87 @@ describe("correction refusals name the real cause", () => {
     } finally { await fsp.rm(root, { recursive: true, force: true }) }
   })
 })
+
+// 0.7.0 (field report 2026-09-28): a brief naming the TYPE TestOpts failed preflight as a dead
+// test citation. Exempt only names in `symbols` that the server spec names as whole words, and
+// only where the brief does not use them as a test.
+import { specNamedTestSymbols, inTestPosition, extractCitations } from "../src/lib/preflight.js"
+
+describe("test-shaped type names in a brief", () => {
+  const brief = "Add a Timeout field to the TestOptions struct the runner reads."
+  it("the field case passes when symbols lists it and the spec names it", async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "fr-testopts-"))
+    try {
+      const names = specNamedTestSymbols(["TestOptions"], "Unit u1: extend `TestOptions` with Timeout.")
+      const r = await checkCitations(root, brief, [], [], names)
+      expect(r.find((c) => c.raw === "TestOptions")).toMatchObject({ status: "ok" })
+    } finally { await fsp.rm(root, { recursive: true, force: true }) }
+  })
+
+  it("stays dead when the spec only contains it inside a longer word, or symbols omit it", async () => {
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "fr-testopts-"))
+    try {
+      expect(specNamedTestSymbols(["TestOptions"], "OldTestOptionsLegacy is removed")).toEqual(new Set())
+      const r = await checkCitations(root, brief, [], [], specNamedTestSymbols([], "TestOptions"))
+      expect(r.find((c) => c.raw === "TestOptions")).toMatchObject({ status: "dead" })
+    } finally { await fsp.rm(root, { recursive: true, force: true }) }
+  })
+
+  it("a name used as a test in the brief is still checked as a test", () => {
+    expect(inTestPosition("Add func TestOptions(t *testing.T) for the runner.", "TestOptions")).toBe(true)
+    expect(inTestPosition("Call TestOptions() in setup.", "TestOptions")).toBe(true)
+    expect(inTestPosition(brief, "TestOptions")).toBe(false)
+  })
+
+  it("a file path is not also read as a test name", () => {
+    const c = extractCitations("Update tests/test_config_loader.py to cover the empty case.")
+    expect(c.map((x) => x.kind)).toEqual(["file"])
+  })
+})
+
+// 0.7.0 (Codex review): test positions the first exemption missed, and containment that
+// follows links instead of trusting the lexical path.
+import { forwardUnmet, normalizeObligations } from "../src/lib/preflight.js"
+
+describe("test positions in context", () => {
+  it("test vocabulary, renames and outcomes reach every name in a list", () => {
+    expect(inTestPosition("Tests TestAlpha and TestBravo cover retries.", "TestBravo")).toBe(true)
+    expect(inTestPosition("Tests TestAlpha and TestBravo cover retries.", "TestAlpha")).toBe(true)
+    expect(inTestPosition("Rename TestBefore to TestAfter.", "TestBefore")).toBe(true)
+    expect(inTestPosition("Rename TestBefore to TestAfter.", "TestAfter")).toBe(true)
+    expect(inTestPosition("TestAlpha, TestBravo fail today.", "TestAlpha")).toBe(true)
+    expect(inTestPosition("Make sure TestAlpha passes.", "TestAlpha")).toBe(true)
+  })
+
+  it("a constructor, a type mention, or a parenthesis on the next line is not a test", () => {
+    expect(inTestPosition("Build it with new TestOptions() and pass it in.", "TestOptions")).toBe(false)
+    expect(inTestPosition("Extend TestOptions.\n(the runner reads it)", "TestOptions")).toBe(false)
+    expect(inTestPosition("The TestOptions struct gains Timeout. Tests stay green.", "TestOptions")).toBe(false)
+  })
+})
+
+describe("preflight containment follows links", () => {
+  it("a junction inside the root to a directory outside is an escape; '..fixtures' is not", async () => {
+    const outside = await fsp.mkdtemp(path.join(os.tmpdir(), "fr-out-"))
+    const root = await fsp.mkdtemp(path.join(os.tmpdir(), "fr-root-"))
+    try {
+      await fsp.writeFile(path.join(outside, "secret.go"), "package x\n")
+      await fsp.symlink(outside, path.join(root, "link"), "junction")
+      await fsp.mkdir(path.join(root, "..fixtures"))
+      await fsp.writeFile(path.join(root, "..fixtures", "data.go"), "package f\n")
+
+      const r = await checkCitations(root, "Read link/secret.go and ..fixtures/data.go first.")
+      expect(r.find((c) => c.raw.includes("secret.go"))).toMatchObject({ status: "dead", detail: "path escapes the repository root" })
+      const fixture = r.find((c) => c.raw.includes("data.go"))
+      expect(fixture).toBeDefined()
+      expect(fixture?.status).not.toBe("dead")
+
+      const unmet = await forwardUnmet(root, normalizeObligations([{ file: "link/new_test.go" }, { file: "..fixtures/new.go" }]))
+      expect(unmet.join("\n")).toContain("link/new_test.go: escapes the repository root")
+      expect(unmet.join("\n")).not.toContain("..fixtures/new.go: escapes")
+    } finally {
+      await fsp.rm(root, { recursive: true, force: true })
+      await fsp.rm(outside, { recursive: true, force: true })
+    }
+  })
+})
