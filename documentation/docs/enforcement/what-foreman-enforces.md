@@ -68,6 +68,7 @@ The **ledger validation** is TypeScript in `lib/ledger.ts`. It runs on every `wr
 | same | a correction's baseline does not keep the earlier root and authorized set | `GUARD CORRECTION` | keep the inherited set |
 | same | the spec's `Test:` line does not select the Go package of an authorized file | `CHECKPOINT REACH` | `user_override: true`, recorded as `reach_override` |
 | same | another unit holds the repository window | `WINDOW BUSY` | record its verdict or `close_attempt` first |
+| same | the unit's previous attempt was rejected at `tier: "premium"` and this delegation is neither `tier: "frontier"` nor a correction | `TIER LADDER` | `user_override: true` |
 | `repo_guard { operation: "snapshot" }` | the authorized file set would be empty by accident | `refused` | pass `allowed_files`, or `[]` to declare a read-only guard |
 | same | an authorized file is non-empty and entirely NUL bytes | `damaged` | restore the file |
 | `repo_guard { operation: "compare" }` | the unit moved to a later attempt while the comparison ran | `GUARD BLOCKED` | compare again against the current baseline |

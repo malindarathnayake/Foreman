@@ -7,12 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.4] - 2026-10-27
+
+### Security
+
+- The supported Node.js range is now `^22.23.4 || ^24.22.1 || >=26.12.1`. Earlier releases carry the Brotli decoder flaw CVE-2026-111497.
+
 ### Changed
 
 - Owner gates can be registered and approved in one `set_owner_gate` call. Approving a gate that is already approved is refused.
 - A reopened gate keeps its latest approval (who approved it, under what authority, with which quote), and session orientation shows it.
 - Only `pending` owner gates replace the next action with `await_owner_gates`. In-progress and failed gates no longer hide `implement_unit`. A phase-gate retry blocked by open gates now reports `resume_owner_gates`.
 - `blocked_on` lists gate ids rather than repeating each gate's text, and `owner_gates_hint` is shown only until the first gate is recorded. The `write_ledger` description lists the approval fields.
+- The tier-ladder refusal (`TIER LADDER`) is documented with the other `set_unit_status` refusals.
 
 ## [0.9.3] - 2026-10-13
 

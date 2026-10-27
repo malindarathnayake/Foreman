@@ -8,7 +8,7 @@ or routing policy. It orchestrates protocols, records state, and refuses invalid
 transitions (a unit cannot pass without a recorded delegation; a phase cannot
 pass while any unit is not `pass`).
 
-Package: `@malindarathnayake/foreman-mcp` · Version: `0.9.3` · Runtime: Node.js `>=22`
+Package: `@malindarathnayake/foreman-mcp` · Version: `0.9.4` · Runtime: Node.js `^22.23.4 || ^24.22.1 || >=26.12.1`
 
 This file is written for an AI agent that just connected to the server. It is
 an operating packet, not a feature list — read the whole thing before your

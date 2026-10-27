@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/malindarathnayake/Foreman/actions/workflows/build.yml"><img src="https://github.com/malindarathnayake/Foreman/actions/workflows/build.yml/badge.svg" alt="Build and Publish" /></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg" alt="License: Apache-2.0" /></a>
-  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-%3E%3D22-brightgreen.svg" alt="Node.js >= 22" /></a>
+  <a href="https://nodejs.org/"><img src="https://img.shields.io/badge/node-22.23.4%2B%20%7C%2024.22.1%2B%20%7C%2026.12.1%2B-brightgreen.svg" alt="Node.js 22.23.4+, 24.22.1+ or 26.12.1+" /></a>
   <a href="https://malindarathnayake.github.io/Foreman/"><img src="https://img.shields.io/badge/docs-foreman-b45309.svg" alt="Documentation" /></a>
 </p>
 
@@ -17,7 +17,7 @@ Foreman is an MCP server for Claude Code, Cursor, and Codex. It gives the model 
 
 ## Install
 
-Node.js 22 or newer. Download the `.tgz` from the [latest release](https://github.com/malindarathnayake/Foreman/releases/latest), then:
+Node.js 22.23.4+, 24.22.1+ or 26.12.1+. Earlier releases in each line carry the Brotli decoder flaw CVE-2026-111497. Download the `.tgz` from the [latest release](https://github.com/malindarathnayake/Foreman/releases/latest), then:
 
 ```bash
 npm install -g ./malindarathnayake-foreman-mcp-<version>.tgz
@@ -207,7 +207,7 @@ Full docs: [malindarathnayake.github.io/Foreman](https://malindarathnayake.githu
 
 ## Project
 
-**Current release:** `v0.9.3` | **Package:** `@malindarathnayake/foreman-mcp` | **Runtime:** Node.js `>=22`
+**Current release:** `v0.9.4` | **Package:** `@malindarathnayake/foreman-mcp` | **Runtime:** Node.js `^22.23.4 || ^24.22.1 || >=26.12.1`
 
 - [Changelog](CHANGELOG.md)
 - [Security policy](SECURITY.md)

@@ -69,8 +69,11 @@ describe("packed manifest", () => {
       encoding: "utf-8",
       stdio: ["ignore", "pipe", "ignore"],
     })
-    const manifest = JSON.parse(out) as Array<{ files: Array<{ path: string }> }>
-    return manifest[0].files.map((f) => f.path)
+    // npm 11 and earlier print an array of packages; npm 12 prints an object keyed by package name.
+    type Packed = { files: Array<{ path: string }> }
+    const manifest = JSON.parse(out) as Packed[] | Record<string, Packed>
+    const packed = Array.isArray(manifest) ? manifest[0] : Object.values(manifest)[0]
+    return packed.files.map((f) => f.path)
   }
 
   // Under the full suite `npm pack --dry-run` alone can exceed vitest's default 5 s

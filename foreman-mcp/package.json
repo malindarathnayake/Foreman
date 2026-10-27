@@ -1,6 +1,6 @@
 {
   "name": "@malindarathnayake/foreman-mcp",
-  "version": "0.9.3",
+  "version": "0.9.4",
   "description": "Foreman MCP server — workflow orchestrator for planning and implementation skills",
   "type": "module",
   "main": "dist/server.js",
@@ -17,7 +17,7 @@
     "url": "git+https://github.com/malindarathnayake/foreman.git"
   },
   "engines": {
-    "node": ">=22"
+    "node": "^22.23.4 || ^24.22.1 || >=26.12.1"
   },
   "license": "Apache-2.0",
   "publishConfig": {
