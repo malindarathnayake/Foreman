@@ -1,9 +1,10 @@
+import { writeLedger, handleWriteLedger } from "./helpers/authorizedLedger.js"
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
-import { readLedger, recordRepoGuard, writeLedger, type SidecarReader } from "../src/lib/ledger.js"
-import { handleWriteLedger } from "../src/tools/writeLedger.js"
+import { readLedger, recordRepoGuard, type SidecarReader } from "../src/lib/ledger.js"
+
 import { resolveModelRank, type ModelRank } from "../src/lib/modelRank.js"
 import type { HostId } from "../src/lib/hostProfiles.js"
 import type { RepoSnapshot, VerificationEvidence, WriteLedgerInput } from "../src/types.js"

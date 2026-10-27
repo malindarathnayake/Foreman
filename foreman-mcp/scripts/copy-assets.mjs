@@ -37,7 +37,7 @@ const wfSrcDir = path.resolve(__dirname, "..", "src", "workflows")
 const wfDestDir = path.resolve(__dirname, "..", "dist", "workflows")
 await mkdir(wfDestDir, { recursive: true })
 await cp(wfSrcDir, wfDestDir, { recursive: true })
-for (const f of ["foreman-checkpoint-review.js", "foreman-design-panel.js", "foreman-triage.js"]) {
+for (const f of ["foreman-checkpoint-review.js", "foreman-design-panel.js", "foreman-design-gauntlet.js", "foreman-triage.js"]) {
   await access(path.join(wfDestDir, f))
 }
 console.log(`[copy-assets] copied workflow scripts -> ${path.relative(process.cwd(), wfDestDir)}`)

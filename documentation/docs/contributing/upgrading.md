@@ -23,7 +23,7 @@ Older personal ethos files: if you installed a `~/.claude/engineering-ethos.md` 
 
 Ledger changes are additive. An older ledger loads under a newer server; fields it lacks are treated as absent, and the behaviors below apply from the first write after the upgrade.
 
-Published releases since 0.6.0: v0.6.9, v0.6.12, v0.6.18, v0.6.27, v0.6.29, v0.6.39 and v0.7.0. Rows between two published releases first reached users in the later one; for example 0.6.30–0.6.38 shipped in v0.6.39.
+Published releases since 0.6.0: v0.6.9, v0.6.12, v0.6.18, v0.6.27, v0.6.29, v0.6.39, v0.7.0, v0.7.1 and v0.7.2. Rows between two published releases first reached users in the later one; for example 0.6.30–0.6.38 shipped in v0.6.39.
 
 | Release | What changed for existing projects |
 |---|---|
@@ -56,6 +56,13 @@ Published releases since 0.6.0: v0.6.9, v0.6.12, v0.6.18, v0.6.27, v0.6.29, v0.6
 | 0.6.38 | Foreman trusts the operating system's certificate store (opt out with `FOREMAN_TRUST_SYSTEM_CA=0`); on Node older than 22.19 or 24.5, upgrade Node or start it with `NODE_EXTRA_CA_CERTS` instead (`NODE_USE_SYSTEM_CA` arrived in the same Node versions). Files promised in `preflight_check creates` join the guard's authorized set. A timed-out seat's receipt can be bound to a `completion: "partial"` record. Existing projects: nothing to do |
 | 0.6.39 | `invoke_advisor` / `invoke_council` take `phase` and `units` so a long seat does not block other units; timeouts and host cancels kill the whole process tree; `set_unit_status` accepts `preflight_check` inline; a pass verdict compares an uncompared attempt first; the Claude seat runs `claude-fable-5-1` with one Opus fallback. Existing projects: nothing to do |
 | 0.7.0 | Renumbered from 0.6.39 (no 0.6.40). `project_changelog` keeps the repository's `CHANGELOG.md` in Keep a Changelog format. Guard path arguments are matched literally, and a drive-relative path (`D:x`) or, on Windows, a path containing `:` is now refused. The guard-mismatch refusal is labelled `GUARD CORRECTION` (was `RANK CORRECTION`): update anything that matches the old text. Seats print a `pins:` line. Nothing else to do |
+| 0.7.1 | `session_orient`'s `progress_advisories` label `ahead` is now `seeded_not_started`: update anything that matches the old text. Preflight accepts Foreman's own state files as citations and skips quoted draft markers. `preflight_check` names checkpoint runners `run_tests` would refuse (advisory). New saved workflow `foreman-design-gauntlet` (Claude Code; install with `claude_workflows_init`). No ledger change |
+| 0.7.2 | No change for existing projects: CI pins and a content scan of the shipped protocols and workflow scripts |
+| 0.8.0 | `workflow` is available on Codex and Cursor. Restart the MCP server after upgrading. Runs are user-approved and read-only, with aggregate reviews recorded as `fan`; no ledger migration is needed. Claude Code keeps its existing scripts |
+| 0.9.3 | Restart the MCP server. `session_orient` now shows how to register live gates using `write_ledger` with `operation: "set_owner_gate"`. Record progress with `in_progress`, `stage` and `note`; record each failure once with `failure: { stage, reason }`. Existing pending/approved gates remain compatible. Missing authorization and model evidence fields are reported together. |
+| 0.9.2 | Restart the MCP server. All profiles now require authority provenance and a phase fact link on user overrides, and matching model evidence for pinned worker tiers. Rerun the host agent initializer to add missing frontier seats; configure tier mappings in `.foreman-worker-models.json`. Existing facts and reviews remain readable; new corrections retain history. |
+| 0.9.1 | Rerun `claude_agents_init` (add `overwrite: true` to refresh the existing three) to write the new `foreman-worker-frontier` seat, then restart the host session so it loads. On Claude Code a delegation after a rejected premium attempt now needs `tier: "frontier"` or the owner's `user_override` |
+| 0.9.0 | `invoke_council` takes optional `seat_models` and `require_zdr` (see the changelog). Restart the MCP server after upgrading. Seat receipts now record the served model; an unpinned call without the new fields sends the same requests as before |
 
 ## Versioning (from 0.7.0)
 

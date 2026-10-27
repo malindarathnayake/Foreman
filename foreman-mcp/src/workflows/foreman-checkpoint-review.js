@@ -1,7 +1,7 @@
 // Foreman checkpoint review fan (installed by claude_workflows_init; Claude Code host only).
 //
 // One finder per risk lens over the changed files, a dedup across lenses, then an
-// adversarial verify of every finding by two distinct lenses. Returns a record_review-ready
+// adversarial verify of every finding by two distinct lenses. Returns a write_ledger record_review-ready
 // report. This is PERSPECTIVE, not independence: every agent runs on the host's own model,
 // so the pit-boss records it with stage:'fan' and it never counts as a gate seat. External
 // advisor seats through invoke_advisor still satisfy the gate.

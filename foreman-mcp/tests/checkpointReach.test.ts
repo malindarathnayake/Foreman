@@ -1,3 +1,4 @@
+import { writeLedger } from "./helpers/authorizedLedger.js"
 // 0.6.25 (sixth field report + Codex deliberation, docs/codex-deliberation-2026-09-11-reach.md):
 // the checkpoint is frozen from the server's spec; a Go package selection that omits the
 // owning package of an authorized file refuses; opaque clauses block refusal; the verdict
@@ -7,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { readLedger, recordRepoGuard, writeLedger } from "../src/lib/ledger.js"
+import { readLedger, recordRepoGuard } from "../src/lib/ledger.js"
 import { appendPreflight, briefHash, preflightPathFor } from "../src/lib/preflight.js"
 import { checkpointFromSpec, checkpointReach, classifyClause, owningPackage, parseCheckpointLines, parseClauses } from "../src/lib/checkpoint.js"
 import { preflightCheck } from "../src/tools/preflightCheck.js"

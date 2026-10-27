@@ -7,6 +7,102 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Owner gates can be registered and approved in one `set_owner_gate` call. Approving a gate that is already approved is refused.
+- A reopened gate keeps its latest approval (who approved it, under what authority, with which quote), and session orientation shows it.
+- Only `pending` owner gates replace the next action with `await_owner_gates`. In-progress and failed gates no longer hide `implement_unit`. A phase-gate retry blocked by open gates now reports `resume_owner_gates`.
+- `blocked_on` lists gate ids rather than repeating each gate's text, and `owner_gates_hint` is shown only until the first gate is recorded. The `write_ledger` description lists the approval fields.
+
+## [0.9.3] - 2026-10-13
+
+### Added
+
+- Owner gates support in-progress and failed states, current stage and notes, and retained failure counts and failure reasons across retries, approval and reopening. Session orientation includes an explicit registration example for B1/B2 on every profile.
+
+### Fixed
+
+- Pass refusals collect missing authorization, override fact links, worker model and model evidence in one response. Owner-gate approval and registration also report their missing conditional fields together.
+
+## [0.9.2] - 2026-10-13
+
+### Added
+
+- Shared ledger operations `adjudicate_finding`, `record_launch` for `aborted_no_work`, and `set_owner_gate`, with retained decisions and resume guidance on all profiles.
+- Append-only fact versions, authorization provenance with override fact links, per-finding severity decisions, and worker model evidence checked against configured tier pins.
+- Non-git SHA-256 repository snapshots with frozen exclude globs; worker model mappings and missing-agent diagnostics, with frontier seats across profiles.
+
+### Fixed
+
+- Unit-filtered rejection/review reads now return the requested records, including full-text paging and review/finding identifiers. Delegation accepts `brief_hash` alone.
+- Native verifier validation names `data.checked`; scoped review coverage warnings are deferred to gate evaluation. Stale progress advisories explain how to clear them, and checkpoint parsing recognizes PowerShell suites.
+
+## [0.9.1] - 2026-10-12
+
+A unit that fails at the premium seat on Claude Code now moves to Fable instead of retrying at Opus.
+
+### Added
+
+- `claude_agents_init` writes a fourth seat, `foreman-worker-frontier` (`fable`, effort `high`), and the ledger tier accepts `frontier`.
+
+### Changed
+
+- On Claude Code, after a rejected or failed `premium` attempt the next delegation must record `tier: "frontier"`; anything lower is refused (`TIER LADDER`) unless the owner sets `user_override`. A correction that reuses the same worker is exempt. Codex is unchanged, because its premium seat is already the top model.
+- Seat models are family aliases (`sonnet`, `opus`, `fable`) that the host resolves to the newest release; the host falls back from `fable` to `opus` when the account cannot serve it.
+- The checkpoint-review workflow text says `record_review` is a ledger write operation, not a tool.
+
+## [0.9.0] - 2026-10-11
+
+Per-review model pinning and fail-closed Zero Data Retention routing for `invoke_council`.
+
+### Added
+
+- `invoke_council` takes `seat_models` (an exact `vendor/model` id per seat for that call only; router slugs and `:variant` suffixes are refused) and `require_zdr`. Global seat configuration is unchanged.
+- With `require_zdr`, the call is refused before anything is sent unless the endpoint is `https://openrouter.ai`; every seat, retry and cross-examination request then carries `provider: { zdr: true, require_parameters: true }`, redirects are refused, and Langfuse tracing is off for that call.
+- Council output names the routing mode and a per-seat, per-lens routing table: requested model, served model, served provider and ZDR status.
+
+### Changed
+
+- A pinned seat whose served model is missing, conflicting or different from the pin fails that call (`model_substituted`); a substituted cross-examination reply is discarded. Pins that would put two seats on one model are refused.
+- Seat receipts record the model the endpoint reports serving (`model_served`) instead of echoing the configured model; an unpinned seat with no reported model still records the configured one.
+
+## [0.8.0] - 2026-10-08
+
+### Added
+
+- `workflow` on Codex and Cursor: shared definitions for design panels, design gauntlets, checkpoint review fans and field-report triage, with validated arguments, phase/result schemas, agent estimates and bounded native procedures. Runs require user opt-in, never implement or write the ledger, and return perspective (`stage:'fan'`). The native gauntlet requests Perplexity and Codex web research and attacks through a separately receipted Claude/Gemini advisor. Claude Code keeps its existing scripts; generic hosts do not expose the new tool.
+
+## [0.7.2] - 2026-10-07
+
+Supply-chain hygiene. No change to Foreman's behavior.
+
+### Security
+
+- The documentation workflow's GitHub Actions (`checkout`, `setup-node`, `upload-pages-artifact`, `deploy-pages`) are pinned to commit SHAs at their current major versions. Its deploy job holds `pages: write` and `id-token: write`, so a moved tag could have published the site.
+- A test fails CI when any GitHub Action is not pinned to a full commit SHA with its tag as a comment.
+- A test scans the text Foreman ships to models and installs into projects (protocols, docs, workflow scripts) for injection phrases, hidden or bidi characters, pipes into a shell, long encoded runs, and URL hosts outside an allowlist.
+
+## [0.7.1] - 2026-10-05
+
+Field report 2026-10-05 (a resume session on 0.7.0), the small fixes, plus a new saved workflow.
+
+### Added
+
+- `foreman-design-gauntlet` saved workflow (Claude Code only, installed by `claude_workflows_init`): research sweeps and repository grounding, one hardened design written to `out_dir`, a parallel attack by the Codex CLI (read-only), a SOC lens and an over-complexity lens, one independent verifier per finding (capped by `max_verifiers`, highest severity first) and a completeness critic. The pit-boss deliberates the result and the user arbitrates before anything in the repository changes. Its result is perspective (`stage:'fan'`), never a gate seat: the Codex attack runs from a workflow agent, not through `invoke_advisor`. Research falls back to web search when Perplexity is not connected, and the design stage falls back to the host model when the requested design model is refused.
+- `preflight_check` reports `checkpoint_runners_refused` and a section naming each runner in the unit's spec Test line that `run_tests` would refuse, so a `python scripts/...` checkpoint shows up at planning time instead of at the verdict.
+
+### Changed
+
+- `run_tests` refusals list the runners in force, including `FOREMAN_TEST_ALLOWLIST` additions, and say how to add one.
+- `claude_agents_init` no longer says a restart is not required: definitions written in a session may not load until the next one. The Claude Code spawn rule now falls back to a general-purpose agent with the model of the tier when the spawn fails with "Agent type ... not found", recorded in `route_reason`.
+- The `preflight.receipt` schema description says it is required once the project has run `preflight_check`, corrections included, unless the same call carries `data.preflight_check`.
+- `session_orient`'s `progress_advisories` label `ahead` is now `seeded_not_started`. Update anything that matches the old text.
+
+### Fixed
+
+- Preflight no longer refuses a brief that names one of Foreman's own state files, such as `.foreman-heartbeat.jsonl` before the first heartbeat, as a dead citation.
+- Draft-marker advisories skip `TBD`, `TODO` and the other markers when they appear inside backticks or double quotes.
+
 ## [0.7.0] - 2026-10-01
 
 0.7.0 follows 0.6.39; there is no 0.6.40. The 0.6.x patch numbers had become hard to read (`v0.6.4` looks like `v0.6.40`) and 0.6.30–0.6.39 carried behavior changes as patches. Published releases before this one: v0.6.27, v0.6.29 and v0.6.39 — the changes listed under 0.6.30–0.6.38 first reached users in v0.6.39. Scope was set by a planning workflow, reviewed by Fable and deliberated with Codex.
@@ -1169,7 +1265,10 @@ First minor release for the lighttask/spec/doc protocol family.
 
 Use the `changelog` MCP tool for the full historical table from `0.0.1` through `0.0.9`.
 
-[Unreleased]: https://github.com/malindarathnayake/Foreman/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/malindarathnayake/Foreman/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/malindarathnayake/Foreman/compare/v0.7.2...v0.8.0
+[0.7.2]: https://github.com/malindarathnayake/Foreman/compare/v0.7.1...v0.7.2
+[0.7.1]: https://github.com/malindarathnayake/Foreman/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/malindarathnayake/Foreman/compare/v0.6.39...v0.7.0
 [0.6.39]: https://github.com/malindarathnayake/Foreman/compare/v0.6.29...v0.6.39
 [0.6.29]: https://github.com/malindarathnayake/Foreman/compare/v0.6.27...v0.6.29

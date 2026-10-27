@@ -1,3 +1,4 @@
+import { writeLedger, handleWriteLedger } from "./helpers/authorizedLedger.js"
 // Field feedback 2026-09 — ledger + session_orient behavior fixed after the Codex
 // deliberation: first-pass frontier, rejection reopens a pass, review-required gate,
 // natural ordering, and the durable review-completion fields.
@@ -5,9 +6,9 @@ import { describe, it, expect, beforeEach, afterEach } from "vitest"
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
-import { readLedger, writeLedger } from "../src/lib/ledger.js"
+import { readLedger } from "../src/lib/ledger.js"
 import { handleReadLedger } from "../src/tools/readLedger.js"
-import { handleWriteLedger } from "../src/tools/writeLedger.js"
+
 import { sessionOrient } from "../src/tools/sessionOrient.js"
 import { renderChecklist } from "../src/tools/writeProgress.js"
 import { naturalCompare, naturalSort } from "../src/lib/naturalSort.js"

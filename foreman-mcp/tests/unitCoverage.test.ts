@@ -1,3 +1,4 @@
+import { writeLedger } from "./helpers/authorizedLedger.js"
 // Per-unit review coverage (0.6.20). The gate keys review currency on each unit's attempt
 // instead of the phase's newest verdict; record_review data.units scopes a seat's snapshot;
 // the stamp basis is the weakest per-unit class. Every pre-0.6.20 message is pinned
@@ -8,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { readLedger, writeLedger } from "../src/lib/ledger.js"
+import { readLedger } from "../src/lib/ledger.js"
 import {
   coversUnit, coveredUnits, isFullyCurrent, isSuperseded, seatCoverage, trimReviews, REVIEW_RETENTION,
 } from "../src/lib/reviewPredicates.js"
@@ -266,7 +267,7 @@ describe("a scoped record covers the units it names and the earlier seat keeps t
     const wholeTs = await lastReviewTs()
     await moveUnit("u3")
     const { warning } = await record(independent({ advisor: "claude", units: ["u3"], tokens: 100 }))
-    expect(warning).toBe("REVIEW SCOPE: record covers 1 of 3 unit(s); not covered by this record: u1, u2.")
+    expect(warning).toBeUndefined()
     const scoped = (await reviews()).at(-1)!
     expect(scoped.units).toEqual(["u3"])
     expect(scoped.unit_attempts).toEqual({ u3: 2 })
@@ -309,7 +310,7 @@ describe("a scoped record covers the units it names and the earlier seat keeps t
     expect(r.units).toEqual(["u1", "u2"])
     expect(r.unit_attempts).toEqual({ u1: 1, u2: 1 })
     const { warning } = await record(independent({ units: ["u1", "u2"] }))
-    expect(warning).toBe("REVIEW SCOPE: record covers 2 of 2 unit(s).")
+    expect(warning).toBeUndefined()
   })
 })
 

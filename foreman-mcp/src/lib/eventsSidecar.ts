@@ -49,7 +49,7 @@ export type FailureStage =
   | "W_REJ"
 
 export type FinishReasonClass = "stop" | "length" | "content_filter" | "other"
-export type Tier = "cheap" | "standard" | "premium"
+export type Tier = "cheap" | "standard" | "premium" | "frontier"
 export type CapabilityClass = "frontier" | "capable" | "compact"
 export type EditFormat = "unified_diff" | "search_replace" | "whole_file"
 export type Outcome = "pass" | "fail" | "inconclusive"
@@ -107,7 +107,7 @@ export const LEGACY_REFUNDED_STAGES: ReadonlySet<string> = new Set<string>([
 ])
 
 const FINISH_REASON_CLASSES = new Set<string>(["stop", "length", "content_filter", "other"])
-const TIERS = new Set<string>(["cheap", "standard", "premium"])
+const TIERS = new Set<string>(["cheap", "standard", "premium", "frontier"])
 const CAPABILITY_CLASSES = new Set<string>(["frontier", "capable", "compact"])
 const EDIT_FORMATS = new Set<string>(["unified_diff", "search_replace", "whole_file"])
 const OUTCOMES = new Set<string>(["pass", "fail", "inconclusive"])

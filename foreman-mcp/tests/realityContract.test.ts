@@ -1,3 +1,4 @@
+import { writeLedger } from "./helpers/authorizedLedger.js"
 // Architecture council 2026-09-10: reality as a source of truth. The spec contract block,
 // claim-bound probes with streaming capture, live smoke with the verdict gate and digests,
 // the repository window, and the guard's baseline binding; plus the five defects the council
@@ -7,7 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { readLedger, recordRepoGuard, writeLedger } from "../src/lib/ledger.js"
+import { readLedger, recordRepoGuard } from "../src/lib/ledger.js"
 import { appendPreflight, briefHash, findPreflight, preflightPathFor } from "../src/lib/preflight.js"
 import { parseContracts, digestPaths, contractDigest } from "../src/lib/specContract.js"
 import { contractProbe, evaluate, MAX_CAPTURE } from "../src/tools/contractProbe.js"

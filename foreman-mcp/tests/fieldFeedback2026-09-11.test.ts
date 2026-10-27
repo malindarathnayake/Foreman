@@ -162,7 +162,7 @@ describe("normalize_review explains a zero-finding parse", () => {
 // ─── 10b. record_fact budgets the store, not the entry ────────────────────────
 
 describe("record_fact makes room for the fact most worth keeping", () => {
-  it("accepts an incident record far past the old 2000-character cap and evicts oldest to stay in budget", async () => {
+  it("accepts an incident record far past the old 2000-character cap and preserves older facts beyond the former display budget", async () => {
     for (let i = 0; i < 8; i++) {
       await write({ operation: "record_fact", phase: "p1", data: { key: `k${i}`, text: "x".repeat(4000) } })
     }
@@ -170,8 +170,9 @@ describe("record_fact makes room for the fact most worth keeping", () => {
     const { warning } = await write({ operation: "record_fact", phase: "p1", data: { key: "incident", text: incident } })
     const facts = (await readLedger(ledgerPath)).phases.p1.facts!
     expect(facts.at(-1)!.text).toBe(incident)
-    expect(facts.reduce((n, f) => n + f.text.length + f.key.length, 0)).toBeLessThanOrEqual(PHASE_FACTS_BUDGET)
-    expect(warning).toContain("evicted")
+    expect(facts.reduce((n, f) => n + f.text.length + f.key.length, 0)).toBeGreaterThan(PHASE_FACTS_BUDGET)
+    expect(facts).toHaveLength(9)
+    expect(warning).toContain("prior versions retained")
   })
 })
 

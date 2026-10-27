@@ -126,6 +126,22 @@ Normal implementation units are delegated. The model edits directly only under `
 
 </details>
 
+## Workflows
+
+Foreman includes four multi-agent workflows. On Codex and Cursor, `workflow { name, mode: 'describe' }` shows the phases, roles, agent estimate and cost; `workflow { name, args }` returns a numbered procedure for the host to follow. The tool itself starts no agents. On Claude Code, install the existing scripts once per project with `claude_workflows_init` and run them through the host's Workflow tool. The new `workflow` tool is available only in Codex and Cursor host modes.
+
+```text
+foreman-design-panel        an open design question: independent stances, each attacked, one synthesis with the conflicts you decide
+foreman-design-gauntlet     a new feature or security-sensitive design: research, a hardened design, a Codex + SOC + complexity attack,
+                            one verifier per finding; you arbitrate before anything in the repo changes
+foreman-checkpoint-review   the review fan at a phase checkpoint
+foreman-triage              a batch of field reports: each verified in the code, a fix designed and attacked
+```
+
+A workflow run is paid and starts many agents, so the procedure asks you before each run unless you opted in for the session. Workflows inform design and review; they never implement and never write the ledger. A workflow review is perspective (`stage:'fan'`) and never counts as a gate seat. Native procedures batch read-only agents within the configured and live host limits, or run sequentially if subagents are unavailable. Only the gauntlet's design and raw advisor output may be saved to `out_dir` by the parent.
+
+The Codex/Cursor gauntlet requests both Perplexity and Codex web research, reporting partial coverage when either is unavailable. On Codex, design uses the configured `worker_heavy` model through a read-only reviewer seat; an explicit `model_design` overrides that model. Its external attacker uses `invoke_advisor` with Claude, or Gemini when Claude is unavailable, preserving the actual CLI/model and its separate receipt. The legacy `codex` lens name selects this external attack; it does not launch the Codex CLI on these hosts. Generic hosts do not expose `workflow`.
+
 <details>
 <summary><b>What the ledger refuses, and what stays a procedure</b></summary>
 
@@ -176,7 +192,7 @@ Every unit is a brief, a worker run, a file inspection, a test run, and a verdic
 <details>
 <summary><b>What can leave your machine</b></summary>
 
-Codex native reviews run through the host. External reviews spawn the Codex, Gemini, or Claude CLI as child processes; each uses its own provider login. One experimental tool, `invoke_worker`, sends a brief and file excerpts to an endpoint you configure. Optional Langfuse tracing sends review metadata. Nothing else makes a network call. Read [SECURITY.md](SECURITY.md) and [Security](https://malindarathnayake.github.io/Foreman/reference/privacy-and-security) before enabling it.
+Codex native reviews run through the host. External reviews spawn the Codex, Gemini, or Claude CLI as child processes; each uses its own provider login. One experimental tool, `invoke_worker`, sends a brief and file excerpts to an endpoint you configure. Optional Langfuse tracing sends review metadata. Nothing else makes a network call. Workflow agents use your host's own tools: the design gauntlet's web research and its Codex attack go out through those tools and the Codex CLI, under their own logins. Read [SECURITY.md](SECURITY.md) and [Security](https://malindarathnayake.github.io/Foreman/reference/privacy-and-security) before enabling it.
 
 </details>
 
@@ -191,7 +207,7 @@ Full docs: [malindarathnayake.github.io/Foreman](https://malindarathnayake.githu
 
 ## Project
 
-**Current release:** `v0.7.0` | **Package:** `@malindarathnayake/foreman-mcp` | **Runtime:** Node.js `>=22`
+**Current release:** `v0.9.3` | **Package:** `@malindarathnayake/foreman-mcp` | **Runtime:** Node.js `>=22`
 
 - [Changelog](CHANGELOG.md)
 - [Security policy](SECURITY.md)

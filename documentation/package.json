@@ -1,6 +1,6 @@
 {
   "name": "foreman-documentation",
-  "version": "0.7.0",
+  "version": "0.9.3",
   "private": true,
   "description": "Documentation site for Foreman, a spec-to-code harness for AI-assisted software development",
   "scripts": {

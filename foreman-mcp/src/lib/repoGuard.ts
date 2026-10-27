@@ -470,6 +470,9 @@ export function compareSnapshots(
   const violations: string[] = []
   const flag = (p: string, message: string) => { violations.push(message); paths?.add(p) }
   const allowed = new Set((before.allowed ?? []).map(normalizePath))
+  if ((before.mode ?? "git") !== (after.mode ?? "git") || JSON.stringify(before.exclude_globs ?? []) !== JSON.stringify(after.exclude_globs ?? [])) {
+    violations.push("snapshot mode or exclude_globs changed; comparison cannot clear the frozen baseline")
+  }
 
   if (before.root !== after.root) {
     violations.push(`different repository: baseline was taken in '${before.root}', comparison ran in '${after.root}'`)

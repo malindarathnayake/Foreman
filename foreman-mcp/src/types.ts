@@ -13,7 +13,8 @@ export interface Rejection {
   attempt?: number
 }
 
-export type Tier = "cheap" | "standard" | "premium"
+/** Ledger record of the seat a delegation ran at. `frontier` (0.9.1) is the seat above premium on Claude Code. */
+export type Tier = "cheap" | "standard" | "premium" | "frontier"
 
 /**
  * Step 4.5 Brief Preflight attestation, recorded on the delegated write. Required for
@@ -60,6 +61,8 @@ export interface RepoEntry {
  * v0.6.11). Entry lists are capped in lib/repoGuard.ts.
  */
 export interface RepoSnapshot {
+  mode?: "git" | "hash"
+  exclude_globs?: string[]
   /** 0.6.20: content marks of Foreman state files (progress state) so a fenced-block change can be tied to a Foreman write. */
   marks?: Record<string, string>
   /** Repository root, so a comparison cannot be run against a different checkout. */
@@ -118,7 +121,38 @@ export interface DelegationGuard {
 }
 
 /** One delegation attempt. Appended per (re-)delegation so retry history survives the `w` overwrite. */
+export interface AuthorizationEvidence {
+  authority: "direct" | "relayed" | "standing_delegation"
+  quote: string
+  relayed_by?: string
+  override_fact_key?: string
+  fact_version?: number
+  fact_text?: string
+}
+
+export interface OwnerGate {
+  id: string
+  description: string
+  status: "pending" | "in_progress" | "failed" | "approved"
+  ts: string
+  stage?: string
+  note?: string
+  failure_count?: number
+  last_failure?: { ts: string; stage: string; reason: string }
+  decided_by?: string
+  authorization?: AuthorizationEvidence
+  /** The latest owner approval, kept when the gate is reopened so orientation can still show it. */
+  approval?: OwnerGateApproval
+}
+
+export interface OwnerGateApproval { ts: string; decided_by: string; authorization: AuthorizationEvidence }
+
+export interface FactRecord { ts: string; key: string; text: string; source?: string; version?: number }
+
 export interface Delegation {
+  worker_model?: string
+  model_evidence?: string
+  required_model?: string | null
   brief: string
   tier?: Tier
   route_reason?: string
@@ -203,6 +237,7 @@ export interface CapGrant {
   /** Attempt ids allocated against this grant. */
   consumed: number[]
   reason: string
+  authorization?: AuthorizationEvidence
   closed?: { ts: string; reason: "exhausted" | "pass" }
 }
 
@@ -216,6 +251,9 @@ export interface DirectFix {
 }
 
 export interface Unit {
+  pending_owner_gates?: OwnerGate[]
+  owner_gate_history?: OwnerGate[]
+  launches?: Array<{ ts: string; worker_id: string; worker_model?: string; model_evidence?: string; outcome: "aborted_no_work"; note: string }>
   s: "pending" | "ip" | "delegated" | "done" | "fail"
   v: "pass" | "fail" | "pending" | "inconclusive"
   /** ISO timestamp of the latest set_verdict (R1). Absent on ledgers written before v0.5.0. */
@@ -315,6 +353,10 @@ export interface RepoWindow {
 
 /** A single classified review finding. Shared with normalize_review output. */
 export interface ReviewFinding {
+  verifier_severity?: "critical" | "high" | "medium" | "low"
+  final_severity?: "critical" | "high" | "medium" | "low"
+  decided_by?: string
+  adjudications?: Array<{ ts: string; severity?: ReviewFinding["severity"]; classification?: ReviewFinding["classification"]; decided_by: string; reason: string }>
   severity: "critical" | "high" | "medium" | "low"
   file: string
   line: string
@@ -466,6 +508,9 @@ export interface GateTotals {
 }
 
 export interface Phase {
+  pending_owner_gates?: OwnerGate[]
+  owner_gate_history?: OwnerGate[]
+  authorizations?: Array<AuthorizationEvidence & { ts: string; operation: string; unit_id?: string; attempt?: number }>
   s: "ip" | "done" | "blocked"
   g: "pass" | "fail" | "pending"
   scope?: PhaseScope
@@ -500,8 +545,8 @@ export interface Phase {
   escape_override?: { ts: string; escapes: number }
   /** Gate passed via data.user_override at the independence bound; `streak` is the count it would have exceeded. */
   independence_override?: { ts: string; streak: number }
-  /** 0.6.20: facts gathered during preflight that later units in the phase can reuse; newest last, ≤50. */
-  facts?: Array<{ ts: string; key: string; text: string; source?: string }>
+  /** 0.6.20: facts gathered during preflight; append-only versions, newest last. */
+  facts?: FactRecord[]
 }
 
 export interface PhaseScope {
@@ -530,6 +575,13 @@ export interface LedgerFile {
 // 0.6.20: hoisted above SetUnitStatusInput — the inline rejection and the verdict carry it too.
 const EscapeClassSchema = z.enum(["original_defect", "remediation_defect", "test_gap", "process", "new_scope"])
 
+const AuthorizationFields = {
+  authority: z.enum(["direct", "relayed", "standing_delegation"]).optional(),
+  quote: z.string().trim().min(1).max(8000).optional(),
+  relayed_by: z.string().trim().min(1).max(400).optional(),
+  override_fact_key: z.string().trim().min(1).max(80).optional(),
+}
+
 const SetUnitStatusInput = z.object({
   operation: z.literal("set_unit_status"),
   unit_id: z.string().max(10000),
@@ -537,7 +589,8 @@ const SetUnitStatusInput = z.object({
   data: z.object({
     s: z.enum(["pending", "ip", "delegated", "done", "fail"]),
     brief: z.string().max(50000).optional(),
-    tier: z.enum(["cheap", "standard", "premium"]).optional(),
+    brief_hash: z.string().regex(/^[0-9a-f]{16}$/).optional(),
+    tier: z.enum(["cheap", "standard", "premium", "frontier"]).optional(),
     route_reason: z.string().max(2000).optional(),
     worker_id: z.string().trim().min(1).max(400).optional(),
     correction: z.object({
@@ -546,6 +599,7 @@ const SetUnitStatusInput = z.object({
       files: z.array(z.string().trim().min(1).max(4096)).min(1).max(50),
     }).optional(),
     user_override: z.boolean().optional(),
+    ...AuthorizationFields,
     // 0.6.36 (field report 2026-09-27): the repository baseline taken in the same write as the
     // delegation — one call instead of delegation + repo_guard snapshot. Same fields and rules
     // as repo_guard snapshot; a correction inherits its from_attempt set when allowed_files is
@@ -568,6 +622,8 @@ const SetUnitStatusInput = z.object({
       allowed_files: z.array(z.string().max(4096)).max(100).optional(),
       files: z.array(z.string().max(4096)).max(100).optional(),
       max_entries: z.number().int().min(1).max(5000).optional(),
+      mode: z.enum(["git", "hash"]).optional(),
+      exclude_globs: z.array(z.string().min(1).max(400)).max(100).optional(),
     }).optional(),
     // Optional at the schema so non-delegating statuses need nothing; the ledger
     // refuses s:'delegated' without it (see PREFLIGHT REQUIRED in lib/ledger.ts).
@@ -579,7 +635,11 @@ const SetUnitStatusInput = z.object({
       telemetry: z.enum(["checked", "n/a"]).optional(),
       // 0.6.20: the brief hash preflight_check returned; the ledger checks it against the
       // preflight record file, so the attestation is something the pit-boss cannot type.
-      receipt: z.string().regex(/^[0-9a-f]{16}$/).optional(),
+      // 0.7.1 (field report 2026-10-05): optional in the schema but required at run time once
+      // the project has run preflight_check, which read as a mismatch. Say so in the schema.
+      receipt: z.string().regex(/^[0-9a-f]{16}$/).optional().describe(
+        "brief_hash from preflight_check. Required once the project has run preflight_check, corrections included; " +
+        "omit it only when this same call carries data.preflight_check, which fills it in (pass correcting_attempt there on a correction)."),
     }).optional(),
     // With s:'ip' only: records a pit-boss literal substitution as an attempt (Direct Fix rule).
     direct_fix: z.string().min(10).max(2000).optional(),
@@ -601,9 +661,12 @@ const SetVerdictInput = z.object({
     v: z.enum(["pass", "fail", "pending", "inconclusive"]),
     via: z.enum(["worker", "pitboss-direct", "n/a"]).optional(),
     worker_id: z.string().trim().min(1).max(400).optional(),
+    worker_model: z.string().trim().min(1).max(200).optional(),
+    model_evidence: z.string().trim().min(1).max(4000).optional(),
     note: z.string().max(10000).optional(),
     // Waives ATTEMPT REQUIRED and the delegation cap on a pass; recorded as cap_override.
     user_override: z.boolean().optional(),
+    ...AuthorizationFields,
     // 0.6.20: classifies the unit's newest unclassified escape in the verdict write.
     escape_class: EscapeClassSchema.optional(),
   }),
@@ -648,6 +711,7 @@ const UpdatePhaseGateInput = z.object({
     // keys, so without them the gate handler could never see agent_class/user_override.
     agent_class: z.enum(["frontier", "capable", "compact"]).optional(),
     user_override: z.boolean().optional(),
+    ...AuthorizationFields,
   }),
 })
 
@@ -695,6 +759,9 @@ const ReviewFindingSchema = z.object({
 // required on every recorded finding; the parser's output (above) stays unclassified.
 const ClassifiedFindingSchema = ReviewFindingSchema.extend({
   classification: z.enum(["confirmed", "rejected", "unverified"]),
+  verifier_severity: z.enum(["critical", "high", "medium", "low"]).optional(),
+  final_severity: z.enum(["critical", "high", "medium", "low"]).optional(),
+  decided_by: z.string().trim().min(1).max(400).optional(),
   // 0.6.36 (field report 2026-09-27): an old whole-phase record kept blocking on a finding
   // about u1 because it still carried unchanged u2. Naming the affected units ties the
   // finding's life to those units' coverage.
@@ -783,17 +850,18 @@ const AuthorizeAttemptsInput = z.object({
     attempts: z.number().int().min(1).max(10),
     reason: z.string().min(10).max(2000),
     user_override: z.literal(true),
+    ...AuthorizationFields,
   }),
 })
 
 // 0.6.20 (field report): preflight knowledge is gathered per unit but useful per phase, and
-// had nowhere to live. A bounded per-phase fact store, surfaced by read_ledger facts.
+// had nowhere to live. An append-only per-phase fact store, surfaced by paged read_ledger facts.
 const RecordFactInput = z.object({
   operation: z.literal("record_fact"),
   phase: z.string().max(10000),
   data: z.object({
     key: z.string().trim().min(1).max(80),
-    /** 0.6.26: raised from 2000 — the cap bit hardest on an incident record, the fact most worth keeping. The phase-wide budget (PHASE_FACTS_BUDGET) bounds growth instead. */
+    /** 0.6.26: raised from 2000 — the cap bit hardest on an incident record, the fact most worth keeping. Each version keeps its full text; read output is paged. */
     text: z.string().trim().min(1).max(8000),
     source: z.string().trim().min(1).max(400).optional(),
   }),
@@ -813,6 +881,35 @@ const CloseAttemptInput = z.object({
   }),
 })
 
+const AdjudicateFindingInput = z.object({
+  operation: z.literal("adjudicate_finding"), phase: z.string().max(10000),
+  data: z.object({
+    review_ts: z.string().min(1).max(100), finding_index: z.number().int().min(0),
+    severity: z.enum(["critical", "high", "medium", "low"]).optional(),
+    classification: z.enum(["confirmed", "rejected", "unverified"]).optional(),
+    decided_by: z.string().trim().min(1).max(400), reason: z.string().trim().min(10).max(4000),
+  }),
+})
+const RecordLaunchInput = z.object({
+  operation: z.literal("record_launch"), phase: z.string().max(10000), unit_id: z.string().max(10000),
+  data: z.object({
+    worker_id: z.string().trim().min(1).max(400), outcome: z.literal("aborted_no_work"),
+    worker_model: z.string().trim().min(1).max(200).optional(), model_evidence: z.string().trim().min(1).max(4000).optional(),
+    note: z.string().trim().min(10).max(2000),
+  }),
+})
+const SetOwnerGateInput = z.object({
+  operation: z.literal("set_owner_gate"), phase: z.string().max(10000), unit_id: z.string().max(10000).optional(),
+  data: z.object({
+    id: z.string().trim().min(1).max(200), description: z.string().trim().min(1).max(2000).optional(),
+    status: z.enum(["pending", "in_progress", "failed", "approved"]), decided_by: z.string().trim().min(1).max(400).optional(),
+    stage: z.string().trim().min(1).max(200).optional(),
+    note: z.string().trim().min(1).max(2000).optional(),
+    failure: z.object({ stage: z.string().trim().min(1).max(200), reason: z.string().trim().min(1).max(2000) }).optional(),
+    ...AuthorizationFields,
+  }),
+})
+
 export const WriteLedgerInputSchema = z.discriminatedUnion("operation", [
   SetUnitStatusInput,
   SetVerdictInput,
@@ -825,11 +922,17 @@ export const WriteLedgerInputSchema = z.discriminatedUnion("operation", [
   RecordEscapeInput,
   RecordFactInput,
   CloseAttemptInput,
+  AdjudicateFindingInput,
+  RecordLaunchInput,
+  SetOwnerGateInput,
 ])
 
 export type WriteLedgerInput = z.infer<typeof WriteLedgerInputSchema>
 
 export const ReadLedgerInputSchema = z.object({
+  include_history: z.boolean().optional(),
+  include_full_text: z.boolean().optional(),
+  fact_key: z.string().max(80).optional(),
   unit_id: z.string().max(10000).optional(),
   phase: z.string().max(10000).optional(),
   query: z.enum(["verdicts", "rejections", "phase_gates", "reviews", "full", "delegation_metrics", "review_outcomes", "facts", "reconstruct"]).optional(),
@@ -1159,6 +1262,9 @@ export const LedgerOperationDataSchemas = {
   record_escape: RecordEscapeInput.shape.data,
   record_fact: RecordFactInput.shape.data,
   close_attempt: CloseAttemptInput.shape.data,
+  adjudicate_finding: AdjudicateFindingInput.shape.data,
+  record_launch: RecordLaunchInput.shape.data,
+  set_owner_gate: SetOwnerGateInput.shape.data,
 } as const
 
 export const ReadJournalInputSchema = z.object({

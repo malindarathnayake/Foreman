@@ -67,10 +67,17 @@ export function parseCheckpointLines(directive: string): { files: string[]; comm
       }
       continue
     }
-    const t = /^\s*(?:[-*]\s*)?\*{0,2}(?:Test|Tests|Test command|Checkpoint)(?:\s*:\*{0,2}|\*{0,2}\s*:)\s*(.+?)\s*$/i.exec(line)
+    const t = /^\s*(?:[-*]\s*)?\*{0,2}(?:Test|Tests|Test command|Test suite|Validation|Checkpoint)(?:\s*:\*{0,2}|\*{0,2}\s*:)\s*(.*?)\s*$/i.exec(line)
     if (t) {
       const cmd = t[1].replace(/^`|`$/g, "").trim()
       if (cmd && !commands.includes(cmd)) commands.push(cmd)
+    } else {
+      // Also accept commands on their own line or in fenced suites. Execution and
+      // coverage are distinct: non-Go commands remain opaque, never "unreachable".
+      const cmd = line.trim().replace(/^[-*]\s+/, "").replace(/^`|`$/g, "")
+      if (/^(?:pwsh|powershell)(?:\.exe)?\s+.*-File\s+\S/i.test(cmd) || /^(?:npm|pnpm|yarn|dotnet|pytest|python|node|go|cargo|mvn|gradle)\s+/.test(cmd)) {
+        if (!commands.includes(cmd)) commands.push(cmd)
+      }
     }
   }
   return { files, commands }
@@ -199,7 +206,7 @@ export function absenceMessage(absence: CheckpointAbsence, specPath: string, uni
     case "unit_not_found":
       return `none: no heading, table row or bold line in '${specPath}' names unit '${unitId}', so its directive could not be located — check the unit id against the spec`
     case "no_test_line":
-      return `none: the directive for '${unitId}' in '${specPath}' has no Test:/Checkpoint: line`
+      return `none: the directive for '${unitId}' in '${specPath}' has no Test:/Checkpoint: line or recognized test command; add e.g. Test: pwsh -File ./tests/check.ps1 (any runner is accepted)`
   }
 }
 

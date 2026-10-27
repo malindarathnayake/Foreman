@@ -83,6 +83,17 @@ export function readTransportBudgets(): TransportBudgets {
   }
 }
 
+/**
+ * Opt-in transport options. Absent → the request is exactly what it was before these existed.
+ *   * `redirect: "error"` makes fetch reject a 3xx instead of following it, so a redirect can
+ *     never carry the request body to a different host. The rejection surfaces as a neterror.
+ *   * `fetchImpl` is a test seam; production callers leave it unset and get the global fetch.
+ */
+export interface PostChatOptions {
+  redirect?: "error"
+  fetchImpl?: typeof fetch
+}
+
 export type NetResult =
   | { kind: "neterror"; stage: FailureStage; refunded: boolean; detail?: string }
   | { kind: "http"; status: number; bodyText: string }
@@ -97,7 +108,8 @@ export async function postChat(
   headers: Record<string, string>,
   body: string,
   budgets: TransportBudgets,
-  controls: CallControls = {}
+  controls: CallControls = {},
+  opts: PostChatOptions = {}
 ): Promise<NetResult> {
   // 0.6.39: one controller carries every stop reason; the reason decides the stage.
   const controller = new AbortController()
@@ -112,7 +124,7 @@ export async function postChat(
   controls.signal?.addEventListener("abort", onAbort, { once: true })
   const tick = controls.onTick ? setInterval(() => { try { controls.onTick!(Date.now() - started) } catch { /* best-effort */ } }, TICK_MS) : undefined
   try {
-    const result = await postChatOnce(url, headers, body, budgets, controller)
+    const result = await postChatOnce(url, headers, body, budgets, controller, opts)
     if (stopped !== null && result.kind === "neterror") {
       return { kind: "neterror", stage: "WORKER_TIMEOUT", refunded: true,
         detail: stopped === "total" ? `overall deadline of ${totalMs}ms reached` : "cancelled by the host" }
@@ -130,7 +142,8 @@ async function postChatOnce(
   headers: Record<string, string>,
   body: string,
   budgets: TransportBudgets,
-  controller: AbortController
+  controller: AbortController,
+  opts: PostChatOptions = {}
 ): Promise<NetResult> {
   const { connectTimeoutMs, activityTimeoutMs, responseMaxBytes } = budgets
   let connectFired = false
@@ -144,11 +157,13 @@ async function postChatOnce(
 
   let response: Response
   try {
-    response = await fetch(url, {
+    const fetchFn = opts.fetchImpl ?? fetch
+    response = await fetchFn(url, {
       method: "POST",
       headers,
       body,
       signal: controller.signal,
+      ...(opts.redirect !== undefined ? { redirect: opts.redirect } : {}),
     })
   } catch {
     clearTimeout(connectTimer)
@@ -157,7 +172,11 @@ async function postChatOnce(
       kind: "neterror",
       stage: "WORKER_UNREACHABLE",
       refunded: true,
-      detail: connectFired ? `connect timeout after ${connectTimeoutMs}ms` : "endpoint unreachable",
+      detail: connectFired
+        ? `connect timeout after ${connectTimeoutMs}ms`
+        : opts.redirect === "error"
+          ? "endpoint unreachable or redirect refused"
+          : "endpoint unreachable",
     }
   }
   clearTimeout(connectTimer)
@@ -268,6 +287,12 @@ export interface SseChat {
   usage?: { prompt_tokens?: number; completion_tokens?: number; cost?: number }
   /** True when at least one well-formed `data:` frame was seen. */
   sawFrames: boolean
+  /** First non-empty `model` named by any frame — the model the endpoint says it served. */
+  model?: string
+  /** True when a later frame names a different non-empty model than `model`. */
+  modelConflict?: boolean
+  /** First non-empty `provider` string (OpenRouter's upstream provider). Evidence only. */
+  servedProvider?: string
 }
 
 /**
@@ -284,6 +309,9 @@ export function parseSseChat(bodyText: string): SseChat {
   let finishReason: string | undefined
   let usage: SseChat["usage"]
   let sawFrames = false
+  let model: string | undefined
+  let modelConflict = false
+  let servedProvider: string | undefined
 
   for (const rawLine of bodyText.split(/\r?\n/)) {
     const line = rawLine.trimStart()
@@ -300,7 +328,23 @@ export function parseSseChat(bodyText: string): SseChat {
     else if (typeof choice?.message?.content === "string") content += choice.message.content
     if (typeof choice?.finish_reason === "string") finishReason = choice.finish_reason
     if (frame?.usage && typeof frame.usage === "object") usage = frame.usage
+    const frameModel = frame?.model
+    if (typeof frameModel === "string" && frameModel !== "") {
+      if (model === undefined) model = frameModel
+      else if (frameModel !== model) modelConflict = true
+    }
+    if (servedProvider === undefined && typeof frame?.provider === "string" && frame.provider !== "") {
+      servedProvider = frame.provider
+    }
   }
 
-  return { content, finishReason, usage, sawFrames }
+  return {
+    content,
+    finishReason,
+    usage,
+    sawFrames,
+    ...(model !== undefined ? { model } : {}),
+    ...(modelConflict ? { modelConflict } : {}),
+    ...(servedProvider !== undefined ? { servedProvider } : {}),
+  }
 }

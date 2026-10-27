@@ -30,7 +30,7 @@ import { registerSecret, harvestSecrets } from "./redaction.js"
  * is unit 4f's job.
  */
 
-export type Tier = "cheap" | "standard" | "premium"
+export type Tier = "cheap" | "standard" | "premium" | "frontier"
 export type WorkerClass = "frontier" | "capable" | "compact"
 export type EditFormat = "unified_diff" | "search_replace" | "whole_file"
 /** Only remote-chat remains (aider-cli left with aider_worker in 0.6.3). The key stays accepted for config compatibility. */
@@ -58,12 +58,13 @@ export type ForemanEnvResult =
 
 // ─── Recognized keys ────────────────────────────────────────────────────────────
 
-const TIERS: readonly Tier[] = ["cheap", "standard", "premium"]
+const TIERS: readonly Tier[] = ["cheap", "standard", "premium", "frontier"]
 
 const TIER_SUFFIX: Record<Tier, string> = {
   cheap: "CHEAP",
   standard: "STANDARD",
   premium: "PREMIUM",
+  frontier: "FRONTIER",
 }
 
 const WORKER_CLASSES: readonly WorkerClass[] = ["frontier", "capable", "compact"]

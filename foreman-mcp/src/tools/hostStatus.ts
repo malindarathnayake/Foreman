@@ -94,8 +94,11 @@ export function hostStatus(
     ...modelRankSummary(modelRank),
     host: profile.id,
     display_name: profile.displayName,
+    ...(host === "codex" || host === "cursor" ? {
+      workflows: "workflow mode:'describe' lists phases and cost; workflow { name, args } returns a user-confirmed native procedure for design-panel, design-gauntlet, checkpoint-review or triage (foreman- prefix). Read-only, stage:'fan'; advisor receipts remain separate.",
+    } : {}),
     ...(host === "claude-code" ? {
-      workflows: "claude_workflows_init installs foreman-checkpoint-review, foreman-design-panel, foreman-triage (Workflow tool; results are stage:'fan', never a seat)",
+      workflows: "claude_workflows_init installs foreman-checkpoint-review, foreman-design-panel, foreman-design-gauntlet, foreman-triage (Workflow tool; results are stage:'fan', never a seat)",
     } : {}),
     ...(host === "cursor" ? {
       seats: "Agent CLI (agent / cursor-agent) print mode is the primary spawn; Task + cursor_agents_init .cursor/agents/foreman-worker*.md is the IDE fallback (default inherit, no model argument)",

@@ -122,7 +122,7 @@ describe("write_ledger shapes live in the data schema description", () => {
     expect(shapes).toContain("receipt?: string")
     expect(shapes).toContain("completion?: 'complete'|'partial'|'failed'")
     expect(shapes).toContain("stage?: 'independent'|'cross_exam'|'verification'")
-    expect(shapes).toContain("authorize_attempts: { attempts: integer (≥1, ≤10), reason: string (≥10 chars, ≤2000 chars), user_override: true }")
+    expect(shapes).toContain("authorize_attempts: { attempts: integer (≥1, ≤10), reason: string (≥10 chars, ≤2000 chars), user_override: true, authority?: ")
     // The prose names every refusal class the reporter hit, and points at the schema.
     for (const word of ["preflight", "user_override", "confirmed", "checked[]", "input schema"]) {
       expect(tool.description, word).toContain(word)

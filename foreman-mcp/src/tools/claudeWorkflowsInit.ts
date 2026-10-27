@@ -17,15 +17,17 @@ import { z } from "zod"
 import { atomicWriteFile } from "../lib/atomicWrite.js"
 import { toKeyValue } from "../lib/toon.js"
 
-export const FOREMAN_WORKFLOWS = ["foreman-checkpoint-review", "foreman-design-panel", "foreman-triage"] as const
-export type ForemanWorkflow = (typeof FOREMAN_WORKFLOWS)[number]
+import { FOREMAN_WORKFLOWS, type ForemanWorkflow } from "../lib/workflowDefs.js"
+export { FOREMAN_WORKFLOWS, type ForemanWorkflow } from "../lib/workflowDefs.js"
 
 /** What each workflow is for and the args it takes; rendered in the tool result so the pit-boss can call it without reading the file. */
 export const WORKFLOW_USAGE: Readonly<Record<ForemanWorkflow, string>> = {
   "foreman-checkpoint-review":
-    "phase checkpoint review fan; args { phase, files: [...], spec_excerpt?, lenses? }; returns a record_review-ready report to persist with stage:'fan' (never a gate seat)",
+    "phase checkpoint review fan; args { phase, files: [...], spec_excerpt?, lenses? }; returns a report to persist via write_ledger record_review with stage:'fan' (never a gate seat)",
   "foreman-design-panel":
     "design deliberation; args { question, context?, stances?, files? }; returns one recommendation plus conflicts the user arbitrates",
+  "foreman-design-gauntlet":
+    "research, hardened design, Codex + SOC + complexity attack, per-finding verification; args { repo, out_dir, slug, brief, research_context, topics: [{key,q}], grounding, design_requirements, attack_focus, lenses?, model_design?, codex_model?, codex_effort?, max_verifiers? }; deliberate the result in the main loop and the user arbitrates before any repo change; stage:'fan', never a seat",
   "foreman-triage":
     "field-report triage; args { reports: [...], repo? }; verifies each report in code, designs and attacks a fix; implementation stays with the unit protocol",
 }

@@ -1,3 +1,4 @@
+import { handleWriteLedger, writeLedger } from "./helpers/authorizedLedger.js"
 // R3 lifecycle integration (Unit 4g): the write_ledger post-write hook closes out
 // an OPEN S7 delegation's hash chain with the terminal event mapped from the
 // ledger op that just landed. invoke_worker (4f) never appends its own terminal
@@ -11,8 +12,8 @@ import path from "path"
 import http from "http"
 import { handleInvokeWorker, resetEgressNoticeForTest } from "../src/tools/invokeWorker.js"
 import { PATCH_BEGIN, PATCH_END } from "../src/lib/workerResponse.js"
-import { handleWriteLedger } from "../src/tools/writeLedger.js"
-import { writeLedger, readLedger } from "../src/lib/ledger.js"
+
+import { readLedger } from "../src/lib/ledger.js"
 import { readEvents } from "../src/lib/eventsSidecar.js"
 import { resetForTest } from "../src/lib/redaction.js"
 

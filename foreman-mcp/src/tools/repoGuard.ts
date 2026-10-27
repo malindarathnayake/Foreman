@@ -21,8 +21,11 @@ import { readLedger, recordRepoGuard } from "../lib/ledger.js"
 import { scrub } from "../lib/redaction.js"
 import { toKeyValue } from "../lib/toon.js"
 import type { RepoSnapshot } from "../types.js"
+import { takeHashSnapshot } from "../lib/hashSnapshot.js"
 
 export interface RepoGuardInput {
+  mode?: "git" | "hash"
+  exclude_globs?: string[]
   operation: "snapshot" | "compare"
   phase: string
   unit_id: string
@@ -75,7 +78,9 @@ export async function handleRepoGuard(
     const existing = await currentGuard(paths.ledgerPath, phase, unit_id)
     // 0.6.36: the delegation already took this attempt's baseline (data.guard). An explicit
     // snapshot that asks for nothing different is answered from it, not refused.
-    if (existing && !existing.result && (!input.allowed_files || samePathSet(existing.snapshot.allowed, input.allowed_files))) {
+    if (existing && !existing.result && (!input.allowed_files || samePathSet(existing.snapshot.allowed, input.allowed_files)) &&
+      (input.mode === undefined || input.mode === (existing.snapshot.mode ?? "git")) &&
+      (input.exclude_globs === undefined || samePathSet(existing.snapshot.exclude_globs ?? [], input.exclude_globs))) {
       return scrub(toKeyValue({
         operation: "snapshot",
         status: "recorded",
@@ -163,16 +168,18 @@ export async function handleRepoGuard(
       hint: "no snapshot is recorded on this unit's newest delegation; a comparison with no baseline proves nothing",
     }))
   }
-  if (input.allowed_files && input.allowed_files.length > 0) {
+  if (input.allowed_files !== undefined || input.mode !== undefined || input.exclude_globs !== undefined) {
     return scrub(toKeyValue({
       operation: "compare",
       status: "refused",
-      reason: "allowed_files is accepted on snapshot only",
+      reason: "allowed_files, mode and exclude_globs are accepted on snapshot only",
       hint: "the authorized set is frozen before the worker runs; widening it afterwards would clear the worker's own mutation",
     }))
   }
 
-  const outcome = await takeSnapshot(dir, input.files ?? [], before.snapshot.allowed ?? [], before.snapshot.entry_limit, scope)
+  const outcome = before.snapshot.mode === "hash"
+    ? await takeHashSnapshot(dir, before.snapshot.allowed, before.snapshot.exclude_globs, before.snapshot.entry_limit, scope)
+    : await takeSnapshot(dir, input.files ?? [], before.snapshot.allowed ?? [], before.snapshot.entry_limit, scope)
   if (outcome.status !== "ok") {
     return scrub(toKeyValue({
       operation: "compare",
@@ -297,7 +304,7 @@ export type BaselinePrep =
 export async function prepareBaseline(
   dir: string,
   scope: ReturnType<typeof foremanFileScope>,
-  input: { allowed_files?: string[]; files?: string[]; max_entries?: number },
+  input: Pick<RepoGuardInput, "allowed_files" | "files" | "max_entries" | "mode" | "exclude_globs">,
   inherited: { attempt: number; snapshot: RepoSnapshot } | undefined,
   ids: { phase: string; unit_id: string },
   /**
@@ -323,7 +330,13 @@ export async function prepareBaseline(
   }
   const files = input.files ?? inherited?.snapshot.allowed ?? []
   const maxEntries = input.max_entries ?? inherited?.snapshot.entry_limit
-  const outcome = await takeSnapshot(dir, files, allowed, maxEntries, scope)
+  const mode = input.mode ?? inherited?.snapshot.mode ?? "git"
+  const exclusions = input.exclude_globs ?? inherited?.snapshot.exclude_globs ?? []
+  if (inherited && (mode !== (inherited.snapshot.mode ?? "git") || !samePathSet(exclusions, inherited.snapshot.exclude_globs ?? []))) {
+    return { status: "refused", text: "GUARD CORRECTION: preserve the previous snapshot mode and exclude_globs." }
+  }
+  if (mode !== "hash" && exclusions.length) return { status: "refused", text: "exclude_globs requires mode:'hash'." }
+  const outcome = mode === "hash" ? await takeHashSnapshot(dir, allowed, exclusions, maxEntries, scope) : await takeSnapshot(dir, files, allowed, maxEntries, scope)
   if (outcome.status !== "ok") {
     return { status: outcome.status === "n/a" ? "n/a" : "refused", text: scrub(toKeyValue({
       operation: "snapshot",
@@ -375,7 +388,7 @@ export async function delegationBaseline(
   paths: RepoGuardPaths,
   phase: string,
   unitId: string,
-  guard: { allowed_files?: string[]; files?: string[]; max_entries?: number },
+  guard: Pick<RepoGuardInput, "allowed_files" | "files" | "max_entries" | "mode" | "exclude_globs">,
   correctionFrom?: number,
   projectDir?: string,
   promised: string[] = []

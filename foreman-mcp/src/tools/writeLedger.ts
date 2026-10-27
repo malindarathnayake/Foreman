@@ -72,7 +72,7 @@ export async function handleWriteLedger(filePath: string, rawInput: unknown, hos
   let guardNote: string | undefined
   if (parsed.operation === "set_unit_status" && parsed.data.s === "delegated" && parsed.data.guard) {
     // 0.6.38: files promised in the preflight record's creates join the authorized set.
-    const receipt = parsed.data.preflight?.receipt
+    const receipt = parsed.data.brief_hash ?? parsed.data.preflight?.receipt
     const record = receipt ? await findPreflight(preflightPathFor(filePath), receipt, parsed.unit_id, parsed.phase) : null
     const promised = (record?.forward ?? []).map((f) => f.file)
     const prep = await delegationBaseline(context?.guardPaths ?? { ledgerPath: filePath }, parsed.phase, parsed.unit_id, parsed.data.guard, parsed.data.correction?.from_attempt, context?.projectRoot, promised)

@@ -1,3 +1,4 @@
+import { writeLedger, handleWriteLedger } from "./helpers/authorizedLedger.js"
 // Field feedback 2026-09, round 4 (v0.6.4): attempt accounting behind the delegation
 // cap (a pass needs an attempt after the latest failure; fail verdicts count; direct
 // fixes are attempts; a pass closes the series; stamps survive the 20-entry slice;
@@ -12,8 +13,8 @@ import { Client } from "@modelcontextprotocol/client"
 import { InMemoryTransport } from "@modelcontextprotocol/server"
 import { createServer } from "../src/server.js"
 import { renderIncludes } from "../src/lib/skillLoader.js"
-import { ATTEMPT_CAP, readLedger, writeLedger } from "../src/lib/ledger.js"
-import { handleWriteLedger } from "../src/tools/writeLedger.js"
+import { ATTEMPT_CAP, readLedger } from "../src/lib/ledger.js"
+
 import { handleReadLedger } from "../src/tools/readLedger.js"
 import { sessionOrient } from "../src/tools/sessionOrient.js"
 import { bundleStatus } from "../src/tools/bundleStatus.js"

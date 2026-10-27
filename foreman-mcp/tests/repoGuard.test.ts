@@ -1,3 +1,4 @@
+import { writeLedger } from "./helpers/authorizedLedger.js"
 // repo_guard (v0.6.10; hardened in v0.6.11): the shared-tree ownership check, executed by
 // Foreman instead of described to the model. Every case drives a REAL git repository — the
 // point of the feature is that the check is a fact about the tree, so a mocked git would
@@ -18,7 +19,7 @@ import fs from "fs/promises"
 import os from "os"
 import path from "path"
 import { execFileSync } from "child_process"
-import { readLedger, recordRepoGuard, writeLedger } from "../src/lib/ledger.js"
+import { readLedger, recordRepoGuard } from "../src/lib/ledger.js"
 import { compareSnapshots, invalidPathReason, normalizePath, parsePorcelainZ, takeSnapshot, ENTRY_CEILING, MAX_ENTRIES } from "../src/lib/repoGuard.js"
 import { attributeHeadMove } from "../src/lib/repoGuard.js"
 import { handleRepoGuard } from "../src/tools/repoGuard.js"

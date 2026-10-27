@@ -3,6 +3,7 @@ import { toKeyValue } from "../lib/toon.js"
 import { type HostId } from "../lib/hostProfiles.js"
 import { CURSOR_AGENT_BINS, type AdvisorCli } from "../lib/advisorCli.js"
 import { GEMINI_ADVISOR_MODEL, parseGeminiJson } from "./invokeAdvisor.js"
+import { workerSeatStatus } from "../lib/workerSeats.js"
 
 // Module-level cache for resolved SpawnPlans
 const resolvedPlans = new Map<string, SpawnPlan>()
@@ -145,7 +146,15 @@ export function parseCursorAuthStatus(stdout: string): { isAuthenticated?: boole
 
 export async function capabilityCheck(
   cli: AdvisorCli,
-  _host: HostId = "claude-code"
+  host: HostId = "claude-code",
+  projectRoot: string = process.cwd()
+): Promise<string> {
+  const [cliStatus, seats] = await Promise.all([checkCli(cli), workerSeatStatus(projectRoot, host)])
+  return `${cliStatus}\n${toKeyValue(seats)}`
+}
+
+async function checkCli(
+  cli: AdvisorCli
 ): Promise<string> {
   const config = HEALTH_COMMANDS[cli]
   if (!config) {

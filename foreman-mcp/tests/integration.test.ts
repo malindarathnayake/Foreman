@@ -117,7 +117,7 @@ describe("list tools — verify all 36 present, update_bundle absent", () => {
     const tool = result.tools.find((t) => t.name === "session_orient")
     expect(tool).toBeDefined()
     expect(tool!.description).toBe(
-      "Returns ledger-authoritative Foreman resume state, including action, resume target, phase/unit, gate retry, blockers, and ledger/progress drift. Phase and unit ids order naturally (p2 before p10). last_completed_unit is the completion frontier (newest first-pass timestamp; re-verdicts do not move it); latest_pass_verdict_unit/ts is the newest pass verdict by timestamp. Call first at session start. When the ledger is complete, session_hygiene is clear: stop and tell the user to run the host command (Cursor/Claude: /clear) before starting a different job."
+      "Returns ledger-authoritative Foreman resume state, including action, resume target, phase/unit, gate retry, blockers, and ledger/progress drift. pending_owner_gates includes progress, stage, failure history and the latest approval; until the first gate exists, owner_gates_hint shows how to register B1/B2 with write_ledger operation:'set_owner_gate'. Phase and unit ids order naturally (p2 before p10). last_completed_unit is the completion frontier (newest first-pass timestamp; re-verdicts do not move it); latest_pass_verdict_unit/ts is the newest pass verdict by timestamp. Call first at session start. When the ledger is complete, session_hygiene is clear: stop and tell the user to run the host command (Cursor/Claude: /clear) before starting a different job."
     )
   })
 
@@ -184,11 +184,9 @@ describe("Codex-only tool registration", () => {
   it("registers codex_agents_init only for the codex host", async () => {
     const result = await client.listTools()
     const tool = result.tools.find((entry) => entry.name === "codex_agents_init")
-    // Host-gated registration makes the totals differ: claude-code gets claude_workflows_init and
-    // claude_agents_init and not codex_agents_init; codex gets the reverse; cursor gets
-    // cursor_agents_init. 0.6.28 added one claude-code-only tool, so claude-code is 36 and
-    // codex stays at 35. 0.6.31 adds cursor_agents_init on cursor only.
-    expect(result.tools).toHaveLength(36)
+    // 0.8.0: Codex adds workflow beside its role initializer.
+    expect(result.tools).toHaveLength(37)
+    expect(result.tools.map((t) => t.name)).toContain("workflow")
     expect(result.tools.map((t) => t.name)).not.toContain("claude_agents_init")
     expect(result.tools.map((t) => t.name)).not.toContain("cursor_agents_init")
     expect(tool).toBeDefined()
@@ -219,7 +217,8 @@ describe("Cursor-only tool registration", () => {
     expect(names).toContain("cursor_agents_init")
     expect(names).not.toContain("claude_agents_init")
     expect(names).not.toContain("codex_agents_init")
-    expect(result.tools).toHaveLength(36)
+    expect(names).toContain("workflow")
+    expect(result.tools).toHaveLength(37)
     const tool = result.tools.find((entry) => entry.name === "cursor_agents_init")
     expect(tool?.annotations?.title).toBe("Init Cursor Agents")
     expect(tool?.annotations?.readOnlyHint).toBe(false)

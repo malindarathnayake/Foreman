@@ -1,3 +1,4 @@
+import { writeLedger } from "./helpers/authorizedLedger.js"
 // 0.6.24 (fifth field report + Codex deliberation, docs/codex-deliberation-2026-09-10-oracle.md):
 // the verdict reads the attempt-frozen contract; the block is strict; digests cover complete
 // bytes; deliverables are produced during the run, observed, evaluated and re-digested at the
@@ -8,7 +9,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
 import fs from "node:fs/promises"
 import os from "node:os"
 import path from "node:path"
-import { readLedger, writeLedger } from "../src/lib/ledger.js"
+import { readLedger } from "../src/lib/ledger.js"
 import { appendPreflight, checkCitations, extractCitations, findPreflight, preflightPathFor, testDeclared, forwardUnmet } from "../src/lib/preflight.js"
 import { parseContracts, digestPaths, digestFile, evaluateDeliverable, selectValues, parseReference, MAX_DIGEST_FILES } from "../src/lib/specContract.js"
 import { liveSmoke } from "../src/tools/liveSmoke.js"

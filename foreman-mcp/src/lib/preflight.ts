@@ -16,7 +16,7 @@
 import fs from "fs/promises"
 import path from "path"
 import { createHash } from "crypto"
-import { PREFLIGHT_FILE } from "./foremanFiles.js"
+import { FOREMAN_STATE_NAMES, PREFLIGHT_FILE } from "./foremanFiles.js"
 import { appendFileDurable } from "./atomicWrite.js"
 import type { ForwardObligation } from "../types.js"
 
@@ -118,7 +118,11 @@ export function consistencyFlags(brief: string): ConsistencyFlag[] {
     rules.set(key, set)
   }
   for (const [n, bodies] of rules) if (bodies.size > 1) flags.push({ kind: "duplicate_rule", detail: `rule ${n} is defined ${bodies.size} different ways` })
-  for (const m of brief.matchAll(/\b(DRAFT|TBD|TODO|FIXME|XXX)\b/g)) {
+  // 0.7.1 (field report 2026-10-05): a brief that bans `TBD` and "TODO" named them, and the
+  // names were flagged as leftovers. A marker inside backticks or double quotes on one line is
+  // mentioned, not left in. Single quotes stay unmasked: apostrophes would pair across words.
+  const unquoted = brief.replace(/`[^`\n]{1,200}`|"[^"\n]{1,200}"|“[^”\n]{1,200}”/g, (s) => " ".repeat(s.length))
+  for (const m of unquoted.matchAll(/\b(DRAFT|TBD|TODO|FIXME|XXX)\b/g)) {
     flags.push({ kind: "draft_marker", detail: `${m[1]} marker left in the brief` })
     if (flags.length > 20) break
   }
@@ -505,6 +509,13 @@ export async function checkCitations(
     const abs = path.resolve(repoRoot, c.file!)
     if (await outsideRoot(repoRoot, abs)) {
       results.push({ raw: c.raw, kind: c.kind, status: "dead", detail: "path escapes the repository root" })
+      continue
+    }
+    // 0.7.1 (field report 2026-10-05): the protocol tells workers to append to
+    // .foreman-heartbeat.jsonl, which does not exist before the first heartbeat, so naming it
+    // in a brief failed preflight. Foreman's own state files are not citations to verify.
+    if (FOREMAN_STATE_NAMES.has(path.basename(c.file!))) {
+      results.push({ raw: c.raw, kind: c.kind, status: "ok", detail: "Foreman state file; created as the session runs, not checked" })
       continue
     }
     let text: string

@@ -204,7 +204,8 @@ describe('runTests', () => {
       const result = await runTests('../../evil', [])
       expect(result).toContain('error: runner not in allowlist')
       // bash and curl survive regex
-      const bashResult = await runTests('bash', [])
+      // 0.8.0 (2026-10-07): an allowlist check must not start an interactive shell.
+      const bashResult = await runTests('bash', ['--version'])
       expect(bashResult).not.toContain('error: runner not in allowlist')
       delete process.env.FOREMAN_TEST_ALLOWLIST
     })

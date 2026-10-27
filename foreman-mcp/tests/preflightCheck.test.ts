@@ -72,7 +72,7 @@ Guard the nil client with \`ErrClientUnavailable\` (\`internal/cfsource/cfapi/cl
     expect(text).toContain("status: pass")
     expect(text).toContain("symbols_missing_from_spec: none")
     expect(text).toContain("dead_citations: 0")
-    expect(text).toContain("next: Record the delegation with preflight: { receipt: brief_hash")
+    expect(text).toContain("next: Record the delegation with data: { s: 'delegated', brief_hash:")
     const rec = await findPreflight(preflightFile, briefHash(goodBrief))
     expect(rec).toMatchObject({ status: "pass", unit_id: "p11.1", symbols: 2, dead_citations: 0 })
   })
