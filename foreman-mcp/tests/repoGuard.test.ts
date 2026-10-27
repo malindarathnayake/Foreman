@@ -104,8 +104,13 @@ describe("path arguments never become git options [CWE-88]", () => {
 
   // 0.7.0: drive-relative and Windows stream paths, and git pathspec magic/wildcards.
   it("refuses a drive-relative path, and a stream name on Windows", () => {
-    expect(invalidPathReason("D:brief.md")).toMatch(/drive-relative/)
-    if (process.platform === "win32") expect(invalidPathReason("notes.txt:hidden.html")).toMatch(/stream name/)
+    if (process.platform === "win32") {
+      expect(invalidPathReason("D:brief.md")).toMatch(/drive-relative/)
+      expect(invalidPathReason("notes.txt:hidden.html")).toMatch(/stream name/)
+    } else {
+      // Elsewhere `D:brief.md` is an ordinary relative filename.
+      expect(invalidPathReason("D:brief.md")).toBeNull()
+    }
   })
 
   it("matches path arguments literally: a bracket name is not a wildcard, ':/' is not repo-root magic", async () => {
