@@ -1,4 +1,4 @@
-// 0.6.7: the Gemini seat is pinned to gemini-3.1-pro-preview and reads the served model
+// The Gemini seat is pinned to gemini-4-carbon (2026-11; 0.6.7 added the served-model check) and reads the served model
 // from the CLI's JSON output. An accepted model id proved nothing: on one account the CLI
 // served gemini-3.5-flash for a pinned 3.8-flash with exit 0 and a plausible answer.
 import { beforeEach, describe, expect, it, vi } from "vitest"
@@ -27,8 +27,8 @@ function geminiJson(mainModel: string, response = "[LOW] src/a.ts:7 typo", thoug
 
 describe("parseGeminiJson", () => {
   it("reads the response and the model that served the main role, with its thinking tokens", () => {
-    const run = parseGeminiJson(geminiJson("gemini-3.1-pro-preview", "text", 501, "gemini-3.5-flash"))
-    expect(run).toEqual({ response: "text", mainModel: "gemini-3.1-pro-preview", thoughts: 501 })
+    const run = parseGeminiJson(geminiJson("gemini-4-carbon", "text", 501, "gemini-3.5-flash"))
+    expect(run).toEqual({ response: "text", mainModel: "gemini-4-carbon", thoughts: 501 })
   })
 
   it("falls back to the first model when no role is marked main, and rejects non-envelopes", () => {
@@ -88,11 +88,11 @@ describe("invokeAdvisor — gemini arguments", () => {
     vi.mocked(runWithStdin).mockResolvedValue(OK)
   })
 
-  it("pins gemini-3.1-pro-preview and asks for JSON output", async () => {
+  it("pins gemini-4-carbon and asks for JSON output", async () => {
     await invokeAdvisor("gemini", "review this", 1_000)
     expect(runWithStdin).toHaveBeenCalledWith(
       "gemini",
-      ["-p", "", "-m", "gemini-3.1-pro-preview", "--approval-mode", "plan", "--output-format", "json"],
+      ["-p", "", "-m", "gemini-4-carbon", "--approval-mode", "plan", "--output-format", "json"],
       "review this",
       1_000,
       undefined,

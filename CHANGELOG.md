@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.5] - 2026-11-12
+
+### Changed
+
+- The Gemini advisor seat and the `capability_check` probe pin `gemini-4-carbon` (Gemini 4 Carbon) in place of `gemini-3.1-pro-preview`. Verified through gemini-cli 0.64.0: the run stats name `gemini-4-carbon` as the main-role model. A served model other than the pinned one still fails the seat with `model_substituted`.
+
+### Security
+
+- The development toolchain moves to vitest 5.0.5, which drops tinypool. tinypool 1.1.1 carried two prototype-pollution-to-code-execution gadgets (CVE-2026-104848, CVE-2026-104849), and the update also clears the vite, `@vitest/mocker`, esbuild, nanoid and source-map-js advisories. The vendored `context-crush` manifest takes the same vitest range. These are development dependencies only; the published package's runtime dependencies are unchanged and `npm audit --omit=dev` reported none before or after.
+
 ## [0.9.4] - 2026-10-27
 
 ### Security

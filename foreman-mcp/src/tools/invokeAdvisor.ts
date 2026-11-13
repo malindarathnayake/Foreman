@@ -13,13 +13,14 @@ import { CURSOR_AGENT_BINS, type AdvisorCli } from "../lib/advisorCli.js"
 
 /**
  * Gemini seat model, shared with capability_check so the probe exercises the same model
- * the review uses. gemini-3.1-pro-preview (0.6.7): the CLI serves it faithfully and the
- * API defaults Pro to thinking level high. gemini-3.8-flash was pinned in 0.6.6 after a
+ * the review uses. gemini-4-carbon (2026-11-12): probed through gemini-cli 0.64.0, the run
+ * stats name gemini-4-carbon as roles.main and report thinking tokens, so the id is served
+ * faithfully. gemini-3.1-pro-preview was pinned from 0.6.7. gemini-3.8-flash was pinned in 0.6.6 after a
  * probe that only proved the id was accepted; the run stats showed gemini-3.5-flash serving
  * the main request on this account, silently, and 3.7-flash the same. Whatever is pinned,
  * the served model is now read from the CLI's JSON output and a mismatch is a failed seat.
  */
-export const GEMINI_ADVISOR_MODEL = "gemini-3.1-pro-preview"
+export const GEMINI_ADVISOR_MODEL = "gemini-4-carbon"
 
 /**
  * Codex seat model (0.6.8). Verified through the CLI on 2026-09-05: codex-cli 0.152.0 answers
