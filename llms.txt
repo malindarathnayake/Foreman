@@ -8,7 +8,7 @@ or routing policy. It orchestrates protocols, records state, and refuses invalid
 transitions (a unit cannot pass without a recorded delegation; a phase cannot
 pass while any unit is not `pass`).
 
-Package: `@malindarathnayake/foreman-mcp` · Version: `0.9.5` · Runtime: Node.js `^22.23.4 || ^24.22.1 || >=26.12.1`
+Package: `@malindarathnayake/foreman-mcp` · Version: `0.9.6` · Runtime: Node.js `^22.23.4 || ^24.22.1 || >=26.12.1`
 
 This file is written for an AI agent that just connected to the server. It is
 an operating packet, not a feature list — read the whole thing before your
@@ -27,7 +27,7 @@ Tool count: 37
 - read_progress — Reads the planning checklist. It is descriptive only; `session_orient` is the resume authority.
 - read_journal — Reads the Foreman session journal; returns session history with rollup.
 - capability_check — Checks whether the claude, codex, or gemini CLI is available and authenticated, with a closed auth-status taxonomy. CLI versions are telemetry, not compatibility pins. On `--host=cursor`, also probes the Cursor Agent CLI (`agent` / `cursor-agent`).
-- invoke_advisor — Invokes the claude, codex, or gemini CLI via stdin for independent review. Claude runs headless `claude-fable-5` at `max` effort with tools disabled. On `--host=cursor`, also `cli: "cursor"` (`agent -p --mode=ask --trust`; never `--approve-mcps`; receipts are provider unknown).
+- invoke_advisor — Invokes the claude, codex, or gemini CLI via stdin for independent review. The gemini seat runs the Antigravity CLI (`agy`, `gemini-4-hydrogen-xhigh`, writes and commands denied) when installed, otherwise Gemini CLI (`gemini-4-carbon`). Claude runs headless `claude-fable-5-2` at `max` effort with tools disabled. On `--host=cursor`, also `cli: "cursor"` (`agent -p --mode=ask --trust`; never `--approve-mcps`; receipts are provider unknown).
 - write_ledger — Writes an operation to the Foreman ledger (unit status, verdicts, rejections, phase gates, scope, durable reviews).
 - invoke_worker — EXPERIMENTAL (egress: sends briefs + file excerpts to your configured HTTP endpoint). Delegates a single patch task to the remote OpenAI-compatible endpoint configured in `.foremanenv`; returns a shape-checked, verbatim patch for the host to apply.
 - repo_guard — Runs the shared-tree ownership check around an editing worker: `snapshot` records branch, HEAD, stash, index, dirty paths, `core.autocrlf`, and line-ending attributes on the delegation; `compare` re-reads them and names every mutation outside the brief. `allowed_files` IS the allow-list `compare` measures against; `files` only scopes the line-ending probe, and an accidentally empty allow-list is refused rather than frozen. Both refuse or flag an authorized file that is non-empty and entirely NUL bytes — destroyed, not edited. Foreman writes both, so a pass verdict can be refused until the guard clears. Reports `n/a` outside a git work tree.

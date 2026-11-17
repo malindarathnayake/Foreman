@@ -26,8 +26,9 @@ export interface ModelRank {
 
 // Explicit policy aliases only. A new provider version requires an intentional mapping.
 const MODELS = new Map<string, "astra" | 1 | 2 | 3>([
-  ["astra", "astra"], ["gpt-6-astra", "astra"],
+  ["astra", "astra"], ["gpt-6.2-astra", "astra"], ["gpt-6-astra", "astra"],
   // Host-emitted ids first (what a pitboss actually reports), display names after.
+  ["claude-fable-5-2", 3], ["claude-fable-5.2", 3], ["fable 5.2", 3], ["fable5.2", 3], ["fable-5.2", 3],
   ["claude-fable-5-1", 3], ["claude-fable-5", 3], ["claude-fable-5.1", 3],
   ["fable 5.1", 3], ["fable5.1", 3], ["fable-5.1", 3],
   ["claude-opus-5-5", 2], ["claude-opus-5", 2], ["opus", 2], ["terra", 2], ["gpt-5.6-terra", 2],

@@ -241,7 +241,7 @@ it("supports frontier routing in generic .foremanenv configurations", async () =
 
 it.each([
   ["claude-code", "opus", "claude-opus-5-5"],
-  ["codex", "gpt-6-astra", "gpt-6-astra"],
+  ["codex", "gpt-6.2-astra", "gpt-6.2-astra"],
 ] as const)("enforces the shipped model pin even without installed agents on %s", async (host, required, observed) => {
   await write("set_unit_status", { ...delegate, tier: "premium" }, host, "u1")
   expect((await readLedger(ledger)).phases.p1.units.u1.delegations![0].required_model).toBe(required)

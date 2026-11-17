@@ -31,7 +31,7 @@ The gate write's result carries a `SESSION HYGIENE` line. Foreman cannot see the
 
 | Host | Advisor A | Advisor B | Fallback when neither is available |
 |---|---|---|---|
-| Claude Code | Codex CLI: `codex exec`, `gpt-6-astra`, reasoning `xhigh`, read-only sandbox; needs codex-cli 0.153.4 or newer, and the seat checks the model the CLI echoes | Gemini CLI, `-m gemini-4-carbon`, plan approval mode, JSON output so the served model is checked | Claude subagents with an adversarial critic prompt, recorded as non-independent |
+| Claude Code | Codex CLI: `codex exec`, `gpt-6.2-astra`, reasoning `xhigh`, read-only sandbox; verified on codex-cli 0.167.0, and the seat checks the model the CLI echoes | Antigravity CLI (`agy`), `gemini-4-hydrogen-xhigh`, sandboxed with writes, commands, MCP and URL fetches denied, served model read from the agy log; without `agy`, Gemini CLI with `-m gemini-4-carbon`, plan approval mode and JSON output | Claude subagents with an adversarial critic prompt, recorded as non-independent |
 | Cursor | Cursor Agent CLI: `invoke_advisor({cli:"cursor"})` (`agent -p --mode=ask --trust`) | A different vendor CLI (claude/codex/gemini) when `capability_check` says it is ok | Two Cursor Agent CLI or Task inherit seats, recorded as non-independent |
 | Codex | Native reviewers (2-5 distinct lenses) | Separate native verifier | Native review is the default; available Claude/Gemini advisors add review at major checkpoints |
 

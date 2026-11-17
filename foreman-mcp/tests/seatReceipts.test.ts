@@ -145,7 +145,7 @@ describe("invoke_advisor writes a receipt and names it in the meta block", () =>
 
   it("a clean run: receipt with provider, served model, hash, bytes and tokens; meta carries seat_receipt and packet_sha256", async () => {
     await connect()
-    vi.mocked(invokeAdvisor).mockResolvedValue({ stdout: "Here is my review.\n" + "y".repeat(400), stderr: codexStderr("gpt-6-astra"), exitCode: 0, timedOut: false, truncated: false })
+    vi.mocked(invokeAdvisor).mockResolvedValue({ stdout: "Here is my review.\n" + "y".repeat(400), stderr: codexStderr("gpt-6.2-astra"), exitCode: 0, timedOut: false, truncated: false })
     const result = await client!.callTool({ name: "invoke_advisor", arguments: { cli: "codex", prompt: PROMPT, timeout_ms: 5000 } })
     const text = (result.content as Array<{ text: string }>)[0].text
     const id = /seat_receipt: ([0-9a-f]{16})/.exec(text)?.[1]
@@ -156,14 +156,14 @@ describe("invoke_advisor writes a receipt and names it in the meta block", () =>
     expect(text).toContain("Here is my review.")
     const state = await readReceipts(receiptsPath)
     expect(state.receipts.get(id!)).toMatchObject({
-      cli: "codex", provider: "openai", model_requested: "gpt-6-astra", model_served: "gpt-6-astra", reasoning_effort: "xhigh",
+      cli: "codex", provider: "openai", model_requested: "gpt-6.2-astra", model_served: "gpt-6.2-astra", reasoning_effort: "xhigh",
       exit_code: 0, failure_reason: null, prompt_sha256: sha256Hex(SENT), bytes_in: Buffer.byteLength(SENT), tokens_used: 12345,
     })
     expect(state.receipts.get(id!)!.bytes_out).toBeGreaterThan(400)
   })
   it("a failed run still gets a receipt, marked failed, so it can never be bound", async () => {
     await connect()
-    vi.mocked(invokeAdvisor).mockResolvedValue({ stdout: "", stderr: codexStderr("gpt-6-astra"), exitCode: 0, timedOut: false, truncated: false })
+    vi.mocked(invokeAdvisor).mockResolvedValue({ stdout: "", stderr: codexStderr("gpt-6.2-astra"), exitCode: 0, timedOut: false, truncated: false })
     const result = await client!.callTool({ name: "invoke_advisor", arguments: { cli: "codex", prompt: PROMPT, timeout_ms: 5000 } })
     const text = (result.content as Array<{ text: string }>)[0].text
     const id = /seat_receipt: ([0-9a-f]{16})/.exec(text)![1]
@@ -176,7 +176,7 @@ describe("invoke_advisor writes a receipt and names it in the meta block", () =>
   it("a receipts file that cannot be written is reported, and the review text still comes back", async () => {
     await connect()
     await fs.appendFile(receiptsPath, '{"torn":true')
-    vi.mocked(invokeAdvisor).mockResolvedValue({ stdout: "Here is my review.", stderr: codexStderr("gpt-6-astra"), exitCode: 0, timedOut: false, truncated: false })
+    vi.mocked(invokeAdvisor).mockResolvedValue({ stdout: "Here is my review.", stderr: codexStderr("gpt-6.2-astra"), exitCode: 0, timedOut: false, truncated: false })
     const result = await client!.callTool({ name: "invoke_advisor", arguments: { cli: "codex", prompt: PROMPT, timeout_ms: 5000 } })
     const text = (result.content as Array<{ text: string }>)[0].text
     expect(text).toContain("seat_receipt: unavailable (")

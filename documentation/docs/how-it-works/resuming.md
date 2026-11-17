@@ -114,7 +114,7 @@ Orientation tells the model where it is. It does not tell it whether the spec is
 
 During normal `write_journal init_session`, the pitboss declares `env.model` and `env.effort`. Foreman trusts the declaration and returns `model_rank` with a weight and explicit permissions. Unavailable, unknown or unmapped values grant no shortcuts and never block normal startup. No identity authentication or owner confirmation is added.
 
-Astra (`gpt-6-astra`) at `high`, `xhigh`, `max` or `ultra`, and Fable 5.1 receive Top weight 3; Opus and Terra receive Middle 2; Sonnet and Luna receive Standard 1. Other models, including Sol, receive Unknown 0 and normal protocol. Rank does not alter the configured seat capability or cost tier.
+Astra (`gpt-6.2-astra`, `gpt-6-astra`) at `high`, `xhigh`, `max` or `ultra`, and Fable 5.2 or 5.1 receive Top weight 3; Opus and Terra receive Middle 2; Sonnet and Luna receive Standard 1. Other models, including Sol, receive Unknown 0 and normal protocol. Rank does not alter the configured seat capability or cost tier.
 
 `session_orient` and `read_progress` show the active declaration, rank, weight and `workflow_permissions`. A model/effort change calls `write_journal { operation: "declare_model", data: { model, effort } }` before the next action; both fields are replaced, so omission does not preserve a previous Top rank. Ending a session or restarting Foreman clears the active declaration. New sessions always declare again.
 

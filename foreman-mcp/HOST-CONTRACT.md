@@ -116,7 +116,7 @@ The pitboss reports `env.model` and `env.effort` in `write_journal init_session`
 
 | Weight | Mapping | Workflow permission |
 |---|---|---|
-| 3 Top | Astra / `gpt-6-astra`, effort `high`, `xhigh`, `max`, `ultra`; Fable 5.1 | Bounded native worker reuse, compact follow-ups, focused intermediate checks, independently verified delta review |
+| 3 Top | Astra / `gpt-6.2-astra` or `gpt-6-astra`, effort `high`, `xhigh`, `max`, `ultra`; Fable 5.2 or 5.1 | Bounded native worker reuse, compact follow-ups, focused intermediate checks, independently verified delta review |
 | 2 Middle | Opus; Terra / `gpt-5.6-terra` | Mechanical native worker reuse and compact follow-ups; normal checks and review |
 | 1 Standard | Sonnet; Luna / `gpt-5.6-luna` | Normal protocol |
 | 0 Unknown | Undeclared/unmapped, including Sol | Normal protocol |

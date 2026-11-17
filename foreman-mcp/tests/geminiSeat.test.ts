@@ -83,7 +83,8 @@ describe("formatAdvisorResult — gemini served-model check", () => {
 describe("invokeAdvisor — gemini arguments", () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.mocked(resolveInvocation).mockResolvedValue({ ok: true, plan: { command: "gemini", args: [] } })
+    vi.mocked(resolveInvocation).mockImplementation(async (name: string) =>
+      name === "agy" ? { ok: false, reason: "agy not found" } : { ok: true, plan: { command: "gemini", args: [] } })
     vi.mocked(resolveFirst).mockResolvedValue({ ok: true, plan: { command: "gemini", args: [] } })
     vi.mocked(runWithStdin).mockResolvedValue(OK)
   })
@@ -110,7 +111,8 @@ describe("capabilityCheck — gemini served-model check", () => {
 
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.mocked(resolveInvocation).mockResolvedValue({ ok: true, plan: { command: "gemini", args: [] } })
+    vi.mocked(resolveInvocation).mockImplementation(async (name: string) =>
+      name === "agy" ? { ok: false, reason: "agy not found" } : { ok: true, plan: { command: "gemini", args: [] } })
     vi.mocked(resolveFirst).mockResolvedValue({ ok: true, plan: { command: "gemini", args: [] } })
   })
 

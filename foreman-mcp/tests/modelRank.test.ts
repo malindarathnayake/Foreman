@@ -9,11 +9,17 @@ describe("declared model workflow rank", () => {
     expect(rank.session_id).toBeUndefined()
   })
 
+  // 0.9.6: the Codex seats moved to gpt-6.2-astra; the declared rank must follow it.
+  it.each(["high", "xhigh"])("maps gpt-6.2-astra at %s to Top", effort => {
+    expect(resolveModelRank("gpt-6.2-astra", effort).weight).toBe(3)
+    expect(resolveModelRank("gpt-6.2-astra", "medium").weight).toBe(0)
+  })
+
   it.each([undefined, null, "low", "medium", "super-high"])("keeps Astra at %s on normal protocol", effort => {
     expect(resolveModelRank("Astra", effort).weight).toBe(0)
   })
 
-  it.each(["Fable 5.1", "fable5.1", "claude-fable-5.1", "claude-fable-5-1", "claude-fable-5"])("maps explicit Fable 5.1 alias %s", model => {
+  it.each(["Fable 5.2", "fable5.2", "claude-fable-5.2", "claude-fable-5-2", "Fable 5.1", "fable5.1", "claude-fable-5.1", "claude-fable-5-1", "claude-fable-5"])("maps explicit Fable 5.2 / 5.1 alias %s", model => {
     expect(resolveModelRank(model).weight).toBe(3)
   })
 
@@ -38,7 +44,7 @@ describe("declared model workflow rank", () => {
     expect(Object.values(rank.permissions).some(Boolean)).toBe(false)
   })
 
-  it.each([undefined, null, "", "Sol", "gpt-5.6-sol", "gpt-7-astra", "gpt-6-terra", "claude-fable-4", "Fable 5.2", "TopRank"])("does not infer an allowlist mapping for %s", model => {
+  it.each([undefined, null, "", "Sol", "gpt-5.6-sol", "gpt-7-astra", "gpt-6-terra", "claude-fable-4", "Fable 5.3", "gpt-6.3-astra", "TopRank"])("does not infer an allowlist mapping for %s", model => {
     const rank = resolveModelRank(model, "ultra")
     expect(rank.weight).toBe(0)
     expect(Object.values(rank.permissions).some(Boolean)).toBe(false)

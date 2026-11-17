@@ -101,7 +101,7 @@ const CODEX_PROFILE: HostProfile = {
     advisor_checks:
       'At major checkpoints or on request, probe optional advisors: `mcp__foreman__capability_check({ cli: "claude" })` and `mcp__foreman__capability_check({ cli: "gemini" })`. Missing providers do not block native review.',
     advisor_a:
-      '**Optional external Advisor A (Claude Fable 5.1, max; headless; Opus when Fable is unavailable):** `mcp__foreman__invoke_advisor({ cli: "claude", prompt: "<PROMPT>" })` (configured `model: "claude-fable-5-1"`, effort `max`, tools disabled; the output names any model_fallback).',
+      '**Optional external Advisor A (Claude Fable 5.2, max; headless; Opus when Fable is unavailable):** `mcp__foreman__invoke_advisor({ cli: "claude", prompt: "<PROMPT>" })` (configured `model: "claude-fable-5-2"`, effort `max`, tools disabled; the output names any model_fallback).',
     advisor_b:
       '**Optional external Advisor B (Gemini):** `mcp__foreman__invoke_advisor({ cli: "gemini", prompt: "<PROMPT>" })`',
     advisor_fallback: CODEX_NATIVE_REVIEW,

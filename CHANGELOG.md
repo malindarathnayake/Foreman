@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.6] - 2026-11-17
+
+### Changed
+
+- The `gemini` advisor seat runs the Antigravity CLI (`agy`) when it is on PATH, pinned to `gemini-4-hydrogen-xhigh`. Gemini 4 Carbon is not offered through agy on the verified account. Without `agy` the seat runs Gemini CLI with `gemini-4-carbon` as before. The meta block names the `backend`, and the receipt records the model pinned for the CLI that ran.
+- agy takes the prompt as one stream-json event on stdin (`-p` ignores stdin and the command line is capped near 32k on Windows). It runs with `--sandbox` and session settings that deny file writes, commands, MCP tools and URL fetches; headless agy otherwise writes workspace files without asking. Web search has no permission rule and stays available, as in Gemini CLI's plan mode.
+- agy's output has no served-model field. The seat reads the model labels agy's log says it propagated to the backend; a label other than the pinned model's fails the seat with `model_substituted`, and a log that names none leaves `model_served: unknown`. This is agy's client-side record, weaker evidence than Gemini CLI's server run stats.
+- `capability_check` for `gemini` probes agy with a real call when agy is installed and reports `backend: agy`.
+- The Claude advisor seat runs `claude-fable-5-2` (Opus fallback unchanged). The Codex advisor seat, the Codex `worker_heavy` tier and the design-gauntlet default run `gpt-6.2-astra` at `xhigh`. Both were verified by live probes (claude CLI 2.1.326, codex-cli 0.167.0). Existing Codex role files keep their pin until `codex_agents_init` rewrites them.
+- The declared-rank table maps Fable 5.2 and `gpt-6.2-astra` to Top, alongside Fable 5.1 and `gpt-6-astra`.
+
 ## [0.9.5] - 2026-11-12
 
 ### Changed

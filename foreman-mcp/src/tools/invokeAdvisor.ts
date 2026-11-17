@@ -23,12 +23,136 @@ import { CURSOR_AGENT_BINS, type AdvisorCli } from "../lib/advisorCli.js"
 export const GEMINI_ADVISOR_MODEL = "gemini-4-carbon"
 
 /**
- * Codex seat model (0.6.8). Verified through the CLI on 2026-09-05: codex-cli 0.152.0 answers
+ * 0.9.6: the gemini seat prefers the Antigravity CLI (agy) and falls back to gemini-cli only
+ * when agy is not on PATH. Verified on agy 1.5.10 (Windows 11, 2026-11-17) by live probes:
+ * - `agy models` on this account lists Hydrogen and Argon but no Carbon, so the agy seat pins
+ *   Hydrogen at its highest effort tier. The effort is part of the id; --effort is not passed.
+ * - `-p` takes its prompt as an argument (stdin is ignored, `-p -` is the literal "-"), and
+ *   agy.exe is bound by the ~32k Windows command line. The prompt goes in as one stream-json
+ *   user event on stdin instead, which requires stream-json output; a 60 KB prompt ran.
+ * - The output has no served-model field. The log's "Propagating selected model override to
+ *   backend: label=..." lines are the evidence; init.model only echoes --model. This is agy's
+ *   client-side record, weaker than gemini-cli's server run stats.
+ * - With no rules, headless agy writes workspace files without asking. The deny list below
+ *   refused file writes, edits, shell commands (git tag, redirects, curl) and MCP calls, and
+ *   left a throwaway repo untouched. search_web has no permission kind and stays available.
+ * - An unknown id exits 1 with status ERROR, "invalid model selection"; no silent fallback.
+ */
+export const AGY_ADVISOR_MODEL = "gemini-4-hydrogen-xhigh"
+export const AGY_ADVISOR_MODEL_LABEL = "Gemini 4 Hydrogen (XHigh)"
+export const AGY_ADVISOR_SETTINGS = JSON.stringify({
+  permissions: {
+    allow: ["read_file(*)"],
+    deny: ["write_file(*)", "command(*)", "mcp(*)", "read_url(*)", "execute_url(*)", "download_url(*)"],
+  },
+})
+/** stream-json repeats the answer (deltas, then the result event); keep the whole stream. */
+const AGY_STDOUT_BUDGET = 1_000_000
+/** agy's own --print-timeout stops it before Foreman's kill, so the result event still arrives. */
+const AGY_TIMEOUT_MARGIN_S = 30
+
+export function agyArgs(logFile: string, timeoutMs: number): string[] {
+  const printTimeoutS = Math.max(5, Math.floor(timeoutMs / 1000) - AGY_TIMEOUT_MARGIN_S)
+  return [
+    "--input-format", "stream-json", "--output-format", "stream-json",
+    "--model", AGY_ADVISOR_MODEL,
+    "--sandbox",
+    "--settings", AGY_ADVISOR_SETTINGS,
+    "--log-file", logFile,
+    "--print-timeout", `${printTimeoutS}s`,
+  ]
+}
+
+/** One stream-json user event: the whole prompt, never on the command line. */
+export function agyStdin(prompt: string): string {
+  return JSON.stringify({ event: "user", message: { content: prompt } }) + "\n"
+}
+
+export interface AgyRun {
+  status?: string
+  response?: string
+  error?: string
+  /** The --model agy says it is using; an echo of the request, not served-model evidence. */
+  initModel?: string
+  thinkingTokens?: number
+  totalTokens?: number
+}
+
+/** Reads agy's stream-json stdout. Lines that are not JSON (a truncated head) are skipped. */
+export function parseAgyStream(stdout: string): AgyRun | null {
+  let run: AgyRun | null = null
+  for (const line of stdout.split(/\r?\n/)) {
+    const t = line.trim()
+    if (!t.startsWith("{")) continue
+    let ev: { event?: string; init?: { model?: unknown }; result?: Record<string, unknown> }
+    try { ev = JSON.parse(t) } catch { continue }
+    if (ev.event === "init" && typeof ev.init?.model === "string") {
+      run = { ...(run ?? {}), initModel: ev.init.model }
+    } else if (ev.event === "result" && ev.result) {
+      const r = ev.result
+      const usage = (r.usage ?? {}) as { thinking_tokens?: unknown; total_tokens?: unknown }
+      run = {
+        ...(run ?? {}),
+        status: typeof r.status === "string" ? r.status : undefined,
+        response: typeof r.response === "string" ? r.response : undefined,
+        error: typeof r.error === "string" ? r.error : undefined,
+        thinkingTokens: typeof usage.thinking_tokens === "number" ? usage.thinking_tokens : undefined,
+        totalTokens: typeof usage.total_tokens === "number" ? usage.total_tokens : undefined,
+      }
+    }
+  }
+  return run
+}
+
+const AGY_PROPAGATE = /Propagating selected model override to backend: label="([^"]+)"/g
+
+export function agyServedLabels(log: string): string[] {
+  return [...log.matchAll(AGY_PROPAGATE)].map((m) => m[1])
+}
+
+/**
+ * The pinned id when every propagated label is the pinned model's, the first other label
+ * when any differs (a substitution), undefined when the log names none.
+ */
+export function agyServedModel(labels: readonly string[]): string | undefined {
+  if (labels.length === 0) return undefined
+  const other = labels.find((l) => l !== AGY_ADVISOR_MODEL_LABEL)
+  return other ?? AGY_ADVISOR_MODEL
+}
+
+/** Runs one agy seat call with a private log file, removed afterwards. */
+export async function runAgySeat(
+  plan: { command: string; args: string[] },
+  prompt: string,
+  timeoutMs: number,
+  controls?: SpawnControls,
+): Promise<ExternalCliResult> {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "foreman-agy-"))
+  const logFile = path.join(dir, "agy.log")
+  try {
+    const result = await runWithStdin(plan.command, [...plan.args, ...agyArgs(logFile, timeoutMs)], agyStdin(prompt), timeoutMs, undefined, controls, AGY_STDOUT_BUDGET)
+    const log = await fs.readFile(logFile, "utf-8").catch(() => "")
+    return { ...result, agy: { servedLabels: agyServedLabels(log) } }
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true }).catch(() => {})
+  }
+}
+
+/** The model a seat is pinned to for this run: the gemini seat's pin depends on which CLI ran. */
+export function pinnedAdvisorModel(cli: string, result: Pick<ExternalCliResult, "agy">): string | undefined {
+  if (cli === "gemini") return result.agy ? AGY_ADVISOR_MODEL : GEMINI_ADVISOR_MODEL
+  if (cli === "codex") return CODEX_ADVISOR_MODEL
+  return undefined
+}
+
+/**
+ * Codex seat model. 0.9.6: gpt-6.2-astra, verified 2026-11-17 on codex-cli 0.167.0: the header
+ * echoes `model: gpt-6.2-astra` and `reasoning effort: xhigh`. Earlier, from 0.6.8, gpt-6-astra. Verified through the CLI on 2026-09-05: codex-cli 0.152.0 answers
  * "requires a newer version of Codex" for this id, 0.153.4 runs it at reasoning effort xhigh
  * and echoes `model: gpt-6-astra` in its header. Every other *-astra spelling is refused
  * outright on a ChatGPT account, so acceptance here is not a silent fallback.
  */
-export const CODEX_ADVISOR_MODEL = "gpt-6-astra"
+export const CODEX_ADVISOR_MODEL = "gpt-6.2-astra"
 export const CODEX_ADVISOR_REASONING = "xhigh"
 
 /** Codex prints `model: <id>` and `reasoning effort: <level>` in its stderr header. */
@@ -123,26 +247,30 @@ export function classifyAdvisorFailure(result: ExternalCliResult): AdvisorFailur
   if (result.cancelled) return "cancelled"
   if (result.timedOut) return "timed_out"
   if (result.exitCode === 0) return null
-  const tail = result.stderr.split("\n").slice(-FAILURE_TAIL_LINES).join("\n")
+  // agy puts its error in the structured result event; its stderr copy is followed by the
+  // whole model list, which can push the first line out of the tail.
+  const agyError = result.agy ? (parseAgyStream(result.stdout)?.error ?? "") : ""
+  const tail = result.stderr.split("\n").slice(-FAILURE_TAIL_LINES).join("\n") + (agyError ? `\n${agyError}` : "")
   if (/Exceeded USD budget/i.test(tail)) return "budget_exceeded"
-  if (/\b401 Unauthorized\b|\b403 Forbidden\b|Incorrect API key|invalid[_ ]api[_ ]key|not logged in|please (run )?\S*\s*login/i.test(tail)) return "auth_failed"
-  if (/model is not supported|requires a newer version of Codex|model[_ ]not[_ ]found|unknown model|issue with the selected model|unrecognized_model|not have access to it/i.test(tail)) return "model_rejected"
+  if (/\b401 Unauthorized\b|\b403 Forbidden\b|Incorrect API key|invalid[_ ]api[_ ]key|not logged in|please (run )?\S*\s*login|authentication required/i.test(tail)) return "auth_failed"
+  if (/model is not supported|requires a newer version of Codex|model[_ ]not[_ ]found|unknown model|issue with the selected model|unrecognized_model|not have access to it|invalid model selection/i.test(tail)) return "model_rejected"
   return null
 }
 export const ADVISOR_FAILURE_HINT: Readonly<Record<AdvisorFailureClass, string>> = {
   cancelled: "the host cancelled the call (or disconnected); the seat's output is incomplete and cannot be bound as a review — re-run it",
   timed_out: "the seat ran out of time; narrow the packet or raise timeout_ms (and the host's tool timeout, see host_status)",
-  auth_failed: "the CLI's credential was rejected; re-authenticate it (codex: codex logout && codex login; claude: /login). capability_check reports local login state only, not whether the service accepts it",
+  auth_failed: "the CLI's credential was rejected; re-authenticate it (codex: codex logout && codex login; claude: /login; agy: run agy once interactively). capability_check reports local login state only, not whether the service accepts it",
   budget_exceeded: "the Claude seat hit its USD cap; set FOREMAN_CLAUDE_ADVISOR_BUDGET_USD (max 25) or shrink the packet",
   model_rejected: "the CLI refused the pinned model; upgrade the CLI or pick a model the account tier allows",
 }
 
 /**
- * 0.6.39: the Claude seat runs Fable 5.1 (probe 2026-09-27: the CLI reported serving
- * claude-fable-5-1). When the CLI refuses it — not on this account or CLI version — the seat
+ * 0.6.39: the Claude seat runs Fable (probe 2026-09-27: the CLI reported serving
+ * claude-fable-5-1). 0.9.6: Fable 5.2 — claude CLI 2.1.326 served claude-fable-5-2 at max
+ * effort with tools disabled on 2026-11-17 (modelUsage names it). When the CLI refuses it — not on this account or CLI version — the seat
  * retries once on Opus, same CLI and vendor, and says so; provenance is unchanged.
  */
-export const CLAUDE_ADVISOR_MODEL = "claude-fable-5-1"
+export const CLAUDE_ADVISOR_MODEL = "claude-fable-5-2"
 export const CLAUDE_FALLBACK_MODEL = "claude-opus-5-5"
 
 const ADVISOR_CONFIGS: Record<AdvisorCli, { binaries: readonly string[]; buildArgs: (model?: string) => string[]; prompt: "stdin" | "tempfile" }> = {
@@ -211,6 +339,12 @@ export async function invokeAdvisor(
     return { stdout: '', stderr: `unknown cli: ${cli}`, timedOut: false, exitCode: -1, truncated: false }
   }
 
+  // 0.9.6: agy first for the gemini seat; gemini-cli only when agy is not installed.
+  if (cli === "gemini") {
+    const agy = await resolveInvocation("agy")
+    if (agy.ok) return runAgySeat(agy.plan, prompt, timeoutMs, controls)
+  }
+
   const resolution = config.binaries.length === 1
     ? await resolveInvocation(config.binaries[0])
     : await resolveFirst(config.binaries)
@@ -266,7 +400,7 @@ export function advisorRunMeta(
     `timed_out: ${result.timedOut}`,
     `truncated: ${result.truncated}`,
   ]
-  const tokensUsed = tokensMatch ? Number(tokensMatch[1].replace(/,/g, '')) : undefined
+  let tokensUsed = tokensMatch ? Number(tokensMatch[1].replace(/,/g, '')) : undefined
   if (tokensMatch) metaLines.push(`tokens_used: ${tokensMatch[1].replace(/,/g, '')}`)
   let modelServed: string | undefined
   let reasoningEffort: string | undefined
@@ -295,7 +429,29 @@ export function advisorRunMeta(
   // request. On one account the CLI served gemini-3.5-flash for a pinned 3.8-flash with exit 0
   // and a plausible answer; only the run stats told. A served model other than the pinned one
   // is a failed seat, with the text kept below for the record.
-  if (cli === "gemini" && result.exitCode === 0) {
+  // 0.9.6: agy answers in stream-json; the served model comes from its log's propagated
+  // labels (see AGY_ADVISOR_MODEL). The response is unwrapped on failure too, so a failed
+  // seat's body is the answer text rather than the event stream.
+  if (cli === "gemini" && result.agy) {
+    metaLines.push("backend: agy")
+    const run = parseAgyStream(body)
+    if (run?.response !== undefined) body = run.response
+    if (result.exitCode === 0) {
+      modelServed = agyServedModel(result.agy.servedLabels)
+      if (requestedModel !== undefined) metaLines.push(`model_requested: ${requestedModel}`)
+      metaLines.push(`model_served: ${modelServed ?? "unknown (agy log named no model)"}`)
+      if (run?.thinkingTokens !== undefined) metaLines.push(`thoughts_tokens: ${run.thinkingTokens}`)
+      if (run?.totalTokens !== undefined && tokensUsed === undefined) {
+        tokensUsed = run.totalTokens
+        metaLines.push(`tokens_used: ${run.totalTokens}`)
+      }
+      if (run === null) metaLines.push("agy_stream: no result event (output was not agy's stream-json)")
+      if (requestedModel !== undefined && modelServed !== undefined && modelServed !== requestedModel) {
+        failureReason = "model_substituted"
+      }
+    }
+  } else if (cli === "gemini" && result.exitCode === 0) {
+    metaLines.push("backend: gemini-cli")
     const run = parseGeminiJson(body)
     if (run) {
       body = run.response

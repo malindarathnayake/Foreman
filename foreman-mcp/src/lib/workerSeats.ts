@@ -15,7 +15,7 @@ const mappingSchema = z.strictObject({
 export const WORKER_MODELS_FILE = ".foreman-worker-models.json"
 export const DEFAULT_WORKER_MODELS: Record<HostId, Partial<Record<Tier, string>>> = {
   "claude-code": { cheap: "sonnet", standard: "sonnet", premium: "opus", frontier: "fable" },
-  codex: { cheap: "gpt-5.6-terra", standard: "gpt-6-sol", premium: "gpt-6-astra" },
+  codex: { cheap: "gpt-5.6-terra", standard: "gpt-6-sol", premium: "gpt-6.2-astra" },
   cursor: {}, generic: {},
 }
 const roles: Record<Tier, string> = { cheap: "foreman-worker-light", standard: "foreman-worker", premium: "foreman-worker-heavy", frontier: "foreman-worker-frontier" }
