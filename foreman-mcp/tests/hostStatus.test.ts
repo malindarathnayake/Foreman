@@ -192,3 +192,89 @@ describe("codex host_status reports what is on disk", () => {
     expect(out).not.toContain("tool_timeout_advice")
   })
 })
+
+// 0.9.7: the antigravity block reports the tier-word seat table, the bootstrap rule and the
+// MCP call timeout from what is on disk.
+describe("antigravity host_status", () => {
+  let cwd: string
+  let home: string
+  beforeEach(async () => {
+    cwd = await fsp.mkdtemp(path.join(os.tmpdir(), "hs-ag-cwd-"))
+    home = await fsp.mkdtemp(path.join(os.tmpdir(), "hs-ag-home-"))
+  })
+  afterEach(async () => {
+    await fsp.rm(cwd, { recursive: true, force: true })
+    await fsp.rm(home, { recursive: true, force: true })
+  })
+
+  it("reports missing seats and rule, native review and Claude/Codex advisors", () => {
+    const out = hostStatus("antigravity", undefined, { cwd, home })
+    expect(out).toContain("host: antigravity")
+    expect(out).toContain("worker_model: missing (run antigravity_agents_init)")
+    expect(out).toMatch(/bootstrap_rule: missing/)
+    expect(out).toContain("review_mode: native-subagents")
+    expect(out).toContain("review_stage: native")
+    expect(out).toMatch(/external_advisors: optional: claude,codex/)
+    expect(out).toContain("gemini-4-hydrogen-tiered-xhigh")
+    expect(out).toMatch(/mcp_timeout_sec: unknown \(set timeoutSeconds: 1200/)
+    expect(out).not.toContain("workflows:")
+  })
+
+  it("reads the seat table and the rule written by antigravity_agents_init", async () => {
+    const { antigravityAgentsInit } = await import("../src/tools/antigravityAgentsInit.js")
+    await antigravityAgentsInit({ project_dir: cwd }, { home })
+    const out = hostStatus("antigravity", undefined, { cwd, home })
+    expect(out).toContain("foreman-worker-light=flash foreman-worker=flash foreman-worker-heavy=pro foreman-worker-frontier=pro foreman-reviewer=pro foreman-verifier=pro")
+    expect(out).toContain("bootstrap_rule: present")
+  })
+
+  it("counts the global rule as present", async () => {
+    await fsp.mkdir(path.join(home, ".gemini", "config", "rules"), { recursive: true })
+    await fsp.writeFile(path.join(home, ".gemini", "config", "rules", "foreman.md"), "---\ntrigger: always_on\n---\n")
+    expect(hostStatus("antigravity", undefined, { cwd, home })).toContain("bootstrap_rule: present")
+  })
+
+  it("reads timeoutSeconds from valid JSON and advises when it is short", async () => {
+    await fsp.mkdir(path.join(home, ".gemini", "config"), { recursive: true })
+    const file = path.join(home, ".gemini", "config", "mcp_config.json")
+    await fsp.writeFile(file, JSON.stringify({ mcpServers: { foreman: { command: "foreman-mcp", timeoutSeconds: 1200 } } }))
+    expect(hostStatus("antigravity", undefined, { cwd, home })).toMatch(/mcp_timeout_sec: 1200 \([^;]*\)/)
+    await fsp.writeFile(file, JSON.stringify({ mcpServers: { foreman: { timeoutSeconds: 180 } } }))
+    expect(hostStatus("antigravity", undefined, { cwd, home })).toMatch(/mcp_timeout_sec: 180 \(.*set timeoutSeconds: 1200/)
+  })
+
+  it("the workspace config wins over the user config", async () => {
+    await fsp.mkdir(path.join(cwd, ".agents"), { recursive: true })
+    await fsp.writeFile(path.join(cwd, ".agents", "mcp_config.json"), JSON.stringify({ mcpServers: { foreman: { timeoutSeconds: 1500 } } }))
+    await fsp.mkdir(path.join(home, ".gemini", "config"), { recursive: true })
+    await fsp.writeFile(path.join(home, ".gemini", "config", "mcp_config.json"), JSON.stringify({ mcpServers: { foreman: { timeoutSeconds: 60 } } }))
+    expect(hostStatus("antigravity", undefined, { cwd, home })).toMatch(/mcp_timeout_sec: 1500 \(/)
+  })
+
+  it("reports JSONC it cannot parse as unknown rather than guessing", async () => {
+    await fsp.mkdir(path.join(home, ".gemini", "config"), { recursive: true })
+    await fsp.writeFile(path.join(home, ".gemini", "config", "mcp_config.json"), '{ // comment\n "mcpServers": { "foreman": { "timeoutSeconds": 1200, } } }')
+    expect(hostStatus("antigravity", undefined, { cwd, home })).toMatch(/mcp_timeout_sec: unknown/)
+  })
+
+  it("an unparseable workspace config makes the timeout unknown even when the user config parses", async () => {
+    await fsp.mkdir(path.join(cwd, ".agents"), { recursive: true })
+    await fsp.writeFile(path.join(cwd, ".agents", "mcp_config.json"), '{ // c\n "mcpServers": { "foreman": { "timeoutSeconds": 60 } } }')
+    await fsp.mkdir(path.join(home, ".gemini", "config"), { recursive: true })
+    await fsp.writeFile(path.join(home, ".gemini", "config", "mcp_config.json"), JSON.stringify({ mcpServers: { foreman: { timeoutSeconds: 1200 } } }))
+    const out = hostStatus("antigravity", undefined, { cwd, home })
+    expect(out).toMatch(/mcp_timeout_sec: unknown/)
+    expect(out).not.toMatch(/mcp_timeout_sec: 1200/)
+  })
+
+  it("reports no drift for freshly written seats and flags an edited seat", async () => {
+    const { antigravityAgentsInit } = await import("../src/tools/antigravityAgentsInit.js")
+    await antigravityAgentsInit({ project_dir: cwd }, { home })
+    expect(hostStatus("antigravity", undefined, { cwd, home })).toContain("seat_drift: none")
+    const file = path.join(cwd, ".agents", "agents", "foreman-reviewer.md")
+    const text = await fsp.readFile(file, "utf8")
+    await fsp.writeFile(file, text.replace("inheritMcp: false", "inheritMcp: true").replace(/\n/g, "\r\n"))
+    expect(hostStatus("antigravity", undefined, { cwd, home }))
+      .toMatch(/seat_drift: foreman-reviewer \(differs from the Foreman template\); isolation unverified/)
+  })
+})

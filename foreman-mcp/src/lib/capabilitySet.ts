@@ -23,6 +23,9 @@ export const SUPPORT: Record<HostId, Record<Capability, boolean>> = {
   // Codex uses native collaboration subagents plus Claude/Gemini advisor CLIs.
   // Per-child model choice remains host-owned; unattended continuation is not declared.
   codex: { "spawn-worker": true, "invoke-advisor": true, "run-tests": true, "report-tokens": true, "honor-isolation": true, autonomy: false },
+  // Antigravity spawns native invoke_subagent seats; isolation means repo_guard scope, not
+  // branch workspaces. Token reporting and autonomy stay off until the release smokes pass.
+  antigravity: { "spawn-worker": true, "invoke-advisor": true, "run-tests": true, "report-tokens": false, "honor-isolation": true, autonomy: false },
   // generic: the bundled generic profile declares the full six-capability contract
   // (HOST-CONTRACT.md); a generic host is by definition a contract implementer.
   // Consumers narrow support via their own host profile/override — the echo

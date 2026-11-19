@@ -43,11 +43,32 @@ export const BASIS_PRECEDENCE: readonly BasisClass[] = [
   "receipted", "same_provider", "delta:same_provider", "override",
 ]
 
-/** The vendor behind a host's own model, when Foreman can know it. */
+/**
+ * The vendor behind a host's own model, when Foreman can know it. Antigravity stays null
+ * (0.9.7): its pit-boss model is user-selectable across vendors, and declared rank never
+ * enters review sufficiency. Two receipted seats from distinct vendors still reach
+ * receipted_external there through the two-vendor rule in classifyGate.
+ */
 export function hostProvider(host: HostId): Provider | null {
   if (host === "codex") return "openai"
   if (host === "claude-code") return "anthropic"
   return null
+}
+
+/**
+ * Hosts whose protocol makes native subagent review the default gate path (0.9.7: codex
+ * and antigravity). There an unreceipted 'declared_external' record cannot be told apart
+ * from relabelled native output, so the independence bound treats it as weak.
+ */
+export const NATIVE_REVIEW_HOSTS: ReadonlySet<HostId> = new Set<HostId>(["codex", "antigravity"])
+
+/** The external advisor seats the INDEPENDENCE BOUND refusal names for a host. */
+export function independenceHint(host: HostId): string {
+  if (host === "codex") return "invoke_advisor { cli: 'claude' | 'gemini' }"
+  if (host === "antigravity") {
+    return "two receipted seats from different vendors, e.g. invoke_advisor { cli: 'claude' } and invoke_advisor { cli: 'codex' }"
+  }
+  return "invoke_advisor { cli: 'codex' | 'gemini' }"
 }
 
 // ─── Per-record basis ────────────────────────────────────────────────────────
@@ -349,14 +370,14 @@ export function classifyEscape(
 // ─── Independence bound ──────────────────────────────────────────────────────
 
 /**
- * Weak on every host for the weak set; on a Codex-host record an unreceipted
- * 'declared_external' is weak too (arbitration C2): there Foreman provides the receipted
- * path, and an unreceipted independent record cannot be told apart from relabelled native
- * output. On other hosts it is neutral: native does not exist there, so neither does the
- * erosion the bound targets.
+ * Weak on every host for the weak set; on a native-review host (codex, antigravity) an
+ * unreceipted 'declared_external' is weak too (arbitration C2): there Foreman provides the
+ * receipted path, and an unreceipted independent record cannot be told apart from
+ * relabelled native output. On other hosts it is neutral: native does not exist there, so
+ * neither does the erosion the bound targets.
  */
 export function isWeakBasis(evidence: GateEvidence): boolean {
-  return WEAK_BASES.has(evidence.basis) || (evidence.basis === "declared_external" && evidence.host === "codex")
+  return WEAK_BASES.has(evidence.basis) || (evidence.basis === "declared_external" && NATIVE_REVIEW_HOSTS.has(evidence.host))
 }
 
 export interface IndependenceDecision {
@@ -378,7 +399,7 @@ export function independenceDecision(ledger: LedgerFile, phase: string, evidence
   const already = s.phases.includes(phase)
   const decision: IndependenceDecision = { weak, reset, already, streak: s.streak, phases: s.phases }
   if (weak && !already && s.streak >= STREAK_MAX) {
-    const hint = evidence.host === "codex" ? "invoke_advisor { cli: 'claude' | 'gemini' }" : "invoke_advisor { cli: 'codex' | 'gemini' }"
+    const hint = independenceHint(evidence.host)
     decision.refusal =
       `INDEPENDENCE BOUND: phase '${phase}' would be counted pass #${s.streak + 1} on ${evidence.basis} review since the last receipted cross-vendor seat ` +
       `(prior: ${s.phases.join(", ") || "none"}; bound ${STREAK_MAX}). Run ${hint} and record it stage:'independent' with seat_receipt and packet_hash ` +
@@ -407,6 +428,7 @@ export const TRIGGER_T4_OVERRIDES = 3
 export interface OutcomeAggregate {
   /** Per basis: first-gate unit count and defect-class escape count. */
   byBasis: Map<BasisClass | "legacy", { unitGates: number; defects: number }>
+  /** Unreceipted declared_external gates on a native-review host (name kept from 0.6.19). */
   declaredExternalOnCodex: number
   independenceOverrides: number
 }
@@ -424,7 +446,7 @@ export function aggregateOutcomes(ledger: LedgerFile): OutcomeAggregate {
   for (const phase of Object.values(ledger.phases)) {
     for (const [basis, t] of Object.entries(phase.gate_totals ?? {}) as Array<[BasisClass, GateTotals]>) bump(basis).unitGates += t.units
     for (const e of phase.escapes ?? []) if (DEFECT_CLASSES.has(e.class)) bump(e.basis).defects += 1
-    for (const g of phase.gate_history ?? []) if (g.basis === "declared_external" && g.host === "codex") declaredExternalOnCodex += 1
+    for (const g of phase.gate_history ?? []) if (g.basis === "declared_external" && NATIVE_REVIEW_HOSTS.has(g.host)) declaredExternalOnCodex += 1
     if (phase.independence_override) independenceOverrides += 1
   }
   return { byBasis, declaredExternalOnCodex, independenceOverrides }
@@ -439,7 +461,7 @@ export function renderTriggers(agg: OutcomeAggregate): string[] {
     const met = a.defects >= TRIGGER_T1_DEFECTS && a.unitGates >= TRIGGER_T1_UNIT_GATES
     lines.push(`  T1 ${basis} loses seat status: ${a.defects} defect escape(s) / ${a.unitGates} unit-gate(s) (needs >=${TRIGGER_T1_DEFECTS} and >=${TRIGGER_T1_UNIT_GATES}) — ${met ? "ON THE TABLE" : "not yet"}`)
   }
-  lines.push(`  T2 receipts mandatory on codex: ${agg.declaredExternalOnCodex} unreceipted external gate(s) on a codex host — ${agg.declaredExternalOnCodex > 0 ? "ON THE TABLE" : "not yet"}`)
+  lines.push(`  T2 receipts mandatory on native-review hosts: ${agg.declaredExternalOnCodex} unreceipted external gate(s) on a codex or antigravity host — ${agg.declaredExternalOnCodex > 0 ? "ON THE TABLE" : "not yet"}`)
   lines.push("  T3 reviewer-rank rule (weight/threshold): precondition ABSENT — the host returns no served model or effort for native agents")
   lines.push(`  T4 bound constant or weak set: ${agg.independenceOverrides} independence override(s) (needs >=${TRIGGER_T4_OVERRIDES}) — ${agg.independenceOverrides >= TRIGGER_T4_OVERRIDES ? "ON THE TABLE" : "not yet"}`)
   return lines

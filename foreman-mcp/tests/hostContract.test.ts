@@ -6,7 +6,7 @@ import { KNOWN_HOSTS } from "../src/lib/hostProfiles.js"
 import { CAPABILITIES } from "../src/lib/capabilitySet.js"
 
 const SKILLS_DIR = path.join(__dirname, "..", "src", "skills")
-const SKILLS = ["design-partner", "spec-generator", "implementor", "lighttask", "spec-man", "doc-man"]
+const SKILLS = ["design-partner", "spec-generator", "implementor", "lighttask", "spec-man", "doc-man", "researcher"]
 const DOC_PATH = path.join(__dirname, "..", "HOST-CONTRACT.md")
 
 describe("HOST-CONTRACT — bundled skill renders leave no unresolved markers", () => {
@@ -25,6 +25,22 @@ describe("HOST-CONTRACT — bundled skill renders leave no unresolved markers", 
       })
     }
   }
+})
+
+describe("HOST-CONTRACT — antigravity skill header", () => {
+  for (const skill of SKILLS) {
+    it(`${skill} under antigravity begins with the host notes legend`, async () => {
+      const result = await loadSkill(skill, SKILLS_DIR, "antigravity")
+      expect(result.content.startsWith("## Antigravity host notes (authoritative)\n")).toBe(true)
+    })
+  }
+
+  it("no other host gets the antigravity legend", async () => {
+    for (const host of KNOWN_HOSTS.filter((h) => h !== "antigravity")) {
+      const result = await loadSkill("implementor", SKILLS_DIR, host)
+      expect(result.content, host).not.toContain("Antigravity host notes")
+    }
+  })
 })
 
 describe("HOST-CONTRACT.md — existence and required content", () => {

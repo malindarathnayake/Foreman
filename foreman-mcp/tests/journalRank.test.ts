@@ -26,7 +26,7 @@ describe("journal model declarations and active MCP policy", () => {
     await fs.rm(dir, { recursive: true, force: true })
   })
 
-  async function setup(host: "claude-code" | "cursor" | "codex" | "generic" = "codex") {
+  async function setup(host: "claude-code" | "cursor" | "codex" | "antigravity" | "generic" = "codex") {
     const server = await createServer({ host, docsDir: dir, journalPath: path.join(dir, "journal.json"), ledgerPath: path.join(dir, "ledger.json"), progressPath: path.join(dir, "progress.json") })
     const [ct, st] = InMemoryTransport.createLinkedPair()
     await server.connect(st)
@@ -54,7 +54,7 @@ describe("journal model declarations and active MCP policy", () => {
     await expect(declareModel(file, { operation: "declare_model", data: {} }, "wrong")).rejects.toThrow("current active session")
   })
 
-  it.each(["claude-code", "cursor", "codex", "generic"] as const)("exposes one active policy across all read paths on %s", async host => {
+  it.each(["claude-code", "cursor", "codex", "antigravity", "generic"] as const)("exposes one active policy across all read paths on %s", async host => {
     const client = await setup(host)
     expect((await call(client, "host_status")).text).toContain("model_weight: 0")
     const result = await call(client, "write_journal", init("Astra", "high"))

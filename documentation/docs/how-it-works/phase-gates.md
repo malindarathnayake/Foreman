@@ -11,7 +11,7 @@ A phase closes with one ledger write, `update_phase_gate { g: "pass" }`. The ser
 
 ## The checkpoint procedure
 
-Runs when every unit in the phase has a passing verdict. Codex uses the native procedure below; the external-first reviewer selection in steps 2-3 applies to the other hosts.
+Runs when every unit in the phase has a passing verdict. Codex and Antigravity use the native procedure below; the external-first reviewer selection in steps 2-3 applies to the other hosts.
 
 1. **Full test suite** through `run_tests`.
 2. **Pick reviewers.** In order of preference: a configured review council (`invoke_council`, remote seats over one evidence packet); otherwise the two CLI advisor seats for the host; otherwise one advisor plus a recorded non-independent fallback; otherwise the model asks you: `Independent review unavailable. Proceed with pit-boss gates only? [y/N]`. Two seats on one vendor are perspective, not independence, and the review record says so.
@@ -34,16 +34,17 @@ The gate write's result carries a `SESSION HYGIENE` line. Foreman cannot see the
 | Claude Code | Codex CLI: `codex exec`, `gpt-6.2-astra`, reasoning `xhigh`, read-only sandbox; verified on codex-cli 0.167.0, and the seat checks the model the CLI echoes | Antigravity CLI (`agy`), `gemini-4-hydrogen-xhigh`, sandboxed with writes, commands, MCP and URL fetches denied, served model read from the agy log; without `agy`, Gemini CLI with `-m gemini-4-carbon`, plan approval mode and JSON output | Claude subagents with an adversarial critic prompt, recorded as non-independent |
 | Cursor | Cursor Agent CLI: `invoke_advisor({cli:"cursor"})` (`agent -p --mode=ask --trust`) | A different vendor CLI (claude/codex/gemini) when `capability_check` says it is ok | Two Cursor Agent CLI or Task inherit seats, recorded as non-independent |
 | Codex | Native reviewers (2-5 distinct lenses) | Separate native verifier | Native review is the default; available Claude/Gemini advisors add review at major checkpoints |
+| Antigravity | Native `foreman-reviewer` seats (2-5 distinct lenses, read-only, the brief carries the diff) | Native `foreman-verifier` seat | Native review is the default; Claude (`claude-fable-5-2`) and Codex (`gpt-6.2-astra`, `xhigh`) advisors add review at major checkpoints. `gemini` is the host's own vendor |
 
 The CLIs are child processes. Each uses its own login and its own network. Foreman passes the prompt on stdin for claude/codex/gemini, and via a tempfile for the Cursor Agent CLI (Windows argv cap); on a successful call it drops the CLI's stderr unless stdout itself was truncated.
 
 Advisors never see each other's raw output. Cross-examination, when it happens, is a separate labelled record.
 
-## Native Codex checkpoints
+## Native Codex and Antigravity checkpoints
 
-With `--host=codex`, the host runs bounded workers, then 2-5 fresh read-only reviewer contexts with different risk lenses, followed by a distinct verifier. Each reviewer lists what it examined. The verifier checks findings against code and returns classifications and coverage. Native agents share a provider; this is separate-context review, not cross-vendor independence.
+With `--host=codex` (or `--host=antigravity`, through `invoke_subagent` and the `antigravity_agents_init` seats), the host runs bounded workers, then 2-5 fresh read-only reviewer contexts with different risk lenses, followed by a distinct verifier. Each reviewer lists what it examined. The verifier checks findings against code and returns classifications and coverage. Native agents share a provider; this is separate-context review, not cross-vendor independence.
 
-At major checkpoints, the existing `capability_check` and `invoke_advisor` tools add whichever Claude/Gemini advisors are available. Neither CLI is required. If an optional advisor fails or returns a partial report, its limitations are recorded and any usable claims go to the native verifier. Complete external reports are recorded separately; their confirmed findings also block the gate.
+At major checkpoints, the existing `capability_check` and `invoke_advisor` tools add whichever Claude/Gemini advisors are available (Claude/Codex on Antigravity). Neither CLI is required. If an optional advisor fails or returns a partial report, its limitations are recorded and any usable claims go to the native verifier. Complete external reports are recorded separately; their confirmed findings also block the gate.
 
 Persist the native report with `record_review` using `stage: "native"`, `completion: "complete"`, `findings`, `checked`, and `native: { reviewers: [{ agent_id, lens, completion, checked }], verifier_id }`. Use actual host-returned IDs. At least two reviewers with distinct IDs and lenses, a different verifier ID, completed coverage, and no unverified findings are required. The report must cover the current unit verdicts. Partial/failed runs can be recorded, but do not satisfy the gate; rerun the same advisor to supersede incomplete evidence. Confirmed findings require a worker fix and fresh review evidence; an eligible Top correction can extend its baseline with the delta verification path below.
 

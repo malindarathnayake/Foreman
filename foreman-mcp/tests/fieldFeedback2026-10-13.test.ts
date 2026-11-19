@@ -15,6 +15,7 @@ import { workerSeatStatus } from "../src/lib/workerSeats.js"
 import { claudeAgentsInit } from "../src/tools/claudeAgentsInit.js"
 import { cursorAgentsInit } from "../src/tools/cursorAgentsInit.js"
 import { codexAgentsInit } from "../src/tools/codexAgentsInit.js"
+import { antigravityAgentsInit } from "../src/tools/antigravityAgentsInit.js"
 import { writeProgress } from "../src/lib/progress.js"
 import { loadForemanEnv } from "../src/lib/foremanEnv.js"
 
@@ -212,6 +213,15 @@ it.each(["claude-code", "codex", "cursor"] as const)("detects missing frontier a
   expect((await workerSeatStatus(dir, host)).worker_seats).toContain("configured-frontier")
   const file = host === "codex" ? ".codex/agents/worker_frontier.toml" : `${host === "cursor" ? ".cursor" : ".claude"}/agents/foreman-worker-frontier.md`
   expect(await fs.readFile(path.join(dir, file), "utf8")).toContain("configured-frontier")
+})
+
+it("detects a missing frontier agent on antigravity and installs it with the pro tier word", async () => {
+  // agy drops a seat whose model: line names a concrete id, so the init tool writes the tier word instead.
+  expect((await workerSeatStatus(dir, "antigravity")).missing_worker_agents).toMatch(/frontier/)
+  await antigravityAgentsInit({ project_dir: dir })
+  expect((await workerSeatStatus(dir, "antigravity")).missing_worker_agents).toBe("none")
+  const seat = await fs.readFile(path.join(dir, ".agents/agents/foreman-worker-frontier.md"), "utf8")
+  expect(seat).toMatch(/^model: pro$/m)
 })
 
 it("refuses incomplete hash baselines and exclusions hiding authorized paths", async () => {

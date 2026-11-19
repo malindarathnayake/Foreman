@@ -38,7 +38,8 @@ describe("saved workflow host routing", () => {
     for (const host of KNOWN_HOSTS.filter((h) => h !== "claude-code")) {
       const text = hostRuntimePreamble(host)
       expect(text, host).not.toContain("claude_workflows_init")
-      if (host === "generic") {
+      // 0.9.7: Antigravity has no workflow tool, so it renders the generic text.
+      if (host === "generic" || host === "antigravity") {
         expect(text).toContain("**Workflows:** No saved-workflow surface on this host")
         expect(getProfile(host).placeholders.workflows).not.toContain("foreman-")
       } else {

@@ -10,13 +10,39 @@ const tierModels = z.strictObject({
   premium: z.string().trim().min(1).optional(), frontier: z.string().trim().min(1).optional(),
 })
 const mappingSchema = z.strictObject({
-  "claude-code": tierModels.optional(), codex: tierModels.optional(), cursor: tierModels.optional(), generic: tierModels.optional(),
+  "claude-code": tierModels.optional(), codex: tierModels.optional(), cursor: tierModels.optional(),
+  antigravity: tierModels.optional(), generic: tierModels.optional(),
 })
 export const WORKER_MODELS_FILE = ".foreman-worker-models.json"
 export const DEFAULT_WORKER_MODELS: Record<HostId, Partial<Record<Tier, string>>> = {
   "claude-code": { cheap: "sonnet", standard: "sonnet", premium: "opus", frontier: "fable" },
   codex: { cheap: "gpt-5.6-terra", standard: "gpt-6-sol", premium: "gpt-6.2-astra" },
-  cursor: {}, generic: {},
+  cursor: {},
+  // Antigravity agent files accept tier words only; agy resolves them to a served model.
+  antigravity: { cheap: "flash", standard: "flash", premium: "pro", frontier: "pro" },
+  generic: {},
+}
+/**
+ * Model tier words an Antigravity agent file accepts in `model:`. agy 1.5.11 resolves them to
+ * the served model (flash and pro measured as gemini-4-hydrogen-tiered-high and -xhigh); a
+ * concrete id there makes the seat fail to load. A tier word is a label, not an enforceable id.
+ */
+export const ANTIGRAVITY_TIER_WORDS = ["inherit", "flash_lite", "flash", "pro"] as const
+export function isAntigravityTierWord(value: string): boolean {
+  return (ANTIGRAVITY_TIER_WORDS as readonly string[]).includes(value)
+}
+/**
+ * The served model each Antigravity tier word was measured to run (agy 1.5.11, independent of
+ * the parent model). A concrete id in the mapping file is enforceable only when it is one of
+ * these, because the verdict compares it exactly against the transcript's served model.
+ */
+export const ANTIGRAVITY_SERVED_MODELS: Readonly<Record<string, string>> = {
+  flash: "gemini-4-hydrogen-tiered-high",
+  pro: "gemini-4-hydrogen-tiered-xhigh",
+}
+/** The tier word that serves a measured Antigravity model id, or undefined for any other id. */
+export function antigravityTierForServedModel(id: string): string | undefined {
+  return Object.entries(ANTIGRAVITY_SERVED_MODELS).find(([, served]) => served === id)?.[0]
 }
 const roles: Record<Tier, string> = { cheap: "foreman-worker-light", standard: "foreman-worker", premium: "foreman-worker-heavy", frontier: "foreman-worker-frontier" }
 const codexRoles: Record<Tier, string> = { cheap: "worker_light", standard: "worker", premium: "worker_heavy", frontier: "worker_frontier" }
@@ -34,7 +60,7 @@ export function workerRoleTier(role: string): Tier | undefined {
 }
 
 /** Read project configuration, never a model supplied with the verdict. */
-export async function resolveWorkerSeat(root: string, host: HostId, tier?: Tier): Promise<{ role?: string; model?: string; source?: string; missing?: boolean }> {
+export async function resolveWorkerSeat(root: string, host: HostId, tier?: Tier): Promise<{ role?: string; model?: string; tier_label?: string; source?: string; missing?: boolean }> {
   if (!tier) return {}
   const configured = (await configuredWorkerModels(root, host))[tier]
   const role = host === "codex" ? codexRoles[tier] : roles[tier]
@@ -47,19 +73,25 @@ export async function resolveWorkerSeat(root: string, host: HostId, tier?: Tier)
     const model = remote.config.tiers[tier]?.model
     return { role, ...(model ? { model, source: ".foremanenv" } : {}) }
   }
-  const folder = host === "claude-code" ? ".claude" : `.${host}`
+  const folder = host === "claude-code" ? ".claude" : host === "antigravity" ? ".agents" : `.${host}`
+  // On Antigravity a tier word names the seat but no exact model, so nothing is enforced; a
+  // concrete id from the mapping file is still returned as the required model.
+  const seatModel = (model: string | undefined, source: string): { model?: string; tier_label?: string; source?: string } =>
+    !model ? {}
+      : host === "antigravity" && isAntigravityTierWord(model) ? { tier_label: model }
+        : model !== "inherit" ? { model, source } : {}
   const rel = `${folder}/agents/${role}.${host === "codex" ? "toml" : "md"}`
   let text: string
   try { text = await fs.readFile(path.join(root, rel), "utf8") }
   catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err
     const fallback = configured ?? DEFAULT_WORKER_MODELS[host][tier]
-    return { role, missing: true, ...(fallback && fallback !== "inherit" ? { model: fallback, source: configured ? WORKER_MODELS_FILE : "shipped default" } : {}) }
+    return { role, missing: true, ...seatModel(fallback, configured ? WORKER_MODELS_FILE : "shipped default") }
   }
   const header = host === "codex" ? text.split(/^developer_instructions\s*=/m)[0] : /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1] ?? ""
   const pin = /^model\s*[:=]\s*["']?([^\r\n"']+)/m.exec(header)?.[1].trim()
   const model = configured ?? pin
-  return { role, ...(model && model !== "inherit" ? { model, source: configured ? WORKER_MODELS_FILE : rel } : {}) }
+  return { role, ...seatModel(model, configured ? WORKER_MODELS_FILE : rel) }
 }
 
 /** Family aliases accept a provider's versioned id, never a different family. */
@@ -73,7 +105,7 @@ export async function workerSeatStatus(root: string, host: HostId): Promise<Reco
   const seats = await Promise.all((["cheap", "standard", "premium", "frontier"] as Tier[]).map(async (tier) => ({ tier, ...await resolveWorkerSeat(root, host, tier) })))
   const missing = seats.filter((s) => s.missing).map((s) => s.role!)
   return {
-    worker_seats: seats.map((s) => `${s.tier}=${s.role}:${s.model ?? "inherit"}${s.missing ? " (missing agent)" : ""}`).join("; "),
+    worker_seats: seats.map((s) => `${s.tier}=${s.role}:${s.model ?? s.tier_label ?? "inherit"}${s.missing ? " (missing agent)" : ""}`).join("; "),
     missing_worker_agents: missing.join(", ") || "none",
     ...(missing.length ? { worker_seat_hint: `Run ${host === "claude-code" ? "claude" : host}_agents_init; configure tier models in ${WORKER_MODELS_FILE}. New agents may require a host session restart.` } : {}),
   }

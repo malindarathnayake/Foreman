@@ -12,6 +12,11 @@ export interface ModelRank {
   effort: string | null
   rank: "top" | "middle" | "standard" | "unknown"
   weight: 0 | 1 | 2 | 3
+  /**
+   * 0.9.7: the declared effort and the effort carried in the model id ("gemini-4-hydrogen-xhigh")
+   * disagree. The declared effort wins; this flag is present only when they differ.
+   */
+  effort_conflict?: true
   policy_version: 1
   permissions: ModelRankPermissions
   /** Current journal session; absent until this server receives init_session. */
@@ -25,7 +30,8 @@ export interface ModelRank {
 }
 
 // Explicit policy aliases only. A new provider version requires an intentional mapping.
-const MODELS = new Map<string, "astra" | 1 | 2 | 3>([
+// "astra" and "gemini" entries are effort-gated: they rank only at the efforts their gate lists.
+const MODELS = new Map<string, "astra" | "gemini" | 1 | 2 | 3>([
   ["astra", "astra"], ["gpt-6.2-astra", "astra"], ["gpt-6-astra", "astra"],
   // Host-emitted ids first (what a pitboss actually reports), display names after.
   ["claude-fable-5-2", 3], ["claude-fable-5.2", 3], ["fable 5.2", 3], ["fable5.2", 3], ["fable-5.2", 3],
@@ -34,21 +40,63 @@ const MODELS = new Map<string, "astra" | 1 | 2 | 3>([
   ["claude-opus-5-5", 2], ["claude-opus-5", 2], ["opus", 2], ["terra", 2], ["gpt-5.6-terra", 2],
   ["claude-sonnet-5", 1], ["sonnet", 1], ["claude-4.6-sonnet-medium-thinking", 1],
   ["luna", 1], ["gpt-5.6-luna", 1],
+  // 0.9.7 (Antigravity host): Hydrogen and Argon rank middle only at high effort and above;
+  // the Orchestrator has no effort knob and ranks middle outright. Carbon, Flash and gpt-oss
+  // are deliberately unmapped.
+  ["gemini-4-hydrogen", "gemini"], ["gemini-4-argon", "gemini"],
+  // agy's served ids carry a "-tiered-" infix ("gemini-4-hydrogen-tiered-xhigh"), and that is
+  // the id a pit-boss reads from its own transcript; the effort suffix still gates the rank.
+  ["gemini-4-hydrogen-tiered", "gemini"],
+  ["gemini-pro-orchestrator-g1-pro", 2],
 ])
 const ASTRA_EFFORTS = new Set(["high", "xhigh", "max", "ultra"])
+const GEMINI_EFFORTS = new Set(["high", "xhigh", "max"])
+const EFFORT_LABEL = /\s*\((low|medium|high|xhigh|max)\)\s*$/
+const EFFORT_SUFFIX = /^(.+)-(low|medium|high|xhigh|max)$/
+// Antigravity reports display labels ("Gemini 4 Hydrogen (XHigh)", "Orchestrator (Argon)").
+// They map to the canonical ids after the effort label and context tail are stripped.
+const DISPLAY_LABELS = new Map<string, string>([
+  ["gemini 4 hydrogen", "gemini-4-hydrogen"],
+  ["gemini 4 argon", "gemini-4-argon"],
+  ["orchestrator", "gemini-pro-orchestrator-g1-pro"],
+])
 
 export function resolveModelRank(model?: string | null, effort?: string | null): ModelRank {
+  let declaredModel = model?.trim().toLowerCase() || null
+  // An Antigravity display label carries its effort in a trailing parenthesis; take it before
+  // the context-suffix strip below would discard it.
+  let labelEffort: string | null = null
+  const label = declaredModel?.match(EFFORT_LABEL)
+  if (declaredModel && label) {
+    labelEffort = label[1]
+    declaredModel = declaredModel.slice(0, label.index).trim()
+  }
   // Hosts decorate the id with a context suffix ("claude-opus-5[1m]"); the suffix is not
   // part of the model and must not zero the rank. Strip bracketed and parenthesised tails.
-  const declaredModel = model?.trim().toLowerCase().replace(/\s*[\[(][^\])]*[\])]\s*$/, "").trim() || null
-  const declaredEffort = effort?.trim().toLowerCase() || null
+  declaredModel = declaredModel?.replace(/\s*[\[(][^\])]*[\])]\s*$/, "").trim() || null
+  if (declaredModel) declaredModel = DISPLAY_LABELS.get(declaredModel) ?? declaredModel
+  // An id that is not a key may still be a key plus an effort suffix ("gemini-4-hydrogen-xhigh").
+  let suffixEffort: string | null = null
+  if (declaredModel && !MODELS.has(declaredModel)) {
+    const suffix = declaredModel.match(EFFORT_SUFFIX)
+    if (suffix && MODELS.has(suffix[1])) {
+      declaredModel = suffix[1]
+      suffixEffort = suffix[2]
+    }
+  }
+  const explicitEffort = effort?.trim().toLowerCase() || null
+  const declaredEffort = explicitEffort ?? suffixEffort ?? labelEffort
+  const effortConflict = explicitEffort !== null && suffixEffort !== null && explicitEffort !== suffixEffort
   const entry = declaredModel ? MODELS.get(declaredModel) : undefined
-  const weight = entry === "astra" ? (ASTRA_EFFORTS.has(declaredEffort ?? "") ? 3 : 0) : entry ?? 0
+  const weight = entry === "astra" ? (ASTRA_EFFORTS.has(declaredEffort ?? "") ? 3 : 0)
+    : entry === "gemini" ? (GEMINI_EFFORTS.has(declaredEffort ?? "") ? 2 : 0)
+    : entry ?? 0
   return {
     model: declaredModel,
     effort: declaredEffort,
     rank: weight === 3 ? "top" : weight === 2 ? "middle" : weight === 1 ? "standard" : "unknown",
     weight,
+    ...(effortConflict ? { effort_conflict: true as const } : {}),
     policy_version: 1,
     permissions: {
       reuse_worker_mechanical: weight >= 2,

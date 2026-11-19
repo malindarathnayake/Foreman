@@ -47,6 +47,10 @@ describe("capabilitySet", () => {
       expect(unsupportedCapabilities("codex")).toBe("autonomy")
     })
 
+    it('antigravity lacks report-tokens and autonomy', () => {
+      expect(unsupportedCapabilities("antigravity")).toBe("report-tokens,autonomy")
+    })
+
     it('generic supports all six -> "none"', () => {
       expect(unsupportedCapabilities("generic")).toBe("none")
     })

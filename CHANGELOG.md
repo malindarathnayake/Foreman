@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.7] - 2026-11-18
+
+### Added
+
+- Host mode `antigravity` (`--host=antigravity` or `FOREMAN_HOST=antigravity`) runs Foreman as an MCP server inside the Google Antigravity CLI (`agy`), verified on agy 1.5.11. Workers spawn through `invoke_subagent` with a Foreman seat type and no `Model`; editing workers run one at a time with `Workspace: "inherit"`. Native review (`stage:'native'`) is the default gate path, as on Codex. There is no `workflow` tool on this host.
+- `antigravity_agents_init` writes the seats to `.agents/agents/` and the bootstrap rule to `.agents/rules/foreman.md` (agy does not inject server instructions). Seat `model:` takes tier words only, because a concrete id makes agy drop the seat: cheap and standard run `flash` (served `gemini-4-hydrogen-tiered-high`), premium and frontier run `pro` (served `gemini-4-hydrogen-tiered-xhigh`). Seats are isolated from Foreman's MCP tools by a tools allowlist with `inheritMcp: false`; worker seats keep `run_command`, and their discipline forbids starting a nested agent CLI. An existing seat file that differs from the template is reported as `seat_drift` by the tool and by `host_status`. A concrete id in `.foreman-worker-models.json` is refused unless it is a measured served id. It never writes `~/.gemini`.
+- `worker_invoke` on antigravity records the served model from the seat's `transcript.jsonl` as `worker_model`, never from the tier word.
+- `host_status` on antigravity reports the seat table, the bootstrap rule and the `timeoutSeconds` from `mcp_config.json`.
+- Model rank maps Gemini 4 Hydrogen and Argon at `high` or above, and the Gemini Pro orchestrator, to Middle. agy display labels such as `Gemini 4 Hydrogen (XHigh)` and effort suffixes in ids are accepted.
+
+### Changed
+
+- Advisors on antigravity are Claude (`claude-fable-5-2`, Opus fallback) and Codex (`gpt-6.2-astra`, `xhigh`). `cli:'gemini'` stays available but is same-vendor perspective on this host.
+- The `session_orient` description starts with "Foreman entry point: call this first for any Foreman work."
+
 ## [0.9.6] - 2026-11-17
 
 ### Changed

@@ -10,9 +10,10 @@ description: Every MCP tool, grouped by what it touches, with the inputs that ma
 | Host | Compression on (default) | `FOREMAN_COMPRESSION=0` |
 |---|---|---|
 | Claude Code, Codex, Cursor | 37 | 36 |
+| Antigravity | 36 | 35 |
 | Generic | 35 | 34 |
 
-`retrieve_original` exists only when compression is on. `codex_agents_init` exists only under the Codex profile. `cursor_agents_init` exists only under the Cursor profile. `workflow` exists only under Codex and Cursor. `claude_agents_init` and `claude_workflows_init` exist only under Claude Code. Every tool advertises a strict JSON Schema input and returns text; write tools and workflow-specific argument validation return a `SCHEMA ERROR` with one hint per field when the input is wrong.
+`retrieve_original` exists only when compression is on. `codex_agents_init` exists only under the Codex profile. `cursor_agents_init` exists only under the Cursor profile. `antigravity_agents_init` exists only under the Antigravity profile. `workflow` exists only under Codex and Cursor; Antigravity has none. `claude_agents_init` and `claude_workflows_init` exist only under Claude Code. Every tool advertises a strict JSON Schema input and returns text; write tools and workflow-specific argument validation return a `SCHEMA ERROR` with one hint per field when the input is wrong.
 
 Server instructions. Hosts that defer tool loading may show a session nothing from Foreman but its initialize instructions, so those are short and conditional: use Foreman when the user asks for it or the repository already has a ledger, a missing ledger is not a reason to start one, and worker and reviewer seats ignore Foreman state.
 
@@ -29,7 +30,7 @@ Where the shapes are. Hosts clip tool descriptions at about 2,000 characters, so
 | `read_progress` | `last_n_completed` | Ledger progress and resume state shared with `session_orient`, followed by descriptive checklist notes |
 | `read_journal` | `last_n`, `rollup_only` | Sessions, or the rollup |
 | `bundle_status` | none | `running_version` versus `runtime_disk_version`; `restart_recommended` as `true` with what changed, `false`, or `n/a` with why, from comparing `dist/`, `package.json`, and the stack profile override against a snapshot taken at process start; and which skills are shadowed by a project or user override. Compiled code cannot be reloaded; protocol Markdown is re-read on every activation |
-| `host_status` | none | Active host profile and the model slugs it renders. On Codex the shipped seat table is `seat_defaults`, beside `seat_pins_on_disk` read from `.codex/agents/*.toml` and `tool_timeout_sec` read from the `[mcp_servers.foreman]` table (project config, then user); when that is unset or under 1200 it adds `tool_timeout_advice` to set 1200, since Codex's documented 60 s default cuts off advisors, councils and workers `os_cert_store` says whether TLS from the server trusts the operating system certificate store. |
+| `host_status` | none | Active host profile and the model slugs it renders. On Antigravity it reports the seat table read from `.agents/agents/*.md`, the served model per tier word, `bootstrap_rule` (present or missing) and `mcp_timeout_sec` read from `timeoutSeconds` in `mcp_config.json` (workspace, then user), with advice below 1200. On Codex the shipped seat table is `seat_defaults`, beside `seat_pins_on_disk` read from `.codex/agents/*.toml` and `tool_timeout_sec` read from the `[mcp_servers.foreman]` table (project config, then user); when that is unset or under 1200 it adds `tool_timeout_advice` to set 1200, since Codex's documented 60 s default cuts off advisors, councils and workers `os_cert_store` says whether TLS from the server trusts the operating system certificate store. |
 | `changelog` | `since` | Bundled changelog entries |
 | `project_changelog` | `check`, `init`, `release { version, date? }`, `notes { version }` | Keeps the repository's root `CHANGELOG.md` in [Keep a Changelog 1.1.0](https://keepachangelog.com/en/1.1.0/) format. `check` lists every format issue with its line, with no model involved. `init` creates the file with the standard header and never overwrites. `release` moves `[Unreleased]` under the new version and refuses an empty `[Unreleased]` or a version that is not newer. `notes` returns one version's section as a release-body draft; publishing it is the owner's call. `init` and `release` are refused while a worker holds the repository window |
 | `ethos` | `section` | The engineering document rendered with the active stack profile |
@@ -39,7 +40,7 @@ Where the shapes are. Hosts clip tool descriptions at about 2,000 characters, so
 
 ## Write files under `Docs/`
 
-These ledger contracts apply to every profile: Claude Code, Codex, Cursor and generic.
+These ledger contracts apply to every profile: Claude Code, Codex, Cursor, Antigravity and generic.
 
 - `read_ledger` preserves an explicit `query` when `unit_id` is supplied. Use `query: "rejections"` or `"reviews"` with `phase` and `unit_id`; `include_full_text: true` returns the full messages within the page budget. Review rows include `review_ts` and the zero-based `finding_index`.
 - After `preflight_check`, delegate with `data: { s: "delegated", brief_hash: "<returned hash>" }`. Foreman reuses and verifies the stored brief for that phase and unit. The older `preflight.receipt` form still works. Supplying changed brief text still requires a new preflight.
@@ -81,7 +82,7 @@ Configure tier models in project-root `.foreman-worker-models.json`, for example
 }
 ```
 
-Each profile may map `cheap`, `standard`, `premium`, and `frontier`. The mapping takes precedence over agent-file pins and agent-init model arguments. Without a mapping, Foreman reads the profile's agent definition, falling back to a shipped model default when the file is absent; `inherit` has no exact model requirement. Generic remote workers also use `.foremanenv` tier routing, including `FOREMAN_TIER_FRONTIER`. The generic mapping can override a configured remote tier's model, but the tier still needs its endpoint and worker-class configuration. `capability_check` reports effective models and missing worker agents. Agent initializers include a frontier role (`worker_frontier` on Codex; `foreman-worker-frontier` on Claude Code/Cursor). After a rejected premium attempt, all profiles require frontier for a fresh attempt unless an attributed owner override permits otherwise.
+Each profile may map `cheap`, `standard`, `premium`, and `frontier`. The mapping takes precedence over agent-file pins and agent-init model arguments. Without a mapping, Foreman reads the profile's agent definition, falling back to a shipped model default when the file is absent; `inherit` has no exact model requirement. Generic remote workers also use `.foremanenv` tier routing, including `FOREMAN_TIER_FRONTIER`. The generic mapping can override a configured remote tier's model, but the tier still needs its endpoint and worker-class configuration. `capability_check` reports effective models and missing worker agents. Agent initializers include a frontier role (`worker_frontier` on Codex; `foreman-worker-frontier` on Claude Code/Cursor/Antigravity). On Antigravity a tier word (`flash`, `pro`) carries no exact model requirement; a concrete id in `.foreman-worker-models.json` is still enforced. After a rejected premium attempt, all profiles require frontier for a fresh attempt unless an attributed owner override permits otherwise.
 
 For projects without git, pass `mode: "hash"` to `repo_guard snapshot` or `data.guard` at delegation, with `allowed_files` and optional `exclude_globs` such as `["node_modules/**", "cache/**"]`. Foreman hashes every included file with SHA-256, including large files, and detects changed, added and deleted paths. Exclusions support root-relative `*`, `**`, and `?`; they cannot hide authorized files. Symlinks are fingerprinted without following them and cannot be authorized write paths. Mode, exclusions and allowed files are frozen for comparison and corrections. Oversized or unreadable scans refuse instead of recording a partial clearance. The default git mode retains its existing behavior.
 
@@ -127,6 +128,7 @@ Checkpoints accept any runner on `Test:` / `Checkpoint:` lines, including `pwsh 
 |---|---|
 | `codex_agents_init` (Codex only) | `.codex/agents/explorer.toml`, `.codex/agents/worker.toml`, and an `[agents]` block in `.codex/config.toml`, each only if absent |
 | `cursor_agents_init` (Cursor only) | `.cursor/agents/foreman-worker-light.md`, `foreman-worker.md`, `foreman-worker-heavy.md`, `foreman-worker-frontier.md`, each only if absent unless `overwrite: true`. Default model `inherit`. |
+| `antigravity_agents_init` (Antigravity only) | `.agents/agents/foreman-worker-light.md`, `foreman-worker.md` (`flash`), `foreman-worker-heavy.md`, `foreman-worker-frontier.md`, `foreman-reviewer.md`, `foreman-verifier.md` (`pro`), and the bootstrap rule `.agents/rules/foreman.md`, each only if absent unless `overwrite: true`. Tier words only; a concrete model id is refused. Never writes `~/.gemini` |
 | `claude_agents_init` (Claude Code only) | `.claude/agents/foreman-worker-light.md`, `foreman-worker.md`, `foreman-worker-heavy.md`, each only if absent unless `overwrite: true` |
 
 ## Output compression

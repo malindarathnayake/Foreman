@@ -83,7 +83,7 @@ Rules that hold at every rung:
 - Two seats on one model is **perspective, not independence**. Whenever rung 5 is used, or two council seats share a vendor, say so in the review record.
 
 ### Advisor Invocation
-Advisor invocation is host-specific. The active host is resolved at server start (default: Claude Code; set `FOREMAN_HOST=cursor` or pass `--host=cursor` for Cursor mode).
+Advisor invocation is host-specific. The active host is resolved at server start (default: Claude Code; set `FOREMAN_HOST` or pass `--host` with claude-code, cursor, codex, antigravity or generic; see `host_status`).
 
 {{advisor_a}}
 {{advisor_b}}

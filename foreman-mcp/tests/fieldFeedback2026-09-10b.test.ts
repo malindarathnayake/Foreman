@@ -125,7 +125,7 @@ describe("worker heartbeats", () => {
     expect(scope.state.some((p) => p.endsWith(HEARTBEAT_FILE))).toBe(true)
     const rel = await relativeScope(scope, dir)
     expect(isForemanStateFile(HEARTBEAT_FILE, rel)).toBe(true)
-    for (const host of ["claude-code", "codex", "cursor", "generic"] as const) {
+    for (const host of ["claude-code", "codex", "cursor", "antigravity", "generic"] as const) {
       const invoke = getProfile(host).placeholders.worker_invoke
       expect(invoke, host).toContain("Docs/.foreman-heartbeat.jsonl")
       expect(invoke, host).toContain("never write there")

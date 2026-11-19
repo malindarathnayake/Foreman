@@ -175,7 +175,7 @@ describe("the Codex profile promotes new native reviews without upgrading legacy
   })
 
   it("the other hosts keep their own fallback and never learn the Codex one", () => {
-    for (const host of ["claude-code", "cursor", "generic"] as const) {
+    for (const host of ["claude-code", "cursor", "antigravity", "generic"] as const) {
       expect(getProfile(host).placeholders.advisor_fallback, host).not.toMatch(/spawn_agent/)
     }
   })

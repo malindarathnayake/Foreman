@@ -18,6 +18,7 @@ describe("hostHygieneCommands", () => {
     expect(hostHygieneCommands("cursor")).toEqual({ compact: "/compact", clear: "/clear" })
     expect(hostHygieneCommands("claude-code")).toEqual({ compact: "/compact", clear: "/clear" })
     expect(hostHygieneCommands("codex").clear).toContain("new thread")
+    expect(hostHygieneCommands("antigravity")).toEqual({ compact: "/compact", clear: "/clear" })
   })
 })
 
