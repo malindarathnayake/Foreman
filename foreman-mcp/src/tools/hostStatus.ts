@@ -6,6 +6,7 @@ import { unsupportedCapabilities } from "../lib/capabilitySet.js"
 import { toKeyValue } from "../lib/toon.js"
 import { CODEX_SEAT_MODELS } from "../tools/codexAgentsInit.js"
 import { CURSOR_SEAT_MODELS } from "../tools/cursorAgentsInit.js"
+import { ANTIGRAVITY_AGENT_ROLES, ANTIGRAVITY_RULE_REL, antigravitySeatDrift } from "../tools/antigravityAgentsInit.js"
 import { systemCaState } from "../lib/systemCa.js"
 import { modelRankSummary, resolveModelRank, type ModelRank } from "../lib/modelRank.js"
 
@@ -60,6 +61,55 @@ export function codexForemanToolTimeout(env: HostStatusEnv): { sec: number; sour
   return undefined
 }
 
+/** `model:` from each .agents/agents/<role>.md frontmatter that exists; a tier word, not a served model. */
+export function antigravitySeatPinsOnDisk(cwd: string): string {
+  const pins = ANTIGRAVITY_AGENT_ROLES.map((role) => {
+    try {
+      const text = fs.readFileSync(path.join(cwd, ".agents", "agents", `${role}.md`), "utf-8")
+      const header = /^---\r?\n([\s\S]*?)\r?\n---/.exec(text)?.[1] ?? ""
+      const m = header.match(/^model:\s*["']?([^\r\n"'#]+?)["']?\s*(?:#.*)?$/m)
+      return `${role}=${m ? m[1] : "inherit"}`
+    } catch {
+      return `${role}=missing`
+    }
+  })
+  return pins.every((p) => p.endsWith("=missing")) ? "missing (run antigravity_agents_init)" : pins.join(" ")
+}
+
+/**
+ * Seat files under .agents/agents/ that differ from the Foreman template for their own tier
+ * word. Seat isolation lives only in these repo-local files, so a drifted file is reported
+ * rather than shown as a normal seat.
+ */
+export function antigravitySeatDriftOnDisk(cwd: string): string[] {
+  const drift: string[] = []
+  for (const role of ANTIGRAVITY_AGENT_ROLES) {
+    let text: string
+    try { text = fs.readFileSync(path.join(cwd, ".agents", "agents", `${role}.md`), "utf-8") } catch { continue }
+    const reason = antigravitySeatDrift(role, text)
+    if (reason) drift.push(`${role} (${reason})`)
+  }
+  return drift
+}
+
+/**
+ * timeoutSeconds of the foreman server from the workspace, then the user, agy MCP config.
+ * agy reads these files as JSONC; plain JSON.parse is used. An existing file it cannot parse
+ * makes the value unknown rather than guessed: the user file is read only when the
+ * higher-precedence workspace file is absent or parses without the key.
+ */
+export function antigravityForemanTimeout(env: HostStatusEnv): { sec: number; source: string } | "unknown" | undefined {
+  for (const file of [path.join(env.cwd, ".agents", "mcp_config.json"), path.join(env.home, ".gemini", "config", "mcp_config.json")]) {
+    let text: string
+    try { text = fs.readFileSync(file, "utf-8") } catch { continue }
+    let parsed: unknown
+    try { parsed = JSON.parse(text) } catch { return "unknown" }
+    const sec = (parsed as { mcpServers?: { foreman?: { timeoutSeconds?: unknown } } } | null)?.mcpServers?.foreman?.timeoutSeconds
+    if (typeof sec === "number" && Number.isFinite(sec)) return { sec, source: file }
+  }
+  return undefined
+}
+
 export function hostStatus(
   host: HostId,
   modelRank: ModelRank = resolveModelRank(),
@@ -88,7 +138,9 @@ export function hostStatus(
       ? Object.entries(CODEX_SEAT_MODELS).map(([role, model]) => `${role}=${model}`).join(" ")
       : host === "cursor"
         ? Object.entries(CURSOR_SEAT_MODELS).map(([role, model]) => `${role}=${model}`).join(" ")
-        : modelOf("worker_invoke")
+        : host === "antigravity"
+          ? antigravitySeatPinsOnDisk(env.cwd)
+          : modelOf("worker_invoke")
 
   return toKeyValue({
     ...modelRankSummary(modelRank),
@@ -112,6 +164,7 @@ export function hostStatus(
       external_advisors: "optional: claude,gemini,council",
       agent_visibility: "host-owned; native IDs are reported by the host, not discovered by Foreman",
     } : {}),
+    ...(host === "antigravity" ? antigravitySeatFacts(env) : {}),
     ...(host === "codex" ? { seat_defaults: workerModel } : { worker_model: workerModel }),
     advisor_a_model: modelOf("advisor_a"),
     advisor_b_model: modelOf("advisor_b"),
@@ -119,6 +172,31 @@ export function hostStatus(
     unsupported_capabilities: unsupportedCapabilities(host),
     os_cert_store: osCertStore(),
   })
+}
+
+/**
+ * 0.9.7: the Antigravity seat facts. Seat files carry tier words (flash, pro); the served model
+ * is read from each subagent transcript, so host_status reports the words, not a model id.
+ */
+function antigravitySeatFacts(env: HostStatusEnv): Record<string, string> {
+  const rulePresent = [path.join(env.cwd, ANTIGRAVITY_RULE_REL), path.join(env.home, ".gemini", "config", "rules", "foreman.md")]
+    .some((file) => { try { return fs.statSync(file).isFile() } catch { return false } })
+  const timeout = antigravityForemanTimeout(env)
+  const advice = `set timeoutSeconds: ${CODEX_TOOL_TIMEOUT_RECOMMENDED_SEC} on the foreman server in mcp_config.json`
+  const drift = antigravitySeatDriftOnDisk(env.cwd)
+  return {
+    seat_tiers: "light=flash standard=flash heavy=pro frontier=pro reviewer=pro verifier=pro (agy serves flash as gemini-4-hydrogen-tiered-high, pro as gemini-4-hydrogen-tiered-xhigh; read the transcript \"model\" for evidence)",
+    seat_drift: drift.length
+      ? `${drift.join(", ")}; isolation unverified, do not spawn these seats until antigravity_agents_init rewrites them with overwrite: true`
+      : "none",
+    bootstrap_rule: rulePresent ? "present" : `missing (run antigravity_agents_init, or copy ${ANTIGRAVITY_RULE_REL} to ~/.gemini/config/rules/foreman.md)`,
+    mcp_timeout_sec: timeout === undefined || timeout === "unknown"
+      ? `unknown (${advice})`
+      : timeout.sec < CODEX_TOOL_TIMEOUT_RECOMMENDED_SEC ? `${timeout.sec} (${timeout.source}; ${advice})` : `${timeout.sec} (${timeout.source})`,
+    review_mode: "native-subagents",
+    review_stage: "native",
+    external_advisors: "optional: claude,codex (cli:'gemini' is same-vendor perspective on this host)",
+  }
 }
 
 /** 0.6.38: whether TLS from this process trusts the OS certificate store (lib/systemCa.ts). */

@@ -95,6 +95,8 @@ export function expectedToolsForHost(host) {
   const common = EXPECTED_TOOLS.filter((name) => !["claude_agents_init", "claude_workflows_init"].includes(name))
   if (host === "codex") return [...common, "codex_agents_init", "workflow"]
   if (host === "cursor") return [...common, "cursor_agents_init", "workflow"]
+  // 0.9.7: Antigravity gets its seat writer and no workflow tool (implementation never runs in a workflow there).
+  if (host === "antigravity") return [...common, "antigravity_agents_init"]
   return common
 }
 
@@ -356,12 +358,12 @@ async function main() {
 
     log(`tools/list matched all ${expectedNames.length} expected tools`)
 
-    for (const host of ["codex", "cursor", "generic"]) {
+    for (const host of ["codex", "cursor", "antigravity", "generic"]) {
       const check = await runToolsListCheck(shimPath, runCwd, { ...childEnv, FOREMAN_HOST: host })
       const names = check.toolsListResult.tools.map((tool) => tool.name).sort()
       const expected = expectedToolsForHost(host).sort()
       if (JSON.stringify(names) !== JSON.stringify(expected)) throw new Error(`Installed ${host} tool registry drifted`)
-      log(`${host}: ${names.length} tools matched${host === "generic" ? "; workflow absent" : "; workflow procedure rendered"}`)
+      log(`${host}: ${names.length} tools matched${host === "generic" || host === "antigravity" ? "; workflow absent" : "; workflow procedure rendered"}`)
     }
 
     // ── R3: the runtime reads Markdown and assets from the package at run time ──

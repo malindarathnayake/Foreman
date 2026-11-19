@@ -13,7 +13,7 @@ Nothing here is required. A fresh install with no configuration serves all six p
 
 | Flag | Effect |
 |---|---|
-| `--host=<id>` | Host profile: `claude-code` (default), `cursor`, `codex`, `generic` |
+| `--host=<id>` | Host profile: `claude-code` (default), `cursor`, `codex`, `antigravity`, `generic` |
 | `--version`, `-v` | Print the version and exit |
 | `--diag` | Print runtime, package, SDK, and skills diagnostics and exit |
 

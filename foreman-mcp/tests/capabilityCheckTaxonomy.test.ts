@@ -13,6 +13,8 @@ beforeEach(() => {
 
 async function load() {
   const ext = await import("../src/lib/externalCli.js")
+  // 0.9.6: the gemini seat prefers agy; these rows cover the gemini-cli path, so agy is absent.
+  ;(ext as any).resolveInvocation.mockResolvedValue({ ok: false, reason: "agy not found" })
   const mod = await import("../src/tools/capabilityCheck.js")
   return { ext: ext as any, mod }
 }

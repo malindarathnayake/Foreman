@@ -28,7 +28,7 @@ describe("invokeAdvisor", () => {
     vi.mocked(runWithStdin).mockResolvedValue(SUCCESS)
   })
 
-  it("runs Codex reviews with gpt-6-astra at xhigh reasoning effort", async () => {
+  it("runs Codex reviews with gpt-6.2-astra at xhigh reasoning effort", async () => {
     await invokeAdvisor("codex", "review this", 12_345)
 
     expect(runWithStdin).toHaveBeenCalledWith(
@@ -40,7 +40,7 @@ describe("invokeAdvisor", () => {
         "-s",
         "read-only",
         "-m",
-        "gpt-6-astra",
+        "gpt-6.2-astra",
         "-c",
         "model_reasoning_effort=xhigh",
         "-c",
@@ -72,7 +72,7 @@ describe("invokeAdvisor", () => {
         "--permission-mode",
         "dontAsk",
         "--model",
-        "claude-fable-5-1",
+        "claude-fable-5-2",
         "--effort",
         "max",
         "--tools=",
@@ -113,7 +113,7 @@ describe("invokeAdvisor", () => {
   })
 })
 
-// 0.6.39: the Claude seat runs Fable 5.1 and falls back to Opus once when the CLI refuses it.
+// 0.6.39: the Claude seat runs Fable (5.2 since 0.9.6) and falls back to Opus once when the CLI refuses it.
 describe("Claude seat model fallback", () => {
   beforeEach(() => {
     vi.clearAllMocks()
@@ -122,13 +122,13 @@ describe("Claude seat model fallback", () => {
 
   it("retries on Opus when Fable is not available, and says so", async () => {
     vi.mocked(runWithStdin)
-      .mockResolvedValueOnce({ stdout: "", stderr: "There's an issue with the selected model (claude-fable-5-1). It may not exist or you may not have access to it.", timedOut: false, exitCode: 1, truncated: false })
+      .mockResolvedValueOnce({ stdout: "", stderr: "There's an issue with the selected model (claude-fable-5-2). It may not exist or you may not have access to it.", timedOut: false, exitCode: 1, truncated: false })
       .mockResolvedValueOnce(SUCCESS)
     const r = await invokeAdvisor("claude", "review this", 60_000)
     expect(vi.mocked(runWithStdin)).toHaveBeenCalledTimes(2)
-    expect(vi.mocked(runWithStdin).mock.calls[0][1]).toContain("claude-fable-5-1")
+    expect(vi.mocked(runWithStdin).mock.calls[0][1]).toContain("claude-fable-5-2")
     expect(vi.mocked(runWithStdin).mock.calls[1][1]).toContain("claude-opus-5-5")
-    expect(r.modelFallback).toMatchObject({ from: "claude-fable-5-1", to: "claude-opus-5-5", reason: "model_rejected", first: { exitCode: 1 } })
+    expect(r.modelFallback).toMatchObject({ from: "claude-fable-5-2", to: "claude-opus-5-5", reason: "model_rejected", first: { exitCode: 1 } })
     expect(r.exitCode).toBe(0)
   })
 

@@ -1,8 +1,8 @@
-import { runExternalCli, resolveFirst, type SpawnPlan } from "../lib/externalCli.js"
+import { runExternalCli, resolveFirst, resolveInvocation, type SpawnPlan } from "../lib/externalCli.js"
 import { toKeyValue } from "../lib/toon.js"
 import { type HostId } from "../lib/hostProfiles.js"
 import { CURSOR_AGENT_BINS, type AdvisorCli } from "../lib/advisorCli.js"
-import { GEMINI_ADVISOR_MODEL, parseGeminiJson } from "./invokeAdvisor.js"
+import { AGY_ADVISOR_MODEL, GEMINI_ADVISOR_MODEL, agyServedModel, classifyAdvisorFailure, parseGeminiJson, runAgySeat } from "./invokeAdvisor.js"
 import { workerSeatStatus } from "../lib/workerSeats.js"
 
 // Module-level cache for resolved SpawnPlans
@@ -83,7 +83,7 @@ function hintFor(status: AuthStatus, cli: AdvisorCli): string | null {
       if (cli === "claude") return "re-login: run `claude auth login`"
       if (cli === "codex") return "re-login: run `codex login`"
       if (cli === "cursor") return "re-login: run `agent login`"
-      return "re-authenticate: run the gemini CLI interactively (or fix GEMINI_API_KEY)"
+      return "re-authenticate: run agy (or, without agy, the gemini CLI) interactively once and sign in"
     }
     case "model_substituted":
       return "the CLI answered with a different model than the pinned one, so the seat cannot run on the pinned model on this account or CLI version — pin a model the CLI serves, or update the CLI or account"
@@ -153,9 +153,47 @@ export async function capabilityCheck(
   return `${cliStatus}\n${toKeyValue(seats)}`
 }
 
+/** A real call: agy has no auth-status command, and only a run shows the served model label. */
+const AGY_PROBE_TIMEOUT_MS = 60_000
+
+/**
+ * 0.9.6: the gemini seat runs through agy when agy is on PATH (invokeAdvisor), so the probe
+ * checks agy then. Returns null when agy is not installed, and the gemini-cli probe runs.
+ */
+async function checkAgy(): Promise<string | null> {
+  const resolution = await resolveInvocation("agy")
+  if (!resolution.ok) return null
+  const plan = resolution.plan
+  let version = "unknown"
+  try {
+    const v = await runExternalCli(plan.command, [...plan.args, "--version"], 5000)
+    if (v.exitCode === 0) version = v.stdout.trim().split(/\r?\n/)[0] || "unknown"
+  } catch {
+    // keep "unknown"
+  }
+  const result = await runAgySeat(plan, "Reply with the single word OK.", AGY_PROBE_TIMEOUT_MS)
+  const fields: Record<string, string> = { backend: "agy", model_requested: AGY_ADVISOR_MODEL }
+  if (result.timedOut) return respond("gemini", true, version, "probe_timeout", fields)
+  if (result.exitCode !== 0) {
+    const failed = classifyAdvisorFailure(result)
+    const status: AuthStatus = failed === "auth_failed" ? "auth_expired" : failed === "model_rejected" ? "model_substituted" : "error"
+    return respond("gemini", true, version, status, { ...fields, ...(failed ? { failure_reason: failed } : {}) })
+  }
+  const served = agyServedModel(result.agy?.servedLabels ?? [])
+  fields.model_served = served ?? "unknown"
+  if (served !== undefined && served !== AGY_ADVISOR_MODEL) {
+    return respond("gemini", true, version, "model_substituted", fields)
+  }
+  return respond("gemini", true, version, "ok", fields)
+}
+
 async function checkCli(
   cli: AdvisorCli
 ): Promise<string> {
+  if (cli === "gemini") {
+    const agy = await checkAgy()
+    if (agy !== null) return agy
+  }
   const config = HEALTH_COMMANDS[cli]
   if (!config) {
     return respond(cli, false, "null", "not_found")

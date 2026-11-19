@@ -25,6 +25,7 @@ export function hostHygieneCommands(host: HostId): { compact: string; clear: str
   switch (host) {
     case "cursor":
     case "claude-code":
+    case "antigravity":
       return { compact: "/compact", clear: "/clear" }
     case "codex":
       return { compact: "/compact", clear: "start a new thread" }

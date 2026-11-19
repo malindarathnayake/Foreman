@@ -8,7 +8,7 @@ or routing policy. It orchestrates protocols, records state, and refuses invalid
 transitions (a unit cannot pass without a recorded delegation; a phase cannot
 pass while any unit is not `pass`).
 
-Package: `@malindarathnayake/foreman-mcp` · Version: `0.9.4` · Runtime: Node.js `^22.23.4 || ^24.22.1 || >=26.12.1`
+Package: `@malindarathnayake/foreman-mcp` · Version: `0.9.7` · Runtime: Node.js `^22.23.4 || ^24.22.1 || >=26.12.1`
 
 This file is written for an AI agent that just connected to the server. It is
 an operating packet, not a feature list — read the whole thing before your
@@ -26,12 +26,13 @@ Tool count: 37
 - read_ledger — Reads bounded Foreman ledger slices; tabular queries support phase/verdict filters plus cursor/limit pagination, and oversized full reads fail with recovery guidance. `query: "reconstruct"` builds a read-only recovery worksheet from the append-only sidecars after a ledger loss: units and attempts they attest, what the ledger is missing, which seat receipts are reclaimable. It writes nothing.
 - read_progress — Reads the planning checklist. It is descriptive only; `session_orient` is the resume authority.
 - read_journal — Reads the Foreman session journal; returns session history with rollup.
-- capability_check — Checks whether the claude, codex, or gemini CLI is available and authenticated, with a closed auth-status taxonomy. CLI versions are telemetry, not compatibility pins. On `--host=cursor`, also probes the Cursor Agent CLI (`agent` / `cursor-agent`).
-- invoke_advisor — Invokes the claude, codex, or gemini CLI via stdin for independent review. Claude runs headless `claude-fable-5` at `max` effort with tools disabled. On `--host=cursor`, also `cli: "cursor"` (`agent -p --mode=ask --trust`; never `--approve-mcps`; receipts are provider unknown).
+- capability_check — Checks whether the claude, codex, or gemini CLI is available and authenticated, with a closed auth-status taxonomy. CLI versions are telemetry, not compatibility pins. On `--host=cursor`, also probes the Cursor Agent CLI (`agent` / `cursor-agent`). On `--host=antigravity`, `gemini` is the host's own vendor; prefer claude and codex for cross-vendor review.
+- invoke_advisor — Invokes the claude, codex, or gemini CLI via stdin for independent review. The gemini seat runs the Antigravity CLI (`agy`, `gemini-4-hydrogen-xhigh`, writes and commands denied) when installed, otherwise Gemini CLI (`gemini-4-carbon`). Claude runs headless `claude-fable-5-2` at `max` effort with tools disabled. On `--host=cursor`, also `cli: "cursor"` (`agent -p --mode=ask --trust`; never `--approve-mcps`; receipts are provider unknown).
 - write_ledger — Writes an operation to the Foreman ledger (unit status, verdicts, rejections, phase gates, scope, durable reviews).
 - invoke_worker — EXPERIMENTAL (egress: sends briefs + file excerpts to your configured HTTP endpoint). Delegates a single patch task to the remote OpenAI-compatible endpoint configured in `.foremanenv`; returns a shape-checked, verbatim patch for the host to apply.
 - repo_guard — Runs the shared-tree ownership check around an editing worker: `snapshot` records branch, HEAD, stash, index, dirty paths, `core.autocrlf`, and line-ending attributes on the delegation; `compare` re-reads them and names every mutation outside the brief. `allowed_files` IS the allow-list `compare` measures against; `files` only scopes the line-ending probe, and an accidentally empty allow-list is refused rather than frozen. Both refuse or flag an authorized file that is non-empty and entirely NUL bytes — destroyed, not edited. Foreman writes both, so a pass verdict can be refused until the guard clears. Reports `n/a` outside a git work tree.
 - cursor_agents_init — Cursor host only. Writes Foreman's three implementation seats to `.cursor/agents/` as Cursor custom-subagent definitions (IDE Task fallback). Default model is inherit. Primary spawn is the Cursor Agent CLI (`agent` / `cursor-agent`, print mode). Spawn with Task `subagent_type` and no model argument only when the Agent CLI is missing. Writes Cursor-native files, not `.claude/agents/`.
+- antigravity_agents_init — Antigravity host only (`--host=antigravity`, agy 1.5.11). Writes Foreman's seats to `.agents/agents/` (foreman-worker-light and foreman-worker on `flash`, foreman-worker-heavy, foreman-worker-frontier, foreman-reviewer and foreman-verifier on `pro`) and the bootstrap rule `.agents/rules/foreman.md`. `model:` takes tier words only; a concrete id makes agy drop the seat, so it is refused. Seats get a tools allowlist with `inheritMcp: false`, so they cannot reach Foreman's MCP tools through agy (worker seats keep `run_command`; their discipline forbids starting a nested agent CLI). Existing seat files that differ from the template are reported as `seat_drift`. Never writes `~/.gemini`. Spawn with `invoke_subagent` TypeName and no Model; the served model is read from the seat's transcript.
 - claude_agents_init — Claude Code host only. Writes Foreman's three implementation seats to `.claude/agents/` as agent definitions with a MODEL and a REASONING EFFORT pinned in frontmatter: foreman-worker-light (cheap, sonnet/low), foreman-worker (standard, sonnet/medium), foreman-worker-heavy (premium, opus/high), each axis overridable per role. The seats differ by effort rather than by a weaker model: a wrong mechanical edit costs an attempt plus its guard cycle. Foreman already records each delegation's tier and route_reason; this makes the tier resolve to a model the way it already does on Codex instead of a rule the operator restates each session. A binding default, not a lock: the Agent tool's model argument still overrides the frontmatter.
 - claude_workflows_init — Claude Code host only. Installs Foreman's saved Workflow scripts (checkpoint review fan, design panel, field-report triage) into the project's `.claude/workflows/`; a workflow review is same-model perspective recorded as `fan`, never a gate seat.
 - preflight_check — Checks a worker brief against the spec before the attempt is spent: symbols must appear in the spec, citations must resolve in the repo (a `-run` operand resolves as a Go regex against test declarations); files the unit creates go in creates: [{ file, tests }], whose citations are forward and are checked at the pass verdict; checkpoint reach reports whether the spec's Test line selects the Go package of every authorized file (a testdata fixture belongs to its parent package), and the delegation refuses an omission unless the owner overrides. Directive omissions, contradiction markers and out-of-set references are reported. Returns the brief_hash the ledger requires on the delegation.
@@ -46,7 +47,7 @@ Tool count: 37
 - normalize_review — Normalizes raw review text into structured findings.
 - verify_citations — Verifies that evidence citations reference real files and that a verbatim anchor appears at or near the cited line.
 - run_tests — Runs a test command with bounded output; runner must be in an allowlist (npm, pytest, go, cargo, dotnet, make, gradle, gradlew, gofmt, golangci-lint); fail_on_stdout turns any output into a failure for list-style checkers such as gofmt -l. Project Gradle wrappers are supported without shell interpolation.
-- session_orient — Returns the ledger-authoritative action and resume target, including gate retries, blockers, and ledger/progress drift. Call first at session start.
+- session_orient — Foreman entry point: call this first for any Foreman work. Returns the ledger-authoritative action and resume target, including gate retries, blockers, and ledger/progress drift. Call first at session start.
 - retrieve_original — Recovers the exact original text behind a `<<ccr:HASH>>` compression marker, in-memory and TTL-bound.
 - pitboss_implementor — Activates the pitboss-implementor protocol for multi-phase implementation from prepared specs (worker fan-out, gates, retries, resume).
 - design_partner — Activates the design-partner protocol: a collaborative design session that produces `Docs/design-summary.md`.
@@ -107,7 +108,7 @@ Then try `lighttask` on one small, grounded change to see the full loop
 
 ## 7. One URL to fetch
 
-If your host is not Claude Code, Cursor, or Codex, fetch:
+If your host is not Claude Code, Cursor, Codex, or Antigravity (agy), fetch:
 `https://github.com/malindarathnayake/Foreman/blob/main/foreman-mcp/HOST-CONTRACT.md`
 — the six-capability host contract that defines what a host must provide to
 run the Foreman protocols, and how ready each capability is.

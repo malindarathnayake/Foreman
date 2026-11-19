@@ -34,14 +34,14 @@ describe("codex_agents_init writes the tiered implementation seats", () => {
     await codexAgentsInit({ project_dir: dir, roles: ["worker_light", "worker", "worker_heavy"] })
     expect(await roleToml("worker_light")).toContain('model = "gpt-5.6-terra"')
     expect(await roleToml("worker")).toContain('model = "gpt-6-sol"')
-    expect(await roleToml("worker_heavy")).toContain('model = "gpt-6-astra"')
+    expect(await roleToml("worker_heavy")).toContain('model = "gpt-6.2-astra"')
   })
 
   it("the table is the single source of those defaults", () => {
     expect(CODEX_SEAT_MODELS).toEqual({
       worker_light: "gpt-5.6-terra",
       worker: "gpt-6-sol",
-      worker_heavy: "gpt-6-astra",
+      worker_heavy: "gpt-6.2-astra",
     })
   })
 

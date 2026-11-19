@@ -17,6 +17,15 @@ function prependHostRuntimeForOverride(content: string, skillName: string, host:
   return `${hostRuntimePreamble(host)}\n\n${content}`
 }
 
+/**
+ * Prepends the host's skillHeader, when it has one. This runs last on every load
+ * path, so the header leads bundled skills and overrides alike.
+ */
+function prependSkillHeader(content: string, host: HostId): string {
+  const header = getProfile(host).skillHeader
+  return header ? `${header}\n\n${content}` : content
+}
+
 async function fileExists(p: string): Promise<boolean> {
   try { await fs.access(p); return true } catch { return false }
 }
@@ -246,6 +255,7 @@ export async function renderClassFragments(
  * the bundled "reference" stack profile). Finally, {{class <list>: <section-id>}}
  * markers are rendered per the declared capability class (default: resolved
  * from FOREMAN_AGENT_CLASS, which fails open to "frontier" — zero assist bloat).
+ * The host profile's skillHeader, when set, is prepended last on every path.
  */
 export async function loadSkill(
   skillName: string,
@@ -262,6 +272,7 @@ export async function loadSkill(
     content = renderStackSections(content, stackProfile ?? getStackProfile("reference"))
     content = await renderClassFragments(content, projectOverride, agentClass)
     content = prependHostRuntimeForOverride(content, skillName, host)
+    content = prependSkillHeader(content, host)
     return { content, source: "project-override", path: projectOverride }
   }
 
@@ -273,6 +284,7 @@ export async function loadSkill(
     content = renderStackSections(content, stackProfile ?? getStackProfile("reference"))
     content = await renderClassFragments(content, userOverride, agentClass)
     content = prependHostRuntimeForOverride(content, skillName, host)
+    content = prependSkillHeader(content, host)
     return { content, source: "user-override", path: userOverride }
   }
 
@@ -283,6 +295,7 @@ export async function loadSkill(
     content = renderHostPlaceholders(content, host)
     content = renderStackSections(content, stackProfile ?? getStackProfile("reference"))
     content = await renderClassFragments(content, bundled, agentClass)
+    content = prependSkillHeader(content, host)
     return { content, source: "bundled", path: bundled }
   }
 

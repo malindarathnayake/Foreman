@@ -63,7 +63,7 @@ const review = (extra: Partial<PhaseReview>): PhaseReview => ({ advisor: "x", ts
 
 describe("seatBasis classifies what a seat is, never whether it is one", () => {
   it("an unreceipted independent record is declared_external on every host", () => {
-    for (const host of ["claude-code", "codex", "cursor", "generic"] as HostId[]) {
+    for (const host of ["claude-code", "codex", "cursor", "antigravity", "generic"] as HostId[]) {
       expect(seatBasis(review({ stage: "independent" }), host, [])).toBe("declared_external")
       expect(seatBasis(review({}), host, [])).toBe("declared_external")
     }

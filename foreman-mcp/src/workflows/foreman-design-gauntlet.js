@@ -22,7 +22,7 @@
 //   attack_focus: string        what the attackers must specifically try to break
 //   lenses?: string[]           subset of ['codex', 'soc', 'complexity']; default all three
 //   model_design?: string       design model; default 'fable', falls back to the host model if refused
-//   codex_model?: string        default 'gpt-6-astra'
+//   codex_model?: string        default 'gpt-6.2-astra'
 //   codex_effort?: string       default 'xhigh'
 //   max_verifiers?: number      cap on per-finding verifiers; default 30, highest severity first
 // }
@@ -45,7 +45,7 @@ if (!Array.isArray(A.topics) || A.topics.length === 0) throw new Error('foreman-
 const TOPICS = A.topics.slice(0, 6)
 const DESIGN_MODEL = A.model_design || 'fable'
 const LENSES = A.lenses && A.lenses.length ? A.lenses : ['codex', 'soc', 'complexity']
-const CODEX_MODEL = A.codex_model || 'gpt-6-astra'
+const CODEX_MODEL = A.codex_model || 'gpt-6.2-astra'
 const CODEX_EFFORT = A.codex_effort || 'xhigh'
 const MAX_VERIFIERS = A.max_verifiers || 30
 const DESIGN_PATH = `${A.out_dir}/${A.slug}-design.md`

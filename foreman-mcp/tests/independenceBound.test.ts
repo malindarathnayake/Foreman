@@ -73,14 +73,14 @@ describe("isWeakBasis", () => {
     seq: 1, ts: "t", host, basis, seats: [], present: {}, unit_attempts: {}, units: 1, seat_agents: 1, regate: false, flagged: false,
     overrides: [], rank: { weight: 0, declared: false }, tokens: { receipted: 0, declared: 0, unreported: 0 }, policy_version: 1,
   })
-  it("same_provider, its delta, and override are weak everywhere; declared_external is weak on Codex only", () => {
-    for (const host of ["codex", "claude-code", "cursor", "generic"] as HostId[]) {
+  it("same_provider, its delta, and override are weak everywhere; declared_external is weak on Codex and Antigravity only", () => {
+    for (const host of ["codex", "claude-code", "cursor", "antigravity", "generic"] as HostId[]) {
       expect(isWeakBasis(ev("same_provider", host))).toBe(true)
       expect(isWeakBasis(ev("delta:same_provider", host))).toBe(true)
       expect(isWeakBasis(ev("override", host))).toBe(true)
       expect(isWeakBasis(ev("receipted_external", host))).toBe(false)
       expect(isWeakBasis(ev("receipted", host))).toBe(false)
-      expect(isWeakBasis(ev("declared_external", host))).toBe(host === "codex")
+      expect(isWeakBasis(ev("declared_external", host))).toBe(host === "codex" || host === "antigravity")
     }
   })
 })

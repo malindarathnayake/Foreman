@@ -13,7 +13,7 @@
 
 </div>
 
-Foreman is an MCP server for Claude Code, Cursor, and Codex. It gives the model a set of workflow procedures and a ledger file in your repo. The procedures make the model plan with you, write a spec, hand each piece of code to a worker subagent, inspect and test the worker's output, and record a verdict. The ledger refuses verdicts and phase gates that skip steps. Phase and unit status lives in `Docs/.foreman-ledger.json`, so a later session resumes from that file instead of from chat history.
+Foreman is an MCP server for Claude Code, Cursor, Codex, and the Antigravity CLI (`agy`). It gives the model a set of workflow procedures and a ledger file in your repo. The procedures make the model plan with you, write a spec, hand each piece of code to a worker subagent, inspect and test the worker's output, and record a verdict. The ledger refuses verdicts and phase gates that skip steps. Phase and unit status lives in `Docs/.foreman-ledger.json`, so a later session resumes from that file instead of from chat history.
 
 ## Install
 
@@ -44,7 +44,7 @@ implement it yet."
 The host shows the calls it makes, for example `mcp__foreman__session_orient`. On a fresh repo `session_orient` answers `status: no_phases_yet` and `action: plan_project`.
 
 <details>
-<summary><b>Cursor, Codex, Windows, and editing the JSON by hand</b></summary>
+<summary><b>Cursor, Codex, Antigravity, Windows, and editing the JSON by hand</b></summary>
 
 Claude Code stores user-scope servers in `~/.claude.json` and project-scope servers in `.mcp.json`. The equivalent of the command above:
 
@@ -81,13 +81,21 @@ args = ["--host=codex"]
 tool_timeout_sec = 1200   # Codex defaults to 60 s, which cuts off advisor and council calls
 ```
 
+Antigravity (`agy`, verified on 1.5.11) registers Foreman under the name `foreman` (not as a plugin, which renames it):
+
+```bash
+agy mcp add -e FOREMAN_HOST=antigravity foreman -- foreman-mcp --host=antigravity
+```
+
+Then set the call timeout and the eager tools in `~/.gemini/config/mcp_config.json`, and add the bootstrap rule, because agy does not pass MCP server instructions to the model. On each repo, ask the model to call `antigravity_agents_init` once and start a new agy session so the seats load. Details: [Register your host](https://malindarathnayake.github.io/Foreman/getting-started/configure-mcp-host#antigravity-agy).
+
 On Windows the npm shim is a `.cmd` file, so wrap the command:
 
 ```json
 { "mcpServers": { "foreman": { "command": "cmd", "args": ["/c", "foreman-mcp"] } } }
 ```
 
-Add `"--host=cursor"` or `"--host=codex"` after `"foreman-mcp"` for those hosts. The host must start the MCP process with your repo as the working directory. State paths are resolved from there, and a wrong directory means the ledger is written somewhere else.
+Add `"--host=cursor"`, `"--host=codex"` or `"--host=antigravity"` after `"foreman-mcp"` for those hosts. The host must start the MCP process with your repo as the working directory. State paths are resolved from there, and a wrong directory means the ledger is written somewhere else.
 
 Verify with the host's own MCP list, then ask the model to call `host_status` and `bundle_status`. Full page: [Register your host](https://malindarathnayake.github.io/Foreman/getting-started/configure-mcp-host).
 
@@ -119,7 +127,7 @@ doc_man               writes documentation from the code and labels what it cann
 1. **`design_partner`** asks 5 to 8 scoping questions and stops for your answers. When the blocking ones are settled it writes `Docs/design-summary.md` and asks you to approve it.
 2. **`spec_generator`** reads the approved summary and writes four files in `Docs/`: `spec.md` (phases and units, each with a directive), `handoff.md` (session-start and recovery instructions), `PROGRESS.md` (checklist and decisions), and `testing-harness.md` (test tiers and commands). It seeds the ledger with every phase and unit.
 3. **`pitboss_implementor`** works one unit at a time. The procedure tells the model to read the unit directive, build a brief for a worker, record the delegation in the ledger, start a worker subagent in your host, inspect every changed file, run the unit's test command, and record a pass or a rejection. A rejected unit goes to a fresh worker with the rejection history. After three failed attempts since the unit last passed, the ledger refuses another attempt, and a pass, without your override.
-4. **At the end of a phase** the procedure reviews the changes. Codex mode uses native reviewers plus a verifier, and adds available Claude/Gemini CLI advisors at major checkpoints; extra CLIs are optional. On Claude Code, reviewers are the Codex CLI and Gemini CLI, if installed. Findings are classified and recorded. The ledger refuses to close the phase while a review carries a confirmed finding above LOW (a confirmed LOW is recorded as advisory), until the fix is re-verdicted and a fresh review shows it resolved. Then the procedure tells you to start a new session.
+4. **At the end of a phase** the procedure reviews the changes. Codex and Antigravity modes use native reviewers plus a verifier, and add available CLI advisors at major checkpoints (Claude/Gemini on Codex, Claude/Codex on Antigravity); extra CLIs are optional. On Claude Code, reviewers are the Codex CLI and Gemini CLI, if installed. Findings are classified and recorded. The ledger refuses to close the phase while a review carries a confirmed finding above LOW (a confirmed LOW is recorded as advisory), until the fix is re-verdicted and a fresh review shows it resolved. Then the procedure tells you to start a new session.
 5. **Next session**, `session_orient` reads the ledger and returns the action and target: `implement_unit p2/u3`, `retry_phase_gate`, or `complete`. A unit that was in progress when the session stopped is restarted, not resumed mid-edit.
 
 Normal implementation units are delegated. The model edits directly only under `lighttask`, or under the implementor's Direct Fix rule, which allows a literal substitution after a rejection and nothing else.
@@ -207,7 +215,7 @@ Full docs: [malindarathnayake.github.io/Foreman](https://malindarathnayake.githu
 
 ## Project
 
-**Current release:** `v0.9.4` | **Package:** `@malindarathnayake/foreman-mcp` | **Runtime:** Node.js `^22.23.4 || ^24.22.1 || >=26.12.1`
+**Current release:** `v0.9.7` | **Package:** `@malindarathnayake/foreman-mcp` | **Runtime:** Node.js `^22.23.4 || ^24.22.1 || >=26.12.1`
 
 - [Changelog](CHANGELOG.md)
 - [Security policy](SECURITY.md)

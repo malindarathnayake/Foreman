@@ -16,7 +16,8 @@ import {
   effectiveSeverity, effectiveClassification, hasConfirmed, isFullyCurrent, seatCoverage, type Coverage,
 } from "./reviewPredicates.js"
 import {
-  applyEscape, classifyEscape, classifyGate, commitIndependence, coveringGate, independenceDecision, recordGatePass, unclassifiedEscapes,
+  applyEscape, classifyEscape, classifyGate, commitIndependence, coveringGate, independenceDecision, NATIVE_REVIEW_HOSTS, recordGatePass,
+  unclassifiedEscapes,
 } from "./reviewBasis.js"
 import { appendConsumed, readReceipts, receiptsPathFor, type ReceiptsState } from "./seatReceipts.js"
 import { briefHash, findPreflight, findPreflightAny, forwardUnmet, mergeObligations, preflightPathFor } from "./preflight.js"
@@ -1343,7 +1344,8 @@ async function applyOperation(
         const coverage = seatCoverage(gatePhase, allReviews, {
           // 0.6.20: Claude Code runs the same shape (Workflow fan with distinct agents and a verifier);
           // the basis stamp labels it same-provider and the independence bound caps the streak.
-          nativeSeat: (r) => (host === "codex" || host === "claude-code") && reviewIncompleteness(r) === null,
+          // 0.9.7: Antigravity runs the same shape through invoke_subagent seats.
+          nativeSeat: (r) => (host === "codex" || host === "claude-code" || host === "antigravity") && reviewIncompleteness(r) === null,
           verificationSeat: (r) => verificationWhy.get(r) === null,
         })
         // Seats: every record that is the newest seat-grade cover of some unit, plus every
@@ -1364,7 +1366,7 @@ async function applyOperation(
               : ""
             throw new Error(
               `REVIEW REQUIRED: phase '${phase}' has no record_review entry recorded at or after its latest unit verdict.${stale}${notSeats} ` +
-              (host === "codex" ? "Run a complete native subagent review (stage:'native', distinct reviewer/verifier IDs and checked lists) or an optional external advisor review " : "Run the checkpoint deliberation and persist at least one advisor review ") +
+              (NATIVE_REVIEW_HOSTS.has(host) ? "Run a complete native subagent review (stage:'native', distinct reviewer/verifier IDs and checked lists) or an optional external advisor review " : "Run the checkpoint deliberation and persist at least one advisor review ") +
               "(write_ledger record_review) before the gate can pass, or set data.user_override: true " +
               "to pass without independent review — the override is recorded on the phase. " +
               (modelRank.permissions.delta_review
@@ -1568,7 +1570,9 @@ async function applyOperation(
         throw new Error(`REVIEW SCOPE: finding units name unregistered unit(s) ${unknownFindingUnits.slice(0, 10).join(", ")} in phase '${phase}'; list the registered units the finding is about, or omit units.`)
       }
       if (data.stage === "native") {
-        if (host !== "codex" && host !== "claude-code") throw new Error("NATIVE REVIEW: stage:'native' requires a host with native subagents (codex, claude-code).")
+        if (host !== "codex" && host !== "claude-code" && host !== "antigravity") {
+          throw new Error("NATIVE REVIEW: stage:'native' requires a host with native subagents (codex, claude-code, antigravity).")
+        }
         if (data.completion !== "partial" && data.completion !== "failed") {
           const why = reviewIncompleteness({ ...data, ts: "" })
           if (why) throw new Error(`NATIVE REVIEW INCOMPLETE: ${why}. Record partial/failed or finish the native review.`)
@@ -1742,10 +1746,13 @@ async function applyOperation(
             `SEAT RECEIPT: '${receipt.id}' was reclaimed — it was bound to a review recorded at ${reclaimed.from_review_ts}, ` +
             "which is no longer in the ledger (a restore or a lost write). The rebind is recorded in the receipts chain."
         }
-      } else if (host === "codex" && (data.stage === undefined || data.stage === "independent")) {
+      } else if (NATIVE_REVIEW_HOSTS.has(host) && (data.stage === undefined || data.stage === "independent")) {
         warning =
-          "SEAT RECEIPT: this independent record carries no receipt. On Codex an external seat run through invoke_advisor " +
-          "returns seat_receipt and packet_sha256 in its meta block; only a receipted seat counts as cross-vendor for the independence bound."
+          `SEAT RECEIPT: this independent record carries no receipt. On ${host === "codex" ? "Codex" : "Antigravity"} an external seat run through invoke_advisor ` +
+          "returns seat_receipt and packet_sha256 in its meta block; " +
+          (host === "antigravity"
+            ? "on this host only two receipted seats from different vendors count as cross-vendor for the independence bound."
+            : "only a receipted seat counts as cross-vendor for the independence bound.")
       }
       // Optional field: lazily created (absent on pre-v0.3.1 phases loaded from disk).
       p.reviews ??= []

@@ -17,6 +17,12 @@ export interface ExternalCliResult {
   cancelled?: boolean
   /** 0.6.39: the seat ran on a fallback model because the first was not available. */
   modelFallback?: { from: string; to: string; reason: string; first: Omit<ExternalCliResult, "modelFallback"> }
+  /**
+   * 0.9.6: the gemini seat ran through the Antigravity CLI (agy) rather than gemini-cli.
+   * servedLabels are the model labels agy's log says it propagated to the backend, the
+   * only served-model evidence agy gives (its JSON output carries no model field).
+   */
+  agy?: { servedLabels: string[] }
 }
 
 /** 0.6.39: per-call controls shared by runExternalCli and runWithStdin. */
@@ -316,6 +322,9 @@ export function runWithStdin(
   timeoutMs: number,
   env?: NodeJS.ProcessEnv,
   controls?: SpawnControls,
+  /** Larger stdout cap for CLIs whose output wraps the answer in a stream (agy). Clamped like runExternalCli. */
+  maxStdout?: number,
 ): Promise<ExternalCliResult> {
-  return spawnCollect(command, args, { stdin: stdinData, timeoutMs, stdoutBudget: MAX_OUTPUT, env, signal: controls?.signal, onTick: controls?.onTick })
+  const stdoutBudget = Math.min(Math.max(maxStdout ?? MAX_OUTPUT, MAX_OUTPUT), MAX_OUTPUT_CEILING)
+  return spawnCollect(command, args, { stdin: stdinData, timeoutMs, stdoutBudget, env, signal: controls?.signal, onTick: controls?.onTick })
 }

@@ -57,7 +57,7 @@ import { renderShape } from "./lib/schemaDoc.js"
 import { formatSchemaError, isZodError } from "./lib/schemaError.js"
 import { readJournal, initSession, declareModel, logEvent, endSession, rehydrateRank } from "./lib/journal.js"
 import { resolveModelRank, type ModelRank } from "./lib/modelRank.js"
-import { invokeAdvisor, advisorRunMeta, classifyAdvisorFailure, CLAUDE_ADVISOR_MODEL, formatAdvisorResult, GEMINI_ADVISOR_MODEL, CODEX_ADVISOR_MODEL } from "./tools/invokeAdvisor.js"
+import { invokeAdvisor, advisorRunMeta, classifyAdvisorFailure, CLAUDE_ADVISOR_MODEL, formatAdvisorResult, pinnedAdvisorModel } from "./tools/invokeAdvisor.js"
 import { withReportBudget, REPORT_MAX_LINES_CEILING } from "./lib/outputBudget.js"
 import { appendReceipt, receiptsPathFor, receiptFailure, sha256Hex, CLI_PROVIDER } from "./lib/seatReceipts.js"
 import { DEFAULT_PATHS } from "./lib/foremanFiles.js"
@@ -71,6 +71,7 @@ import { codexAgentsInit, CODEX_AGENT_ROLES } from "./tools/codexAgentsInit.js"
 import { claudeWorkflowsInit, FOREMAN_WORKFLOWS } from "./tools/claudeWorkflowsInit.js"
 import { claudeAgentsInit, ClaudeAgentsInitInputSchema } from "./tools/claudeAgentsInit.js"
 import { cursorAgentsInit, CursorAgentsInitInputSchema } from "./tools/cursorAgentsInit.js"
+import { antigravityAgentsInit, AntigravityAgentsInitInputSchema } from "./tools/antigravityAgentsInit.js"
 import { preflightCheck, PreflightCheckInputSchema } from "./tools/preflightCheck.js"
 import { renderOracle, runOracle, VerifyOracleInputSchema } from "./tools/verifyOracle.js"
 import { recordOracle } from "./lib/ledger.js"
@@ -374,8 +375,9 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       title: "Capability Check",
       description:
         host === "cursor"
-          ? "Checks whether the Cursor Agent CLI (agent / cursor-agent) and the claude, codex, or gemini CLIs are available and authenticated. Returns a closed auth_status taxonomy (ok|not_found|not_trusted|auth_expired|probe_timeout|model_substituted|error) with a corrective hint on failures. Cursor is probed live via agent status --format json; it is not assumed available from Task. For gemini it also reports model_requested and model_served from the run stats; a served model other than the pinned one is model_substituted."
-          : "Checks whether the claude, codex, or gemini CLI is available and authenticated. Returns a closed auth_status taxonomy (ok|not_found|not_trusted|auth_expired|probe_timeout|model_substituted|error) with a corrective hint on failures. For gemini it also reports model_requested and model_served from the run stats; a served model other than the pinned one is model_substituted.",
+          ? "Checks whether the Cursor Agent CLI (agent / cursor-agent) and the claude, codex, or gemini CLIs are available and authenticated. Returns a closed auth_status taxonomy (ok|not_found|not_trusted|auth_expired|probe_timeout|model_substituted|error) with a corrective hint on failures. Cursor is probed live via agent status --format json; it is not assumed available from Task. For gemini it probes agy when installed (else gemini-cli) and reports backend, model_requested and model_served; a served model other than the pinned one is model_substituted."
+          : "Checks whether the claude, codex, or gemini CLI is available and authenticated. Returns a closed auth_status taxonomy (ok|not_found|not_trusted|auth_expired|probe_timeout|model_substituted|error) with a corrective hint on failures. For gemini it probes agy when installed (else gemini-cli) and reports backend, model_requested and model_served; a served model other than the pinned one is model_substituted." +
+            (host === "antigravity" ? " On antigravity, cli:'gemini' is the host's own vendor when the pit-boss runs Gemini; prefer claude and codex for cross-vendor review." : ""),
       inputSchema: z.strictObject({
         cli: z.enum(advisorClisForHost(host)),
       }),
@@ -398,8 +400,9 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       title: "Invoke Advisor",
       description:
         host === "cursor"
-          ? "Invoke claude|codex|gemini|cursor CLI. Resolves binaries cross-platform and wraps .cmd/.ps1 shims on win32. Claude runs headless with Fable 5.1 (Opus if Fable is unavailable) at max effort and no tools; Codex runs gpt-6-astra at xhigh reasoning (codex-cli 0.153.4 or newer) and the meta block echoes model_served and reasoning_effort from its header. Cursor runs agent -p --mode=ask --trust (never --approve-mcps, never a pinned --model); receipts are provider unknown. Exit 0 with empty stdout, or stdout equal to the prompt, is reported as completion: failed with the stderr tail — not a clean seat; record it as failed and retry once. Gemini runs with JSON output: the meta block names model_requested and model_served, and a served model other than the pinned one is completion: failed (model_substituted). Failed calls may be compressed; if a failed call's summary is insufficient, call retrieve_original with the <<ccr:HASH>> marker for the full diagnostic."
-          : "Invoke claude|codex|gemini CLI via stdin. Resolves binaries cross-platform and wraps .cmd shims on win32. Claude runs headless with Fable 5.1 (Opus if Fable is unavailable) at max effort and no tools; Codex runs gpt-6-astra at xhigh reasoning (codex-cli 0.153.4 or newer) and the meta block echoes model_served and reasoning_effort from its header. Exit 0 with empty stdout, or stdout equal to the prompt, is reported as completion: failed with the stderr tail — not a clean seat; record it as failed and retry once. Gemini runs with JSON output: the meta block names model_requested and model_served, and a served model other than the pinned one is completion: failed (model_substituted). Failed calls may be compressed; if a failed call's summary is insufficient, call retrieve_original with the <<ccr:HASH>> marker for the full diagnostic.",
+          ? "Invoke claude|codex|gemini|cursor CLI. Resolves binaries cross-platform and wraps .cmd/.ps1 shims on win32. Claude runs headless with Fable 5.2 (Opus if Fable is unavailable) at max effort and no tools; Codex runs gpt-6.2-astra at xhigh reasoning (verified on codex-cli 0.167.0) and the meta block echoes model_served and reasoning_effort from its header. Cursor runs agent -p --mode=ask --trust (never --approve-mcps, never a pinned --model); receipts are provider unknown. Exit 0 with empty stdout, or stdout equal to the prompt, is reported as completion: failed with the stderr tail — not a clean seat; record it as failed and retry once. Gemini runs through agy when installed (gemini-4-hydrogen-xhigh; writes, commands, MCP and URL fetches denied), else gemini-cli (gemini-4-carbon); the meta block names backend, model_requested and model_served, and a served model other than the pinned one is completion: failed (model_substituted). Failed calls may be compressed; if a failed call's summary is insufficient, call retrieve_original with the <<ccr:HASH>> marker for the full diagnostic."
+          : "Invoke claude|codex|gemini CLI via stdin. Resolves binaries cross-platform and wraps .cmd shims on win32. Claude runs headless with Fable 5.2 (Opus if Fable is unavailable) at max effort and no tools; Codex runs gpt-6.2-astra at xhigh reasoning (verified on codex-cli 0.167.0) and the meta block echoes model_served and reasoning_effort from its header. Exit 0 with empty stdout, or stdout equal to the prompt, is reported as completion: failed with the stderr tail — not a clean seat; record it as failed and retry once. Gemini runs through agy when installed (gemini-4-hydrogen-xhigh; writes, commands, MCP and URL fetches denied), else gemini-cli (gemini-4-carbon); the meta block names backend, model_requested and model_served, and a served model other than the pinned one is completion: failed (model_substituted). Failed calls may be compressed; if a failed call's summary is insufficient, call retrieve_original with the <<ccr:HASH>> marker for the full diagnostic." +
+            (host === "antigravity" ? " On antigravity, cli:'gemini' is the host's own vendor when the pit-boss runs Gemini; prefer claude and codex for cross-vendor review." : ""),
       inputSchema: z.strictObject({
         cli: z.enum(advisorClisForHost(host)),
         prompt: z.string().max(100000),
@@ -433,7 +436,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
       const reviewPins = pinResult && "pinned" in pinResult ? pinResult.pinned : null
       const startedTs = new Date().toISOString()
       const result = await invokeAdvisor(args.cli, sentPrompt, args.timeout_ms, callControls(_extra, `invoke_advisor ${args.cli}`))
-      const pinned = args.cli === "gemini" ? GEMINI_ADVISOR_MODEL : args.cli === "codex" ? CODEX_ADVISOR_MODEL : undefined
+      const pinned = pinnedAdvisorModel(args.cli, result)
       // 0.6.19: every run gets a receipt, failed ones included, so a failed seat can never
       // be re-described as clean. The pit-boss copies seat_receipt and packet_sha256 into
       // record_review; the ledger checks them against this file, never against the text.
@@ -817,7 +820,7 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
     "session_orient",
     {
       title: "Session Orient",
-      description: "Returns ledger-authoritative Foreman resume state, including action, resume target, phase/unit, gate retry, blockers, and ledger/progress drift. pending_owner_gates includes progress, stage, failure history and the latest approval; until the first gate exists, owner_gates_hint shows how to register B1/B2 with write_ledger operation:'set_owner_gate'. Phase and unit ids order naturally (p2 before p10). last_completed_unit is the completion frontier (newest first-pass timestamp; re-verdicts do not move it); latest_pass_verdict_unit/ts is the newest pass verdict by timestamp. Call first at session start. When the ledger is complete, session_hygiene is clear: stop and tell the user to run the host command (Cursor/Claude: /clear) before starting a different job.",
+      description: "Foreman entry point: call this first for any Foreman work. Returns ledger-authoritative Foreman resume state, including action, resume target, phase/unit, gate retry, blockers, and ledger/progress drift. pending_owner_gates includes progress, stage, failure history and the latest approval; until the first gate exists, owner_gates_hint shows how to register B1/B2 with write_ledger operation:'set_owner_gate'. Phase and unit ids order naturally (p2 before p10). last_completed_unit is the completion frontier (newest first-pass timestamp; re-verdicts do not move it); latest_pass_verdict_unit/ts is the newest pass verdict by timestamp. Call first at session start. When the ledger is complete, session_hygiene is clear: stop and tell the user to run the host command (Cursor/Claude: /clear) before starting a different job.",
       inputSchema: z.strictObject({}),
       outputSchema: TextOutputSchema,
       annotations: {
@@ -1057,6 +1060,28 @@ export async function createServer(config?: ServerConfig): Promise<McpServer> {
         annotations: { title: "Init Cursor Agents", readOnlyHint: false, destructiveHint: false },
       },
       async (args, _extra) => textResult(await cursorAgentsInit(args))
+    )
+  }
+
+  // Antigravity only: write .agents/agents seat files (tier words) and the per-repo bootstrap rule.
+  if (host === "antigravity") {
+    server.registerTool(
+      "antigravity_agents_init",
+      {
+        title: "Init Antigravity Agents",
+        description: [
+          "Antigravity (agy) host only. Writes Foreman seats to .agents/agents/: foreman-worker-light (flash), foreman-worker (flash),",
+          "foreman-worker-heavy (pro), foreman-worker-frontier (pro), foreman-reviewer (pro) and foreman-verifier (pro), plus the bootstrap rule .agents/rules/foreman.md.",
+          "model: takes tier words only (inherit, flash_lite, flash, pro); a concrete id makes agy drop the seat, so it is refused.",
+          "Workers get tools [read_file, edit_file, write_file, run_command, manage_task]; reviewer and verifier get [read_file]. All set inheritMcp and inheritCustomizations to false.",
+          "Spawn with invoke_subagent TypeName '<role>' and omit Model; read the served model from the returned transcript.",
+          "Existing files are left alone unless overwrite: true. It never writes ~/.gemini. New agent files load in a new agy session.",
+        ].join(" "),
+        inputSchema: AntigravityAgentsInitInputSchema,
+        outputSchema: TextOutputSchema,
+        annotations: { title: "Init Antigravity Agents", readOnlyHint: false, destructiveHint: false },
+      },
+      async (args, _extra) => textResult(await antigravityAgentsInit(args))
     )
   }
 
@@ -1586,7 +1611,7 @@ if (isMain) {
     console.log(`  host: ${host} (${getProfile(host).displayName})`)
     console.log("Usage:")
     console.log("  foreman-mcp                      Start MCP server (stdin/stdout)")
-    console.log("  foreman-mcp --host=<id>          Set host: claude-code (default), cursor, codex")
+    console.log("  foreman-mcp --host=<id>          Set host: claude-code (default), cursor, codex, antigravity, generic")
     console.log("  foreman-mcp --version            Print version and exit")
     console.log("  foreman-mcp --diag               Run diagnostics and exit")
     console.log("Env vars:")

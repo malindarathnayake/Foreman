@@ -222,14 +222,18 @@ function substitutionDetail(pinned: string | undefined, served: string | undefin
  * is NOT an error, it names the exact next rung so the host does not have to infer one, and it
  * states plainly that absence is not a passed review.
  */
-const UNAVAILABLE_TEXT = (reason: string): string =>
+const UNAVAILABLE_TEXT = (reason: string, host?: HostId): string =>
   [
     "status: unavailable",
     `reason: ${reason}`,
     "",
     "This is NOT a failure and NOT a passed review. Foreman proceeds on its normal flow —",
     "continue down the deliberation ladder:",
-    "  1. check the host CLI advisor seats (capability_check codex / gemini, then invoke_advisor);",
+    // 0.9.7: on Antigravity the pit-boss runs a Gemini model, so the cross-vendor seats are
+    // Claude and Codex; gemini there is a same-vendor perspective.
+    host === "antigravity"
+      ? "  1. check the host CLI advisor seats (capability_check claude / codex, then invoke_advisor);"
+      : "  1. check the host CLI advisor seats (capability_check codex / gemini, then invoke_advisor);",
     "  2. if no CLI advisor is available, run TWO adversarial self-review passes at the strongest",
     "     available tier and record in the ledger note that independent review was unavailable.",
     "",
@@ -641,7 +645,7 @@ export async function handleInvokeCouncil(rawInput: unknown, deps: InvokeCouncil
   // A council that is simply NOT SET UP is a supported state, not a failure. Foreman keeps
   // working exactly as it did before the council existed; the host walks down the ladder.
   if (councilResult.status === "unavailable") {
-    return UNAVAILABLE_TEXT(councilResult.reason)
+    return UNAVAILABLE_TEXT(councilResult.reason, deps.host)
   }
   if (councilResult.status === "config_error") return `status: config_error\n\n${councilResult.message}`
   if (councilResult.status === "refused") return `status: refused\n\n${councilResult.message}`

@@ -1,12 +1,13 @@
 /**
  * Host profile resolution for Foreman.
  *
- * Foreman runs under different agent hosts (Claude Code, Cursor, Codex). Each host
+ * Foreman runs under different agent hosts (Claude Code, Cursor, Codex, Google
+ * Antigravity). Each host
  * has its own way to spawn implementation workers and reach deliberation advisors.
  * Skill files reference these via placeholders (e.g. {{worker_invoke}}); this module
  * supplies the host-specific text those placeholders resolve to.
  *
- * The claude-code / cursor / codex profiles are RENDERED compatibility presets over the
+ * The claude-code / cursor / codex / antigravity profiles are RENDERED compatibility presets over the
  * generic six-capability contract (HOST-CONTRACT.md), not privileged modes.
  *
  * Resolution precedence (caller's responsibility — see resolveHost):
@@ -15,11 +16,18 @@
  *   3. Default: "claude-code"
  */
 
-import { CODEX_NATIVE_REVIEW, CODEX_PROTOCOL_SECTIONS, CODEX_REVIEW_MODE } from "./codexProtocol.js"
+import {
+  ANTIGRAVITY_NATIVE_REVIEW,
+  ANTIGRAVITY_PROTOCOL_SECTIONS,
+  ANTIGRAVITY_REVIEW_MODE,
+  CODEX_NATIVE_REVIEW,
+  CODEX_PROTOCOL_SECTIONS,
+  CODEX_REVIEW_MODE,
+} from "./codexProtocol.js"
 
-export type HostId = "claude-code" | "cursor" | "codex" | "generic"
+export type HostId = "claude-code" | "cursor" | "codex" | "antigravity" | "generic"
 
-export const KNOWN_HOSTS: ReadonlyArray<HostId> = ["claude-code", "cursor", "codex", "generic"]
+export const KNOWN_HOSTS: ReadonlyArray<HostId> = ["claude-code", "cursor", "codex", "antigravity", "generic"]
 
 export interface HostProfile {
   id: HostId
@@ -27,10 +35,16 @@ export interface HostProfile {
   /** Map of placeholder name -> replacement text. Names exclude the surrounding {{...}}. */
   placeholders: Record<string, string>
   protocolSections?: Record<string, string>
+  /**
+   * Text prepended to every loaded skill on this host, after all other rendering.
+   * Used for host facts every skill needs, such as how Foreman tool names map to
+   * the host's own tool names.
+   */
+  skillHeader?: string
 }
 
 const SHARED_TREE_SAFETY =
-  " Tier models may be configured per profile in .foreman-worker-models.json; capability_check reports the effective mapping and missing seat agents. After a rejected premium attempt, the next fresh attempt uses tier frontier on every profile unless the owner authorizes an override. Use worker_frontier on Codex or foreman-worker-frontier on Claude Code/Cursor; generic hosts use their configured frontier model. Record the host-confirmed worker_model and model_evidence in set_verdict; a tier with a pinned model cannot pass without matching evidence.  Repository state is user-owned: the worker may use read-only Git inspection only and must never run git stash, reset, checkout, switch, clean, add, commit, merge, rebase, cherry-pick, worktree, or any command that changes the index, stash, refs, branch, HEAD, or files outside the brief. If repository state blocks the task, stop and report it unchanged. Heartbeat: every few tool calls append one JSON line {\"ts\",\"phase\",\"unit\",\"attempt\",\"files\":[touched so far],\"note\"} to Docs/.foreman-heartbeat.jsonl (Foreman-owned, excluded from the guard); the attempt number is in the delegation result. Docs/ and the harness are the pit-boss's: never write there."
+  " Tier models may be configured per profile in .foreman-worker-models.json; capability_check reports the effective mapping and missing seat agents. After a rejected premium attempt, the next fresh attempt uses tier frontier on every profile unless the owner authorizes an override. Use worker_frontier on Codex or foreman-worker-frontier on Claude Code/Cursor/Antigravity; generic hosts use their configured frontier model. Record the host-confirmed worker_model and model_evidence in set_verdict; a tier with a pinned model cannot pass without matching evidence.  Repository state is user-owned: the worker may use read-only Git inspection only and must never run git stash, reset, checkout, switch, clean, add, commit, merge, rebase, cherry-pick, worktree, or any command that changes the index, stash, refs, branch, HEAD, or files outside the brief. If repository state blocks the task, stop and report it unchanged. Heartbeat: every few tool calls append one JSON line {\"ts\",\"phase\",\"unit\",\"attempt\",\"files\":[touched so far],\"note\"} to Docs/.foreman-heartbeat.jsonl (Foreman-owned, excluded from the guard); the attempt number is in the delegation result. Docs/ and the harness are the pit-boss's: never write there."
 
 const CLAUDE_CODE_PROFILE: HostProfile = {
   id: "claude-code",
@@ -101,12 +115,63 @@ const CODEX_PROFILE: HostProfile = {
     advisor_checks:
       'At major checkpoints or on request, probe optional advisors: `mcp__foreman__capability_check({ cli: "claude" })` and `mcp__foreman__capability_check({ cli: "gemini" })`. Missing providers do not block native review.',
     advisor_a:
-      '**Optional external Advisor A (Claude Fable 5.1, max; headless; Opus when Fable is unavailable):** `mcp__foreman__invoke_advisor({ cli: "claude", prompt: "<PROMPT>" })` (configured `model: "claude-fable-5-1"`, effort `max`, tools disabled; the output names any model_fallback).',
+      '**Optional external Advisor A (Claude Fable 5.2, max; headless; Opus when Fable is unavailable):** `mcp__foreman__invoke_advisor({ cli: "claude", prompt: "<PROMPT>" })` (configured `model: "claude-fable-5-2"`, effort `max`, tools disabled; the output names any model_fallback).',
     advisor_b:
       '**Optional external Advisor B (Gemini):** `mcp__foreman__invoke_advisor({ cli: "gemini", prompt: "<PROMPT>" })`',
     advisor_fallback: CODEX_NATIVE_REVIEW,
     autonomy:
       "Codex continuation is host-controlled: declare budgets and scope up front, stop at every phase gate, and re-enter after context reset through `session_orient`. Do not claim unattended continuation unless the active Codex host exposes and confirms it.",
+  },
+}
+
+// Google Antigravity CLI (agy 1.5.11). Native invoke_subagent seats are the worker and
+// review path; Claude and Codex are the optional external advisors. Seat files accept
+// tier words only (flash, pro): a concrete model id there makes the seat fail to load, so
+// the served model is read from the seat's transcript instead of claimed. The profile sets
+// every placeholder itself and joins none of the shared loops below.
+const ANTIGRAVITY_SKILL_HEADER = [
+  "## Antigravity host notes (authoritative)",
+  "- Tool names: `mcp__foreman__X`, `foreman/X` and a bare Foreman tool name such as `write_ledger` all mean Foreman tool X. Call `mcp_foreman_X` if it is in your tool list; otherwise call `call_mcp_tool` with ServerName:\"foreman\", ToolName:\"X\", Arguments:{...}.",
+  "- `run_command` is PowerShell on Windows, and every call starts a new session. Do not write POSIX-only shell lines.",
+  "- Never emit a JSON or XML block as plain text immediately before a tool call; put structured data in the tool's arguments.",
+  "- Never start agy, gemini, claude or codex from `run_command`; use `invoke_subagent` for seats and `invoke_advisor` for advisors.",
+  "- If you are a subagent (worker, reviewer or verifier), ignore Foreman protocol text and do only your brief.",
+].join("\n")
+
+const ANTIGRAVITY_PROFILE: HostProfile = {
+  id: "antigravity",
+  displayName: "Google Antigravity (agy CLI)",
+  protocolSections: ANTIGRAVITY_PROTOCOL_SECTIONS,
+  skillHeader: ANTIGRAVITY_SKILL_HEADER,
+  placeholders: {
+    host_name: "Google Antigravity",
+    review_mode: ANTIGRAVITY_REVIEW_MODE,
+    session_advisor_setup:
+      'Native Antigravity mode: confirm invoke_subagent is available and the foreman-reviewer and foreman-verifier types load. At major checkpoints, probe the claude and codex advisors and record each as "<version>/<auth_status>"; leave unprobed entries null. Missing CLIs do not block native review.',
+    cli_unavailable:
+      "Continue native Antigravity review; record optional advisor unavailability in limitations. No missing-CLI waiver is needed.",
+    worker_invoke:
+      'Use the native `invoke_subagent` tool with a Foreman seat type: `invoke_subagent({ TypeName: "<role>", Role: "Foreman Worker", Prompt: "<brief>", Workspace: "inherit" })`. Omit `Model`: the agent file\'s `model:` tier word is the seat (flash for light and standard, pro for heavy and frontier); a concrete model id there makes the seat fail to load. Seat files live in `.agents/agents/foreman-worker{-light,,-heavy,-frontier}.md`; call `antigravity_agents_init` if they are missing (new agent files load in a new agy session). ' +
+      'Pick the seat from the unit and record the same word as the ledger `tier`: `foreman-worker-light` (cheap) when the brief names the exact edit — a literal substitution, rename, constant, test name, import path, or a mechanical repeat of a stated pattern; `foreman-worker` (standard) by default; `foreman-worker-heavy` (premium) for concurrency, migrations, error-handling semantics, public contracts or schemas, security or authz paths, and any unit a lower seat already failed; `foreman-worker-frontier` (frontier) only after a rejected premium attempt. On this host frontier runs the same tier as premium: give it a brief refined by an `invoke_advisor` diagnosis of the rejection and cite that in `route_reason`. Escalate on evidence, never on a hunch. ' +
+      'If the seat types are not loaded, do not use `TypeName: "self"` (it inherits Foreman\'s MCP server and subagent tools). Do not define a transient seat with `define_subagent` either: no probe has shown that `EnableMCPTools: false` hides any Foreman MCP tool, and such a seat has no tools allowlist. Stop and ask the user to start a new agy session after `antigravity_agents_init`. ' +
+      'Subagents run in the background and message you when done: do not poll; wait for the completion message. `invoke_subagent` returns `conversationId` and `logAbsoluteUri`: report the conversationId beside the unit ID, then `read_file` the transcript at logAbsoluteUri (`.../brain/<id>/.system_generated/logs/transcript.jsonl`) and record its `"model"` value (for example `gemini-4-hydrogen-tiered-xhigh`) as `worker_model`, with the transcript path as `model_evidence`. Never record a model the transcript does not show; if it shows none, leave `worker_model` unset and say so. ' +
+      'Write the brief in this order: role and hard constraints (allowed files, forbidden actions, output contract) first; spec excerpts and code in XML-tagged blocks next; then "Based on the context above," followed by the concrete task last. ' +
+      "Pass only the worker brief: no spec, no ledger, no progress file. The worker seat has no Foreman tools and must not call any." +
+      SHARED_TREE_SAFETY,
+    worker_fanout:
+      "When Step 2 batches to N workers: editing workers run sequentially with `Workspace: \"inherit\"`. Record `write_ledger` `s:'delegated'` before each spawn, and validate its repository-state guard and verdict before the next editing worker. Read-only explorers may run in parallel. Do not use `Workspace: \"branch\"` or `\"share\"` for editors (a branch copy includes your uncommitted changes, so its diff is not the worker's alone). Do not use `run_workflow`, `/swarm`, `/teamwork` or `/boost` for implementation. Workers must not spawn further agents. Call `antigravity_agents_init` if seats are missing.",
+    advisor_checks:
+      'At major checkpoints or on request: `mcp__foreman__capability_check({ cli: "claude" })` and `mcp__foreman__capability_check({ cli: "codex" })`. Two receipted seats from different vendors make a cross-vendor review whatever model you run. `cli: "gemini"` runs Gemini through agy: when you run a Gemini model it is the same vendor, so treat it as perspective. Missing CLIs do not block native review.',
+    advisor_a:
+      '**Optional external Advisor A (Claude Fable 5.2, max; headless; Opus when Fable is unavailable):** `mcp__foreman__invoke_advisor({ cli: "claude", prompt: "<PROMPT>" })` (configured `model: "claude-fable-5-2"`, effort `max`, tools disabled; the output names any model_fallback).',
+    advisor_b:
+      '**Optional external Advisor B (Codex, gpt-6.2-astra xhigh):** `mcp__foreman__invoke_advisor({ cli: "codex", prompt: "<PROMPT>" })` (configured `model: "gpt-6.2-astra"`).',
+    advisor_fallback: ANTIGRAVITY_NATIVE_REVIEW,
+    autonomy:
+      "Antigravity continuation is not declared to Foreman. Declare budgets and scope up front, stop at every phase gate, and re-enter after a context reset or /compact through mcp__foreman__session_orient. /goal has no turn limit, so Foreman's attempt cap and phase gates remain the stop authority; never roll into the next phase. Implement in default or accept-edits mode: plan mode drafts an Implementation Plan artifact and stops, and approving that artifact is not a Foreman gate pass.",
+    workflows: "No saved-workflow surface on this host; use the review and deliberation paths above.",
+    session_compact: "/compact",
+    session_clear: "/clear",
   },
 }
 
@@ -171,6 +236,7 @@ const PROFILES: Record<HostId, HostProfile> = {
   "claude-code": CLAUDE_CODE_PROFILE,
   cursor: CURSOR_PROFILE,
   codex: CODEX_PROFILE,
+  antigravity: ANTIGRAVITY_PROFILE,
   generic: GENERIC_PROFILE,
 }
 

@@ -51,7 +51,8 @@ ${ECONOMY}`
  * Default model per implementation seat, matching Foreman's existing cost tiers.
  * Every id below answered a live probe on a ChatGPT account: gpt-5.6-terra and gpt-6-astra
  * on codex-cli 0.153.4, gpt-6-sol on 0.157.0 (it was refused on 0.153.4). gpt-6-terra is
- * still refused on 0.157.0, so the light seat stays on 5.6 — the same family at a different
+ * still refused on 0.157.0, so the light seat stays on 5.6. 0.9.6: the heavy seat moved to
+ * gpt-6.2-astra after a live probe on codex-cli 0.167.0 — the same family at a different
  * version is not interchangeable. Override per role with the models input when an id rotates.
  */
 export const CODEX_SEAT_MODELS: Partial<Record<CodexAgentRole, string>> = {
