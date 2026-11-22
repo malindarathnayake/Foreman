@@ -254,15 +254,15 @@ describe("record_review — completion / checked / limitations / stage", () => {
     expect(reviews[1]).toMatchObject({ stage: "cross_exam", completion: "complete" })
 
     const text = await handleReadLedger(ledgerPath, { query: "reviews" })
-    expect(text).toContain("(no findings; completion=partial; checked=2; stage=independent)")
-    expect(text).toContain("(no findings; completion=complete; checked=1; stage=cross_exam)")
+    expect(text).toContain("| partial | independent | - | - | - | [review] findings=0; checked=2; units=unscoped; gate_incomplete=completion=partial; limitations: did not open tests/")
+    expect(text).toContain("| complete | cross_exam | - | - | - | [review] findings=0; checked=1; units=unscoped; limitations=none")
   })
 
-  it("legacy zero-finding reviews still render the bare marker", async () => {
+  it("legacy zero-finding reviews render as unspecified, never complete", async () => {
     await writeLedger(ledgerPath, { operation: "record_review", phase: "p1", data: { advisor: "codex", findings: [] } })
     const text = await handleReadLedger(ledgerPath, { query: "reviews" })
-    expect(text).toContain("(no findings)")
-    expect(text).not.toContain("(no findings;")
+    expect(text).toContain("| unspecified | unspecified | - | - | - | [review] findings=0; checked=unspecified; units=unscoped; gate_incomplete=zero findings with no examined list; limitations=none")
+    expect(text).not.toMatch(/\| complete \|/)
   })
 
   it("rejects out-of-enum stage/completion and over-cap checked lists at the schema boundary", async () => {

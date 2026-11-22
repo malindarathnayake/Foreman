@@ -301,7 +301,7 @@ describe("a scoped record covers the units it names and the earlier seat keeps t
     await passingUnit("u1")
     await record(independent({ units: ["u1"] }))
     const text = await handleReadLedger(ledgerPath, { query: "reviews" })
-    expect(text).toContain("(no findings; completion=complete; checked=1; units=1; stage=independent)")
+    expect(text).toContain("| complete | independent | - | - | - | [review] findings=0; checked=1; units=1; limitations=none")
   })
   it("dedupes and sorts the scope", async () => {
     for (const u of ["u1", "u2"]) await passingUnit(u)

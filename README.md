@@ -215,7 +215,7 @@ Full docs: [malindarathnayake.github.io/Foreman](https://malindarathnayake.githu
 
 ## Project
 
-**Current release:** `v0.9.7` | **Package:** `@malindarathnayake/foreman-mcp` | **Runtime:** Node.js `^22.23.4 || ^24.22.1 || >=26.12.1`
+**Current release:** `v0.9.8` | **Package:** `@malindarathnayake/foreman-mcp` | **Runtime:** Node.js `^22.23.4 || ^24.22.1 || >=26.12.1`
 
 - [Changelog](CHANGELOG.md)
 - [Security policy](SECURITY.md)

@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.8] - 2026-11-22
+
+### Changed
+
+- `read_ledger({ query: "reviews" })` shows each review's state on every row. The table has nine columns (`phase | advisor | review_ts | completion | stage | finding_index | severity | class | finding`), and each review starts with a `[review]` status row (`finding_index`, `severity` and `class` are `-`) that carries the finding count, `checked`, `units`, the bounded `limitations` text, `superseded=yes` and `gate_incomplete=<reason>` from the gate's own predicates. A partial or failed review carrying the same LOW advisory as a complete one is no longer indistinguishable. Missing legacy values render `unspecified`, out-of-set values `invalid`; findings with no classification render `unclassified`.
+- A `review_completion` header line counts complete, partial and failed reviews across all pages of the filtered query.
+- With `unit_id`, a review is listed when it covers the unit or any of its findings names the unit, and its status row adds `unit_findings` and `unit_attempt=<reviewed>/<current>`. A review whose findings were all attributed to other units used to produce no row.
+- Every paged query neutralises cell text in both modes: whitespace and newlines collapse, `|` and its lookalikes become `¦`, and control, bidi, zero-width and tag characters become U+FFFD. `include_full_text:true` now only disables the 240-character clip, so seat-written text cannot add rows or columns.
+
+### Fixed
+
+- A paged query whose next row alone exceeded the page budget returned no rows and the same cursor. The row is now returned clipped and counted in `truncated_cells`.
+
 ## [0.9.7] - 2026-11-18
 
 ### Added
@@ -1309,7 +1322,8 @@ First minor release for the lighttask/spec/doc protocol family.
 
 Use the `changelog` MCP tool for the full historical table from `0.0.1` through `0.0.9`.
 
-[Unreleased]: https://github.com/malindarathnayake/Foreman/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/malindarathnayake/Foreman/compare/v0.9.8...HEAD
+[0.9.8]: https://github.com/malindarathnayake/Foreman/compare/v0.9.7...v0.9.8
 [0.8.0]: https://github.com/malindarathnayake/Foreman/compare/v0.7.2...v0.8.0
 [0.7.2]: https://github.com/malindarathnayake/Foreman/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/malindarathnayake/Foreman/compare/v0.7.0...v0.7.1

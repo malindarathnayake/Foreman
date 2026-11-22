@@ -13,6 +13,7 @@ import { createServer } from "../src/server.js"
 import { invokeAdvisor } from "../src/tools/invokeAdvisor.js"
 import { withReportBudget } from "../src/lib/outputBudget.js"
 import { readLedger, writeLedger } from "../src/lib/ledger.js"
+import { handleReadLedger } from "../src/tools/readLedger.js"
 import {
   appendConsumed, appendReceipt, providerFromModelId, readReceipts, receiptFailure, receiptsPathFor, sha256Hex, type ReceiptInput,
 } from "../src/lib/seatReceipts.js"
@@ -258,6 +259,12 @@ describe("record_review binds one receipt to one independent record", () => {
       .rejects.toThrow(/record it completion:'partial' with this receipt/)
     await record({ seat_receipt: timedOut.id, packet_hash: timedOut.prompt_sha256, completion: "partial", findings: [finding] })
     await expect(gate()).rejects.toThrow(/CONFIRMED FINDINGS|INCOMPLETE REVIEW|REVIEW REQUIRED/)
+    const stored = (await readLedger(ledgerPath)).phases.p1.reviews!.at(-1)!
+    expect(stored.completion).toBe("partial")
+    expect(stored.findings).toHaveLength(1)
+    expect(stored.findings[0]).toMatchObject({ severity: "high", description: "token leaks via field names", classification: "confirmed" })
+    const shown = await handleReadLedger(ledgerPath, { query: "reviews" })
+    expect(shown.split("\n").find((l) => l.includes("token leaks via field names"))).toContain("| partial |")
     const other = await receipt({ exit_code: 2, failure_reason: "auth_failed" })
     await expect(record({ seat_receipt: other.id, packet_hash: other.prompt_sha256, completion: "partial" }))
       .rejects.toThrow(/record it completion:'failed' without a receipt/)

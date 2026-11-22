@@ -44,6 +44,7 @@ describe.each(KNOWN_HOSTS)("OSC feedback on %s", (host) => {
     const reviews = await handleReadLedger(ledger, { phase: "p1", unit_id: "u1", query: "reviews" })
     expect(reviews).toContain("The input loses")
     expect(reviews).toContain("review_ts")
+    expect(reviews).toContain("unit_findings=1")
     expect(reviews).not.toContain("other finding")
   })
 

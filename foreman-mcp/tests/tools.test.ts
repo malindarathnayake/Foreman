@@ -335,7 +335,8 @@ describe("handleReadLedger", () => {
       data: { advisor: "gemini", findings: [{ severity: "high", file: "a.ts", line: "10", description: "boom", classification: "confirmed" }] },
     })
     const result = await handleReadLedger(ledgerPath, { query: "reviews" })
-    expect(result).toContain("phase | advisor | review_ts | finding_index | severity | class | finding")
+    expect(result).toContain("phase | advisor | review_ts | completion | stage | finding_index | severity | class | finding")
+    expect(result).toContain("| unspecified | unspecified | 0 | high | confirmed | boom")
     expect(result).toContain("gemini")
     expect(result).toContain("confirmed")
     expect(result).toContain("boom")

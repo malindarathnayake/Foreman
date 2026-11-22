@@ -1,5 +1,5 @@
 import path from "path"
-import { effectiveSeverity, effectiveClassification } from "../lib/reviewPredicates.js"
+import { effectiveSeverity, effectiveClassification, isSuperseded, reviewIncompleteness } from "../lib/reviewPredicates.js"
 import { computeGateUnitsHash, readLedgerWithStatus } from "../lib/ledger.js"
 import { toKeyValue, toTable } from "../lib/toon.js"
 import { renderDelegationMetrics } from "../lib/delegationMetrics.js"
@@ -12,28 +12,62 @@ const MAX_PAGE_LIMIT = 100
 const MAX_CELL_CHARS = 240
 const MAX_OUTPUT_CHARS = 50000
 
-function compactCell(value: string): { text: string; truncated: boolean } {
-  const compact = value.replace(/\s+/g, " ").replace(/\|/g, "¦").trim()
-  if (compact.length <= MAX_CELL_CHARS) return { text: compact, truncated: false }
-  return { text: `${compact.slice(0, MAX_CELL_CHARS - 1)}…`, truncated: true }
+/**
+ * Neutralise one cell so a stored value can never start a line, add a column or imitate a
+ * header line: whitespace (newlines included) collapses to one space, pipe lookalikes become
+ * a broken bar, and control, bidi, zero-width and tag characters become U+FFFD.
+ * [CWE-74] [CWE-116] [CWE-150]
+ */
+function encodeCell(value: unknown): string {
+  return String(value ?? "")
+    .replace(/\s+/g, " ")
+    .replace(/[|\uFF5C\u2502]/g, "¦")
+    .replace(/[\u0000-\u0008\u000E-\u001F\u007F-\u009F\u202A-\u202E\u2066-\u2069\u200B\u200C\u200E\u200F\u2060-\u2064\u061C\u00AD\u034F\u180E]|[\u{E0000}-\u{E007F}]/gu, "\uFFFD")
+    .trim()
 }
 
-function renderPage(headers: string[], rows: string[][], input: ReadLedgerInput, truncationHint?: string): string {
+function clipCell(text: string): { text: string; truncated: boolean } {
+  if (text.length <= MAX_CELL_CHARS) return { text, truncated: false }
+  let head = text.slice(0, MAX_CELL_CHARS - 1)
+  const last = head.charCodeAt(head.length - 1)
+  if (last >= 0xd800 && last <= 0xdbff) head = head.slice(0, -1)
+  return { text: `${head}…`, truncated: true }
+}
+
+/** A stored enum as a closed set: the value, "unspecified" when absent, "invalid" for anything else. */
+function closedValue(value: unknown, allowed: readonly string[]): string {
+  if (value === undefined) return "unspecified"
+  return typeof value === "string" && allowed.includes(value) ? value : "invalid"
+}
+
+function renderPage(
+  headers: string[],
+  rows: string[][],
+  input: ReadLedgerInput,
+  truncationHint?: string,
+  extraHeader?: Record<string, string | number>,
+): string {
   const cursor = Math.max(0, Math.min(input.cursor ?? 0, rows.length))
   const limit = Math.max(1, Math.min(input.limit ?? DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT))
+  const candidates = rows.slice(cursor, cursor + limit)
   const selected: string[][] = []
   let size = 0
-  for (const row of rows.slice(cursor, cursor + limit)) {
+  for (const row of candidates) {
     const length = row.reduce((n, cell) => n + (input.include_full_text ? cell.length : Math.min(cell.length, MAX_CELL_CHARS)), 0) + row.length * 4
     if (size + length > MAX_OUTPUT_CHARS - 2000) break
     selected.push(row)
     size += length
   }
+  // Stall guard: a single row over the budget must still advance the cursor, so it is clipped and counted.
+  const forceClip = selected.length === 0 && candidates.length > 0
+  if (forceClip) selected.push(candidates[0])
   let truncatedCells = 0
   const compactRows = selected.map((row) => row.map((cell) => {
-    const compact = input.include_full_text ? { text: cell, truncated: false } : compactCell(cell)
-    if (compact.truncated) truncatedCells++
-    return compact.text
+    const encoded = encodeCell(cell)
+    if (input.include_full_text && !forceClip) return encoded
+    const clipped = clipCell(encoded)
+    if (clipped.truncated) truncatedCells++
+    return clipped.text
   }))
   const nextCursor = cursor + selected.length < rows.length ? cursor + selected.length : "none"
   const header: Record<string, string | number> = {
@@ -42,6 +76,7 @@ function renderPage(headers: string[], rows: string[][], input: ReadLedgerInput,
     returned: selected.length,
     next_cursor: nextCursor,
     truncated_cells: truncatedCells,
+    ...extraHeader,
   }
   // Query-specific recovery path, emitted only when something was actually
   // clipped — untruncated output stays byte-identical.
@@ -217,31 +252,61 @@ export async function handleReadLedger(filePath: string, input: ReadLedgerInput)
     }
     case "reviews": {
       const rows: string[][] = []
+      const tally = { complete: 0, partial: 0, failed: 0, unspecified: 0, invalid: 0 }
       for (const [phaseId, phase] of phaseEntries) {
-        for (const review of phase.reviews ?? []) {
-          if (input.unit_id && !(review.units ?? Object.keys(review.unit_attempts ?? phase.units)).includes(input.unit_id)) continue
-          if (review.findings.length === 0) {
-            // Silence is only approval when the seat says what it examined.
-            const meta = [
-              review.completion ? `completion=${review.completion}` : null,
-              review.checked ? `checked=${review.checked.length}` : null,
-              review.units ? `units=${review.units.length}` : null,
-              review.stage ? `stage=${review.stage}` : null,
-            ].filter(Boolean).join("; ")
-            rows.push([phaseId, review.advisor, review.ts, "", "", "", meta ? `(no findings; ${meta})` : "(no findings)"])
-            continue
+        const pool = phase.reviews ?? []
+        for (const review of pool) {
+          const unitId = input.unit_id
+          // Same reading as the gate (ledger.ts:1389): a finding with no or empty units is unattributed.
+          const namesUnit = (f: (typeof review.findings)[number]) =>
+            Array.isArray(f.units) && f.units.length > 0 && unitId !== undefined && f.units.includes(unitId)
+          const attributed = (f: (typeof review.findings)[number]) => Array.isArray(f.units) && f.units.length > 0
+          let inScope = true
+          if (unitId) {
+            const scope = review.units ?? Object.keys(review.unit_attempts ?? phase.units ?? {})
+            inScope = Array.isArray(scope) && scope.includes(unitId)
+            if (!inScope && !review.findings.some(namesUnit)) continue
           }
-          for (const [index, f] of review.findings.entries()) {
-            if (input.unit_id && f.units && !f.units.includes(input.unit_id)) continue
-            rows.push([phaseId, review.advisor, review.ts, String(index), effectiveSeverity(f), effectiveClassification(f) ?? "", f.description])
+          // Unattributed findings belong to the review's own scope, so they show only when the review covers the unit.
+          const findingOnUnit = (f: (typeof review.findings)[number]) => !unitId || (attributed(f) ? namesUnit(f) : inScope)
+          const completion = closedValue(review.completion, ["complete", "partial", "failed"])
+          const stage = closedValue(review.stage, ["independent", "cross_exam", "verification", "fan", "native"])
+          tally[completion as keyof typeof tally]++
+          const visible = review.findings.map((f, index) => ({ f, index })).filter(({ f }) => findingOnUnit(f))
+          const parts = [`[review] findings=${review.findings.length}`]
+          if (unitId) {
+            parts.push(`unit_findings=${visible.length}`)
+            const snapshot = review.unit_attempts && Object.hasOwn(review.unit_attempts, unitId) ? review.unit_attempts[unitId] : undefined
+            const current = phase.units && Object.hasOwn(phase.units, unitId) ? phase.units[unitId]?.attempt_seq : undefined
+            parts.push(`unit_attempt=${snapshot ?? "unspecified"}/${current ?? "unspecified"}`)
+          }
+          parts.push(`checked=${Array.isArray(review.checked) ? review.checked.length : "unspecified"}`)
+          parts.push(`units=${Array.isArray(review.units) ? review.units.length : "unscoped"}`)
+          // A malformed hand-edited record must not take down the whole query; say the marks are unavailable.
+          try {
+            if (isSuperseded(review, pool, phase)) parts.push("superseded=yes")
+            const incomplete = reviewIncompleteness(review)
+            if (incomplete !== null) parts.push(`gate_incomplete=${encodeCell(incomplete)}`)
+          } catch {
+            parts.push("gate_marks=unavailable (malformed record)")
+          }
+          const limitations = review.limitations === undefined ? "" : encodeCell(String(review.limitations))
+          parts.push(limitations === "" ? "limitations=none" : `limitations: ${limitations}`)
+          rows.push([phaseId, review.advisor, review.ts, completion, stage, "-", "-", "-", parts.join("; ")])
+          for (const { f, index } of visible) {
+            rows.push([phaseId, review.advisor, review.ts, completion, stage, String(index), effectiveSeverity(f), effectiveClassification(f) ?? "unclassified", f.description])
           }
         }
       }
+      const rollup = `complete=${tally.complete} partial=${tally.partial} failed=${tally.failed}` +
+        (tally.unspecified > 0 ? ` unspecified=${tally.unspecified}` : "") +
+        (tally.invalid > 0 ? ` invalid=${tally.invalid}` : "")
       return renderPage(
-        ["phase", "advisor", "review_ts", "finding_index", "severity", "class", "finding"],
+        ["phase", "advisor", "review_ts", "completion", "stage", "finding_index", "severity", "class", "finding"],
         rows,
         input,
-        'full text: repeat this query with include_full_text:true and cursor/limit'
+        'full text: repeat this query with include_full_text:true and cursor/limit',
+        { review_completion: rollup },
       )
     }
     case "delegation_metrics": {
